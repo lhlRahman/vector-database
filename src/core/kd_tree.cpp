@@ -1,11 +1,14 @@
 #include "kd_tree.hpp"
-#include "../utils/distance_metrics.hpp"
 #include <limits>
 #include <algorithm>
 
-KDTree::KDTree(size_t dims) : dimensions(dims) {}
+KDTree::Node::Node(const Vector& vec, const std::string& k) : vector(vec), key(k), split_dimension(-1) {}
+
+KDTree::KDTree(size_t dims, std::shared_ptr<DistanceMetric> metric) 
+    : dimensions(dims), distanceMetric(std::move(metric)) {}
 
 void KDTree::insert(const Vector& vector, const std::string& key) {
+    vectorMap[key] = vector;
     insert_recursive(root, vector, key, 0);
 }
 
@@ -29,17 +32,17 @@ std::string KDTree::nearest_neighbor(const Vector& query) const {
         return "";
     }
     std::string best_key = root->key;
-    float best_distance = DistanceMetrics::euclidean(query, root->vector);
+    float best_distance = distanceMetric->distance(query, root->vector);
     nearest_neighbor_recursive(root.get(), query, best_key, best_distance, 0);
     return best_key;
 }
 
 void KDTree::nearest_neighbor_recursive(const Node* node, const Vector& query, std::string& best_key, float& best_distance, int depth) const {
-    if (!node) {
+    if (!node || temporarilyRemoved.count(node->key) > 0) {
         return;
     }
 
-    float distance = DistanceMetrics::euclidean(query, node->vector);
+    float distance = distanceMetric->distance(query, node->vector);
     if (distance < best_distance) {
         best_distance = distance;
         best_key = node->key;
@@ -57,3 +60,14 @@ void KDTree::nearest_neighbor_recursive(const Node* node, const Vector& query, s
     }
 }
 
+const Vector& KDTree::getVector(const std::string& key) const {
+    return vectorMap.at(key);
+}
+
+void KDTree::removeTemporarily(const std::string& key) {
+    temporarilyRemoved.insert(key);
+}
+
+void KDTree::reinsert(const std::string& key) {
+    temporarilyRemoved.erase(key);
+}
