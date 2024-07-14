@@ -1,29 +1,37 @@
 #pragma once
 #include "vector.hpp"
+#include "distance_metrics.hpp"
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 class KDTree {
-    private:
-        struct Node {
-            Vector vector;
-            std::string key;
-            std::unique_ptr<Node> left;
-            std::unique_ptr<Node> right;
-            int split_dimension;
+private:
+    struct Node {
+        Vector vector;
+        std::string key;
+        std::unique_ptr<Node> left;
+        std::unique_ptr<Node> right;
+        int split_dimension;
 
-            Node(const Vector& vec, const std::string& k) : vector(vec), key(k), split_dimension(-1) {}
-        };
+        Node(const Vector& vec, const std::string& k);
+    };
 
-        std::unique_ptr<Node> root;
-        size_t dimensions;
+    std::unique_ptr<Node> root;
+    size_t dimensions;
+    std::shared_ptr<DistanceMetric> distanceMetric;
+    std::unordered_map<std::string, Vector> vectorMap;
+    std::unordered_set<std::string> temporarilyRemoved;
 
     void insert_recursive(std::unique_ptr<Node>& node, const Vector& vector, const std::string& key, int depth);
     void nearest_neighbor_recursive(const Node* node, const Vector& query, std::string& best_key, float& best_distance, int depth) const;
 
-    public:
-        KDTree(size_t dimensions);
-        void insert(const Vector& vector, const std::string& key);
-        std::string nearest_neighbor(const Vector& query) const;
-
+public:
+    KDTree(size_t dimensions, std::shared_ptr<DistanceMetric> metric);
+    void insert(const Vector& vector, const std::string& key);
+    std::string nearest_neighbor(const Vector& query) const;
+    const Vector& getVector(const std::string& key) const;
+    void removeTemporarily(const std::string& key);
+    void reinsert(const std::string& key);
 };

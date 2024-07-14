@@ -1,8 +1,23 @@
 #pragma once
-# include "../core/vector.hpp"
+#include "vector.hpp"
 
-namespace DistanceMetrics {
-    float euclidean (const Vector& v1, const Vector& v2);
-    float manhattan (const Vector& v1, const Vector& v2);
-    float cosine (const Vector& v1, const Vector& v2);
-}
+class DistanceMetric {
+public:
+    virtual float distance(const Vector& v1, const Vector& v2) const = 0;
+    virtual ~DistanceMetric() = default;
+};
+
+class EuclideanDistance : public DistanceMetric {
+public:
+    float distance(const Vector& v1, const Vector& v2) const override;
+};
+
+class ManhattanDistance : public DistanceMetric {
+public:
+    float distance(const Vector& v1, const Vector& v2) const override;
+};
+
+class CosineSimilarity : public DistanceMetric {
+public:
+    float distance(const Vector& v1, const Vector& v2) const override;
+};

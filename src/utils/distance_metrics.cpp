@@ -2,42 +2,26 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace DistanceMetrics {
-    float euclidean(const Vector& v1, const Vector& v2){
-        if (v1.size() != v2.size()) {
-            throw std::invalid_argument("Vectors must be of the same size");
-        }
-        float sum = 0.0f;
-        for (size_t i = 0; i < v1.size(); i++) {
-            sum += pow(v1[i] - v2[i], 2);
-        }
-        return sqrt(sum);
-    }
+float EuclideanDistance::distance(const Vector& v1, const Vector& v2) const {
+    return std::sqrt(Vector::simd_dot_product(v1, v1) + 
+                     Vector::simd_dot_product(v2, v2) - 
+                     2 * Vector::simd_dot_product(v1, v2));
+}
 
-    float manhattan(const Vector& v1, const Vector& v2){
-        if (v1.size() != v2.size()) {
-            throw std::invalid_argument("Vectors must be of the same size");
-        }
-        float sum = 0.0f;
-        for (size_t i = 0; i < v1.size(); i++) {
-            sum += abs(v1[i] - v2[i]);
-        }
-        return sum;
+float ManhattanDistance::distance(const Vector& v1, const Vector& v2) const {
+    if (v1.size() != v2.size()) {
+        throw std::invalid_argument("Vectors must have the same dimension");
     }
-
-float cosine_similarity(const Vector& v1, const Vector& v2) {
-        if (v1.size() != v2.size()) {
-            throw std::invalid_argument("Vectors must have the same dimension");
-        }
-        float dot_product = 0.0f;
-        float norm1 = 0.0f;
-        float norm2 = 0.0f;
-        for (size_t i = 0; i < v1.size(); ++i) {
-            dot_product += v1[i] * v2[i];
-            norm1 += v1[i] * v1[i];
-            norm2 += v2[i] * v2[i];
-        }
-        return dot_product / (std::sqrt(norm1) * std::sqrt(norm2));
+    float sum = 0.0f;
+    for (size_t i = 0; i < v1.size(); ++i) {
+        sum += std::abs(v1[i] - v2[i]);
     }
+    return sum;
+}
 
+float CosineSimilarity::distance(const Vector& v1, const Vector& v2) const {
+    float dot_product = Vector::simd_dot_product(v1, v2);
+    float norm1 = std::sqrt(Vector::simd_dot_product(v1, v1));
+    float norm2 = std::sqrt(Vector::simd_dot_product(v2, v2));
+    return 1.0f - dot_product / (norm1 * norm2);
 }
