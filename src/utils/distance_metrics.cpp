@@ -1,11 +1,13 @@
+// src/utils/distance_metrics.cpp
+
 #include "distance_metrics.hpp"
 #include <cmath>
 #include <stdexcept>
 
 float EuclideanDistance::distance(const Vector& v1, const Vector& v2) const {
-    return std::sqrt(Vector::simd_dot_product(v1, v1) + 
-                     Vector::simd_dot_product(v2, v2) - 
-                     2 * Vector::simd_dot_product(v1, v2));
+    return std::sqrt(Vector::dot_product(v1, v1) + 
+                     Vector::dot_product(v2, v2) - 
+                     2 * Vector::dot_product(v1, v2));
 }
 
 float ManhattanDistance::distance(const Vector& v1, const Vector& v2) const {
@@ -20,8 +22,8 @@ float ManhattanDistance::distance(const Vector& v1, const Vector& v2) const {
 }
 
 float CosineSimilarity::distance(const Vector& v1, const Vector& v2) const {
-    float dot_product = Vector::simd_dot_product(v1, v2);
-    float norm1 = std::sqrt(Vector::simd_dot_product(v1, v1));
-    float norm2 = std::sqrt(Vector::simd_dot_product(v2, v2));
+    float dot_product = Vector::dot_product(v1, v2);
+    float norm1 = std::sqrt(Vector::dot_product(v1, v1));
+    float norm2 = std::sqrt(Vector::dot_product(v2, v2));
     return 1.0f - dot_product / (norm1 * norm2);
 }
