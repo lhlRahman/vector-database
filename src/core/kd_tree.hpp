@@ -1,10 +1,13 @@
+// src/core/kd_tree.hpp
+
 #pragma once
 #include "vector.hpp"
-#include "distance_metrics.hpp"
+#include "../utils/distance_metrics.hpp"
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 class KDTree {
 private:
@@ -31,6 +34,7 @@ public:
     KDTree(size_t dimensions, std::shared_ptr<DistanceMetric> metric);
     void insert(const Vector& vector, const std::string& key);
     std::string nearest_neighbor(const Vector& query) const;
+    std::vector<std::pair<std::string, float>> nearestNeighbors(const Vector& query, size_t k) const;
     const Vector& getVector(const std::string& key) const;
     void removeTemporarily(const std::string& key);
     void reinsert(const std::string& key);

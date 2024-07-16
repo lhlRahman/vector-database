@@ -1,3 +1,5 @@
+// src/core/kd_tree.cpp - KD-tree implementation.
+
 #include "kd_tree.hpp"
 #include <limits>
 #include <algorithm>
@@ -70,4 +72,18 @@ void KDTree::removeTemporarily(const std::string& key) {
 
 void KDTree::reinsert(const std::string& key) {
     temporarilyRemoved.erase(key);
+}
+
+std::vector<std::pair<std::string, float>> KDTree::nearestNeighbors(const Vector& query, size_t k) const {
+    std::vector<std::pair<std::string, float>> result;
+    for (size_t i = 0; i < k; ++i) {
+        std::string nearest = nearest_neighbor(query);
+        float distance = distanceMetric->distance(query, getVector(nearest));
+        result.emplace_back(nearest, distance);
+        const_cast<KDTree*>(this)->removeTemporarily(nearest);
+    }
+    for (const auto& pair : result) {
+        const_cast<KDTree*>(this)->reinsert(pair.first);
+    }
+    return result;
 }
