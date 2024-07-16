@@ -63,6 +63,7 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
         return {};
     }
 
+    
     std::vector<std::pair<std::string, float>> results;
     
     if (useApproximate) {
