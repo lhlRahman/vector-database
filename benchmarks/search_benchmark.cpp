@@ -46,8 +46,6 @@ void benchmark_search(size_t dimensions, size_t num_vectors, size_t num_queries,
 }
 
 int main() {
-    benchmark_search(128, 100000, 1000, 10);
-    benchmark_search(256, 100000, 1000, 10);
-    benchmark_search(512, 100000, 1000, 10);
+    benchmark_search(128, 20, 1000, 10);
     return 0;
 }
