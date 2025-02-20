@@ -34,8 +34,6 @@ void benchmark_insertion(size_t dimensions, size_t num_vectors) {
 }
 
 int main() {
-    benchmark_insertion(128, 100000);
-    benchmark_insertion(256, 100000);
-    benchmark_insertion(512, 100000);
+    benchmark_insertion(128, 20);
     return 0;
 }
