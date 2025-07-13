@@ -18,6 +18,7 @@ public:
     const float& operator[](size_t index) const;
     size_t size() const;
     const float* data_ptr() const;
+    float* data_ptr();
     static float dot_product(const Vector& v1, const Vector& v2);
 
     bool operator==(const Vector& other) const {

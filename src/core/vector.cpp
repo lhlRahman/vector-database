@@ -29,6 +29,10 @@ const float* Vector::data_ptr() const {
     return data.data();
 }
 
+float* Vector::data_ptr() {
+    return data.data();
+}
+
 float Vector::dot_product(const Vector& v1, const Vector& v2) {
     if (v1.size() != v2.size()) {
         throw std::invalid_argument("Vectors must be the same size");
