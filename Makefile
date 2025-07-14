@@ -1,7 +1,19 @@
 # makefile
 # Compiler
 CXX = g++
-CXXFLAGS = -std=c++20 -Iinclude -Isrc -O2 -mavx -mavx2 -Wno-psabi
+
+# Detect architecture and set appropriate flags
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),arm64)
+    # ARM64 (Apple Silicon) - use NEON
+    CXXFLAGS = -std=c++20 -Iinclude -Isrc -O2 -mcpu=apple-m1 -Wno-psabi
+else ifeq ($(UNAME_M),x86_64)
+    # x86_64 - use AVX
+    CXXFLAGS = -std=c++20 -Iinclude -Isrc -O2 -mavx -mavx2 -Wno-psabi
+else
+    # Default fallback
+    CXXFLAGS = -std=c++20 -Iinclude -Isrc -O2 -Wno-psabi
+endif
 
 # Directories
 SRC_DIR = src

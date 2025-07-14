@@ -398,7 +398,7 @@ public:
 };
 
 int main(int argc, char* argv[]) {
-    size_t dimensions = 128;  // Default dimensions
+    size_t dimensions = 4096;  // Default dimensions
     int port = 8080;          // Default port
     std::string db_file = "api_vectors.db";  // Default database file
     

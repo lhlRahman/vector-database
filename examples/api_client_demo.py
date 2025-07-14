@@ -19,7 +19,7 @@ import numpy as np
 from openai import OpenAI
 from typing import List, Dict, Optional, Tuple
 import time
-
+# eyJhbGciOiJIUzI1NiIsImtpZCI6IlV6SXJWd1h0dnprLVRvdzlLZWstc0M1akptWXBvX1VaVkxUZlpnMDRlOFUiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJnaXRodWJ8MTM2MDAzODkwIiwic2NvcGUiOiJvcGVuaWQgb2ZmbGluZV9hY2Nlc3MiLCJpc3MiOiJhcGlfa2V5X2lzc3VlciIsImF1ZCI6WyJodHRwczovL25lYml1cy1pbmZlcmVuY2UuZXUuYXV0aDAuY29tL2FwaS92Mi8iXSwiZXhwIjoxOTEwMTMyNzkzLCJ1dWlkIjoiZDA1NTQ4NWMtMzk1My00NDgxLTlmZmMtMTdmZjgzZWY2NDViIiwibmFtZSI6InF3ZW4iLCJleHBpcmVzX2F0IjoiMjAzMC0wNy0xM1QwMDoyNjozMyswMDAwIn0.WXoGZukQCDAeCxQZvcnTbh6wsXuN2JQSAoKJ1IKGvuY
 class VectorDBTester:
     def __init__(self, 
                  vector_db_host: str = "localhost", 
