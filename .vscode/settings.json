@@ -55,6 +55,11 @@
         "vector": "cpp",
         "algorithm": "cpp",
         "numeric": "cpp",
-        "future": "cpp"
+        "future": "cpp",
+        "chrono": "cpp",
+        "forward_list": "cpp",
+        "print": "cpp",
+        "stack": "cpp",
+        "memory": "cpp"
     }
 }
