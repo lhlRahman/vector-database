@@ -238,25 +238,6 @@ See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 5. Run benchmarks to ensure performance
 6. Submit a pull request
 
-### Development Setup
-```bash
-# Install development dependencies
-# (Add any specific dev dependencies here)
-
-# Run tests
-make test
-
-# Run benchmarks
-make benchmark
-
-# Check code style
-# (Add linting commands here)
-```
-
-## 📄 License
-
-[Add your license information here]
-
 ## 🙏 Acknowledgments
 
 - **cpp-httplib** for the HTTP server implementation
