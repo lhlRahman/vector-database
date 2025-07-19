@@ -111,14 +111,15 @@ public:
             }
         });
         
-        // Batch insert vectors
+        // Fixed batch insert endpoint in vector_db_server.cpp
         server.Post("/vectors/batch", [this](const httplib::Request& req, httplib::Response& res) {
             try {
                 auto body = json::parse(req.body);
                 
-                if (!body.contains("vectors") || !body.is_array()) {
+                // FIXED: Check if body contains "vectors" array, not if body itself is array
+                if (!body.contains("vectors") || !body["vectors"].is_array()) {
                     res.status = 400;
-                    json error = {{"error", "Request body must be an array of vector objects"}};
+                    json error = {{"error", "Request body must contain a 'vectors' array"}};
                     res.set_content(error.dump(), "application/json");
                     return;
                 }
@@ -169,7 +170,6 @@ public:
                 res.set_content(error.dump(), "application/json");
             }
         });
-        
         // Search for similar vectors
         server.Post("/search", [this](const httplib::Request& req, httplib::Response& res) {
             try {
