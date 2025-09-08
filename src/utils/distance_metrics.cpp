@@ -1,8 +1,7 @@
-// src/utils/distance_metrics.cpp
-
-#include "distance_metrics.hpp"
 #include <cmath>
 #include <stdexcept>
+
+#include "distance_metrics.hpp"
 
 float EuclideanDistance::distance(const Vector& v1, const Vector& v2) const {
     return std::sqrt(Vector::dot_product(v1, v1) + 

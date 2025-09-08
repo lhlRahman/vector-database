@@ -1,4 +1,5 @@
-// src/features/query_cache.cpp
+#include <string> // Added for std::string
+#include <vector> // Added for std::vector
 
 #include "query_cache.hpp"
 

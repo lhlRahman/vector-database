@@ -1,8 +1,9 @@
-// src/features/dimensionality_reduction.hpp
-
 #pragma once
-#include "../core/vector.hpp"
+
+#include <algorithm> // Added for std::transform
 #include <vector>
+
+#include "../core/vector.hpp"
 
 class PCA
 {
@@ -52,7 +53,7 @@ private:
         const std::vector<std::vector<float>> &B) const;
 
 public:
-    PCA(int n_components);
+    explicit PCA(int n_components);
     void fit(const std::vector<Vector> &data);
     Vector transform(const Vector &v) const;
     Vector inverse_transform(const Vector &v) const;

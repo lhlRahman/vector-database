@@ -1,10 +1,11 @@
-// src/features/dimensionality_reduction.cpp
-#include "dimensionality_reduction.hpp"
-#include <cmath>
 #include <algorithm>
-#include <stdexcept>
-#include <numeric>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <stdexcept>
+#include <vector> // Added for std::vector
+
+#include "dimensionality_reduction.hpp"
 
 PCA::PCA(int n_components) : reduced_dim(n_components) {}
 
