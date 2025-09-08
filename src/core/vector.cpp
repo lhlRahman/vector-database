@@ -1,7 +1,9 @@
-// src/core/vector.cpp
+// Copyright [year] <Copyright Owner>
+
+#include <stdexcept>
+#include <vector> // Added for std::vector
 
 #include "vector.hpp"
-#include <stdexcept>
 
 Vector::Vector(size_t size) : data(size) {}
 

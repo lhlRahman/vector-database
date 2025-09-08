@@ -1,10 +1,10 @@
-// src/core/vector.hpp
+// Copyright [year] <Copyright Owner>
 
 #pragma once
-#include <vector>
 #include <cstddef>
-#include <iostream>
 #include <functional>
+#include <iostream>
+#include <vector>
 
 class Vector {
 private:
@@ -12,8 +12,8 @@ private:
 
 public:
     Vector() = default; // Default constructor
-    Vector(size_t size);
-    Vector(const std::vector<float>& values);
+    explicit Vector(size_t size); // Marked explicit
+    explicit Vector(const std::vector<float>& values); // Marked explicit
     float& operator[](size_t index);
     const float& operator[](size_t index) const;
     size_t size() const;
@@ -51,4 +51,4 @@ namespace std {
             return seed;
         }
     };
-}
+} // namespace std

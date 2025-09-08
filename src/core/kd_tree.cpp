@@ -1,8 +1,14 @@
-// src/core/kd_tree.cpp - KD-tree implementation.
+// Copyright [year] <Copyright Owner>
+
+#include <algorithm>
+#include <limits>
+#include <memory>      // Added for std::make_unique
+#include <string>      // Added for std::string
+#include <unordered_set> // Added for std::unordered_set
+#include <utility>     // Added for std::move
+#include <vector>      // Added for std::vector
 
 #include "kd_tree.hpp"
-#include <limits>
-#include <algorithm>
 
 KDTree::Node::Node(const Vector& vec, const std::string& k) : vector(vec), key(k), split_dimension(-1) {}
 
