@@ -2,6 +2,7 @@
 
 #include "approximate_nn.hpp"
 #include "lsh_index.hpp"
+#include "hnsw_index.hpp"
 #include <random>
 #include <unordered_set>
 #include <algorithm>
@@ -79,6 +80,8 @@ std::unique_ptr<ApproximateNN> ApproximateNNFactory::create(const std::string& a
         return std::make_unique<LSHIndex>(dimensions, param1, param2, metric);
     } else if (algorithm == "RPT") {
         return std::make_unique<RandomProjectionTrees>(dimensions, param1, param2);
+    } else if (algorithm == "HNSW") {
+        return std::make_unique<HNSWIndex>(dimensions, param1, param2, param2, metric);
     }
-    return nullptr;
+    throw std::invalid_argument("Unknown algorithm: " + algorithm);
 }
