@@ -1,13 +1,13 @@
-// src/core/kd_tree.hpp
-
 #pragma once
-#include "vector.hpp"
-#include "../utils/distance_metrics.hpp"
+
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "vector.hpp"
+#include "../utils/distance_metrics.hpp"
 
 class KDTree {
 private:
