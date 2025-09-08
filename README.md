@@ -1,6 +1,6 @@
 # Vector Database
 
-A high-performance, in-memory vector database with SIMD optimizations, supporting both exact and approximate nearest neighbor search. Built with C++20 and optimized for modern architectures including Apple Silicon (M1/M2) and x86-64.
+A high-performance, in-memory vector database with SIMD optimizations, supporting exact, LSH, and HNSW nearest neighbor search. Built with C++20 and optimized for modern architectures including Apple Silicon (M1/M2) and x86-64.
 
 ## 🚀 Features
 
@@ -8,6 +8,7 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **High-dimensional vector storage** with efficient indexing
 - **Exact nearest neighbor search** using KD-trees
 - **Approximate nearest neighbor search** using Locality-Sensitive Hashing (LSH)
+- **HNSW (Hierarchical Navigable Small World)** for high-accuracy approximate search
 - **Batch operations** for efficient bulk insertions and searches
 - **Metadata support** for storing additional information with vectors
 - **Persistent storage** with save/load functionality
@@ -33,7 +34,8 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 
 ### Search Performance
 - **Exact Search**: O(log n) average case with KD-trees
-- **Approximate Search**: O(1) average case with LSH
+- **LSH Search**: O(1) average case with Locality-Sensitive Hashing
+- **HNSW Search**: O(log n) average case with high accuracy
 - **Batch Operations**: Optimized for bulk processing
 
 ## 🛠️ Use Cases
@@ -62,7 +64,7 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **C++20 compatible compiler** (GCC 10+, Clang 12+, or MSVC 2019+)
 - **CMake 3.10+** (for CMake build)
 - **Make** (for Makefile build)
-- **Python 3.7+** (for Python examples)
+- **Python 3.7+** (for Python examples and benchmarks)
 
 ### Quick Start
 
@@ -140,8 +142,10 @@ int main() {
 
 ### Advanced Features
 ```cpp
-// Use approximate search for better performance
-VectorDatabase db(128, true);  // Enable LSH
+// Use different search algorithms
+VectorDatabase db(128, "exact");     // Exact search (KD-tree)
+VectorDatabase db(128, "lsh");       // LSH approximate search
+VectorDatabase db(128, "hnsw");      // HNSW approximate search
 
 // Add metadata
 db.insert(vector, "key", "metadata");
@@ -177,6 +181,7 @@ curl -X POST http://localhost:8080/search \
 - **Vector**: High-dimensional vector representation with SIMD operations
 - **KDTree**: Exact nearest neighbor search implementation
 - **LSHIndex**: Approximate search using Locality-Sensitive Hashing
+- **HNSWIndex**: High-accuracy approximate search using HNSW
 - **VectorDatabase**: Main database interface with metadata support
 
 ### Optimization Layers
@@ -192,7 +197,7 @@ curl -X POST http://localhost:8080/search \
 
 ## 📈 Benchmarks
 
-Run performance benchmarks to see SIMD optimizations in action:
+Run performance benchmarks to see optimizations in action:
 
 ```bash
 # Comprehensive SIMD benchmark
@@ -206,6 +211,9 @@ Run performance benchmarks to see SIMD optimizations in action:
 
 # Insertion performance benchmark
 ./build/insertion_benchmark
+
+# HNSW performance benchmark (Python)
+python benchmarks/hnsw_performance_benchmark.py
 ```
 
 ## 🔍 API Reference
@@ -215,7 +223,7 @@ Run performance benchmarks to see SIMD optimizations in action:
 - `batchInsert(vectors, keys)`: Insert multiple vectors
 - `similaritySearch(query, k)`: Find k nearest neighbors
 - `similaritySearchWithMetadata(query, k)`: Search with metadata
-- `toggleApproximateSearch(enabled)`: Switch between exact/approximate search
+- `setApproximateAlgorithm(algorithm, param1, param2)`: Set search algorithm ("exact", "lsh", "hnsw")
 - `saveToFile(filename)`: Persist database to disk
 - `loadFromFile(filename)`: Load database from disk
 
@@ -226,6 +234,7 @@ Run performance benchmarks to see SIMD optimizations in action:
 - `POST /search`: Similarity search
 - `GET /health`: Health check
 - `PUT /config/approximate`: Toggle search mode
+- `GET /info`: Get database information
 
 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 
@@ -250,3 +259,4 @@ See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 - **Documentation**: See [docs/](docs/) for detailed guides
 - **Examples**: Check [examples/](examples/) for usage patterns
 - **Benchmarks**: Review [benchmarks/](benchmarks/) for performance data
+- **API**: See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference
