@@ -1,10 +1,12 @@
-// src/algorithms/lsh_index.hpp
+// Copyright [year] <Copyright Owner>
 
 #pragma once
 
-#include "approximate_nn.hpp"
-#include <vector>
+#include <string>        // Added for std::string
 #include <unordered_map>
+#include <vector>
+
+#include "approximate_nn.hpp"
 
 class LSHIndex : public ApproximateNN {
 private:
@@ -12,7 +14,7 @@ private:
         Vector random_vector;
         float bias;
 
-        HashFunction(size_t dims);
+        explicit HashFunction(size_t dims); // Marked explicit
         size_t hash(const Vector& v) const;
     };
 

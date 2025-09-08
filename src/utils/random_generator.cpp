@@ -1,5 +1,3 @@
-// src/utils/random_generator.cpp
-
 #include "random_generator.hpp"
 
 RandomGenerator::RandomGenerator(unsigned int seed) : gen(seed), uniform_dist(0.0f, 1.0f), normal_dist(0.0f, 1.0f) {}

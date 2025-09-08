@@ -1,7 +1,6 @@
-// src/optimizations/simd_operations.cpp
+#include <stdexcept>
 
 #include "simd_operations.hpp"
-#include <stdexcept>
 
 namespace simd_ops {
 
@@ -190,4 +189,4 @@ void subtract(const Vector& v1, const Vector& v2, Vector& result) {
 
 #endif
 
-}
+} // namespace simd_ops

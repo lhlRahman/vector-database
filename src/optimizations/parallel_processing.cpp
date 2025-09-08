@@ -1,8 +1,12 @@
-// src/optimizations/parallel_processing.cpp
-
 #include "parallel_processing.hpp"
+
+#include <functional>
 #include <future>
 #include <numeric>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace parallel_ops {
 
@@ -13,18 +17,26 @@ void batchInsert(VectorDatabase& db, const std::vector<Vector>& vectors, const s
 
     auto task = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {
-            db.insert(vectors[i], keys[i]);
+            // FIX: Call the 3-argument version of insert to resolve ambiguity.
+            db.insert(vectors[i], keys[i], "");
         }
     };
 
     size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 1; // Fallback for safety
     size_t batch_size = vectors.size() / num_threads;
+    if (batch_size == 0 && vectors.size() > 0) { // Handle cases with more threads than items
+        batch_size = 1;
+        num_threads = vectors.size();
+    }
     std::vector<std::future<void>> futures;
 
     for (size_t i = 0; i < num_threads; ++i) {
         size_t start = i * batch_size;
         size_t end = (i == num_threads - 1) ? vectors.size() : start + batch_size;
-        futures.push_back(std::async(std::launch::async, task, start, end));
+        if (start < end) {
+            futures.push_back(std::async(std::launch::async, task, start, end));
+        }
     }
 
     for (auto& future : futures) {
@@ -44,13 +56,20 @@ std::vector<std::vector<std::pair<std::string, float>>> batchSimilaritySearch(
     };
 
     size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 1;
     size_t batch_size = queries.size() / num_threads;
+     if (batch_size == 0 && queries.size() > 0) {
+        batch_size = 1;
+        num_threads = queries.size();
+    }
     std::vector<std::future<void>> futures;
 
     for (size_t i = 0; i < num_threads; ++i) {
         size_t start = i * batch_size;
         size_t end = (i == num_threads - 1) ? queries.size() : start + batch_size;
-        futures.push_back(std::async(std::launch::async, task, start, end));
+        if (start < end) {
+            futures.push_back(std::async(std::launch::async, task, start, end));
+        }
     }
 
     for (auto& future : futures) {
@@ -68,13 +87,20 @@ void parallel_for_each(std::vector<int>& indices, std::function<void(int)>& func
     };
 
     size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 1;
     size_t batch_size = indices.size() / num_threads;
+    if (batch_size == 0 && indices.size() > 0) {
+        batch_size = 1;
+        num_threads = indices.size();
+    }
     std::vector<std::future<void>> futures;
 
     for (size_t i = 0; i < num_threads; ++i) {
         size_t start = i * batch_size;
         size_t end = (i == num_threads - 1) ? indices.size() : start + batch_size;
-        futures.push_back(std::async(std::launch::async, task, start, end));
+        if (start < end) {
+            futures.push_back(std::async(std::launch::async, task, start, end));
+        }
     }
 
     for (auto& future : futures) {
@@ -92,13 +118,20 @@ std::vector<float> parallel_transform(const std::vector<Vector>& queries, const 
     };
 
     size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 1;
     size_t batch_size = queries.size() / num_threads;
+    if (batch_size == 0 && queries.size() > 0) {
+        batch_size = 1;
+        num_threads = queries.size();
+    }
     std::vector<std::future<void>> futures;
 
     for (size_t i = 0; i < num_threads; ++i) {
         size_t start = i * batch_size;
         size_t end = (i == num_threads - 1) ? queries.size() : start + batch_size;
-        futures.push_back(std::async(std::launch::async, task, start, end));
+        if (start < end) {
+            futures.push_back(std::async(std::launch::async, task, start, end));
+        }
     }
 
     for (auto& future : futures) {

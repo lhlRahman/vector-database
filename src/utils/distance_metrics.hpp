@@ -1,5 +1,5 @@
-// src/utils/distance_metrics.hpp
 #pragma once
+
 #include "../core/vector.hpp"
 
 class DistanceMetric {
