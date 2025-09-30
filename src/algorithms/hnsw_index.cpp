@@ -1,15 +1,15 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional> // Added for std::greater
+#include <functional>
 #include <iostream>
 #include <limits>
-#include <queue>      // Added for std::priority_queue
+#include <queue>
 #include <random>
-#include <stdexcept>  // Added for std::invalid_argument
-#include <string>     // Added for std::string
-#include <unordered_set> // Added for std::unordered_set
-#include <vector>     // Added for std::vector
+#include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 #include "hnsw_index.hpp"
 

@@ -1,11 +1,10 @@
-// Copyright [year] <Copyright Owner>
 
 #include <algorithm>
 #include <random>
-#include <string>        // Added for std::string
-#include <unordered_map> // Added for std::unordered_map
-#include <vector>        // Added for std::vector
-#include <stdexcept>     // Added for std::invalid_argument (for Vector::dot_product)
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <stdexcept>
 
 #include "lsh_index.hpp"
 

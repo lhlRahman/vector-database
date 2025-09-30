@@ -1,5 +1,3 @@
-// Copyright [year] <Owner>
-
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -12,11 +10,11 @@
 #include <utility>
 #include <vector>
 
-#include "../features/atomic_persistence.hpp"      // for PersistenceConfig + to_json
-#include "../features/recovery_state_machine.hpp"  // for RecoveryInfo + to_json
+#include "../features/atomic_persistence.hpp"
+#include "../features/recovery_state_machine.hpp"
 #include "../core/vector_database.hpp"
 #include "vector_db_server.hpp"
-#include "../json.hpp"  // your single-header JSON
+#include "../json.hpp"
 
 using json = nlohmann::json;
 
@@ -43,9 +41,10 @@ VectorDBServer::VectorDBServer(size_t dims,
   persistence_config.log_rotation_size       = 100 * 1024 * 1024; // 100MB
   persistence_config.max_log_files           = 10;
 
-  // Build database (exact search, atomic persistence on, batch ops on)
-  db = std::make_unique<VectorDatabase>(dimensions, "exact", /*enable_atomic_persistence=*/true,
-                                        /*enable_batch_operations=*/true, persistence_config);
+  // Build database (HNSW search, atomic persistence on, batch ops on, query cache on)
+  db = std::make_unique<VectorDatabase>(dimensions, "hnsw", /*enable_atomic_persistence=*/true,
+                                        /*enable_batch_operations=*/true, persistence_config,
+                                        /*enable_query_cache=*/true, /*cache_capacity=*/1000);
 
   setupRoutes();
   startRecoveryMonitoring();
@@ -175,6 +174,30 @@ void VectorDBServer::setupConfigRoutes() {
 
   server.Put("/config/persistence", [this](const httplib::Request& req, httplib::Response& res) {
     handleUpdatePersistenceConfig(req, res);
+  });
+  
+  server.Put("/config/simd", [this](const httplib::Request& req, httplib::Response& res) {
+    handleToggleSIMD(req, res);
+  });
+  
+  server.Get("/config/simd", [this](const httplib::Request& req, httplib::Response& res) {
+    handleGetSIMDStatus(req, res);
+  });
+  
+  server.Put("/config/distance-metric", [this](const httplib::Request& req, httplib::Response& res) {
+    handleSetDistanceMetric(req, res);
+  });
+  
+  server.Get("/config/distance-metric", [this](const httplib::Request& req, httplib::Response& res) {
+    handleGetDistanceMetric(req, res);
+  });
+  
+  server.Put("/config/algorithm", [this](const httplib::Request& req, httplib::Response& res) {
+    handleSetAlgorithm(req, res);
+  });
+  
+  server.Get("/config/algorithm", [this](const httplib::Request& req, httplib::Response& res) {
+    handleGetAlgorithm(req, res);
   });
 }
 
@@ -748,8 +771,20 @@ void VectorDBServer::handleStatistics(const httplib::Request& /*req*/, httplib::
       {"dimensions", db_stats.dimensions},
       {"algorithm", db_stats.algorithm},
       {"atomic_persistence_enabled", db_stats.atomic_persistence_enabled},
-      {"batch_operations_enabled", db_stats.batch_operations_enabled}
+      {"batch_operations_enabled", db_stats.batch_operations_enabled},
+      {"query_cache_enabled", db_stats.query_cache_enabled}
   };
+  
+  // Add cache stats if enabled
+  if (db_stats.query_cache_enabled) {
+      response["cache_stats"] = {
+          {"hits", db_stats.cache_stats.hits},
+          {"misses", db_stats.cache_stats.misses},
+          {"current_size", db_stats.cache_stats.current_size},
+          {"capacity", db_stats.cache_stats.capacity},
+          {"hit_rate", db_stats.cache_stats.hit_rate()}
+      };
+  }
 
   res.set_content(response.dump(), "application/json");
   successful_requests++;
@@ -771,6 +806,18 @@ void VectorDBServer::handleDatabaseStats(const httplib::Request& /*req*/, httpli
   response["algorithm"]                   = db_stats.algorithm;
   response["atomic_persistence_enabled"]  = db_stats.atomic_persistence_enabled;
   response["batch_operations_enabled"]    = db_stats.batch_operations_enabled;
+  response["query_cache_enabled"]         = db_stats.query_cache_enabled;
+  
+  // Add cache stats if enabled
+  if (db_stats.query_cache_enabled) {
+      response["cache_stats"] = {
+          {"hits", db_stats.cache_stats.hits},
+          {"misses", db_stats.cache_stats.misses},
+          {"current_size", db_stats.cache_stats.current_size},
+          {"capacity", db_stats.cache_stats.capacity},
+          {"hit_rate", db_stats.cache_stats.hit_rate()}
+      };
+  }
 
   res.set_content(response.dump(), "application/json");
   successful_requests++;
@@ -984,4 +1031,369 @@ void VectorDBServer::updateConfig(const std::string& new_host,
   enable_recovery_endpoints   = enable_recovery;
   enable_batch_endpoints      = enable_batch;
   enable_statistics_endpoints = enable_stats;
+}
+
+void VectorDBServer::handleToggleSIMD(const httplib::Request& req, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    auto body = json::parse(req.body);
+    
+    if (!body.contains("enabled")) {
+      res.status = 400;
+      json error;
+      error["error"] = "Missing 'enabled' field";
+      res.set_content(error.dump(), "application/json");
+      failed_requests++;
+      logRequest("PUT", "/config/simd", 400);
+      return;
+    }
+    
+    bool enable = body["enabled"];
+    
+    std::lock_guard<std::mutex> lock(db_mutex);
+    db->enableSIMD(enable);
+    
+    json response;
+    response["status"] = "success";
+    response["simd_enabled"] = enable;
+    response["message"] = enable ? "SIMD operations enabled" : "SIMD operations disabled (using scalar fallback)";
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("PUT", "/config/simd", 200);
+    
+  } catch (const json::exception& e) {
+    res.status = 400;
+    json error;
+    error["error"] = "Invalid JSON: " + std::string(e.what());
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/simd", 400);
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/simd", 500);
+  }
+}
+
+void VectorDBServer::handleGetSIMDStatus(const httplib::Request& /*req*/, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    std::lock_guard<std::mutex> lock(db_mutex);
+    
+    json response;
+    response["simd_enabled"] = db->isSIMDEnabled();
+    response["simd_available"] = true;  // Always available since we compile with SIMD support
+    
+    // Detect architecture
+    #if defined(__ARM_NEON) || defined(__aarch64__)
+      response["simd_type"] = "NEON (ARM)";
+      response["simd_width"] = 4;  // processes 4 floats at once
+    #elif defined(__x86_64__) || defined(_M_X64)
+      response["simd_type"] = "AVX (x86_64)";
+      response["simd_width"] = 8;  // processes 8 floats at once
+    #else
+      response["simd_type"] = "none (scalar fallback)";
+      response["simd_width"] = 1;
+    #endif
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("GET", "/config/simd", 200);
+    
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("GET", "/config/simd", 500);
+  }
+}
+
+void VectorDBServer::handleSetDistanceMetric(const httplib::Request& req, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    auto body = json::parse(req.body);
+    
+    if (!body.contains("metric")) {
+      res.status = 400;
+      json error;
+      error["error"] = "Missing 'metric' field. Choose: euclidean, manhattan, or cosine";
+      res.set_content(error.dump(), "application/json");
+      failed_requests++;
+      logRequest("PUT", "/config/distance-metric", 400);
+      return;
+    }
+    
+    std::string metric = body["metric"];
+    std::shared_ptr<DistanceMetric> dm;
+    
+    if (metric == "euclidean") {
+      dm = std::make_shared<EuclideanDistance>();
+    } else if (metric == "manhattan") {
+      dm = std::make_shared<ManhattanDistance>();
+    } else if (metric == "cosine") {
+      dm = std::make_shared<CosineSimilarity>();
+    } else {
+      res.status = 400;
+      json error;
+      error["error"] = "Invalid metric '" + metric + "'. Choose: euclidean, manhattan, or cosine";
+      error["available_metrics"] = json::array({"euclidean", "manhattan", "cosine"});
+      res.set_content(error.dump(), "application/json");
+      failed_requests++;
+      logRequest("PUT", "/config/distance-metric", 400);
+      return;
+    }
+    
+    std::lock_guard<std::mutex> lock(db_mutex);
+    db->setDistanceMetric(dm);
+    current_distance_metric = metric;
+    
+    json response;
+    response["status"] = "success";
+    response["metric"] = metric;
+    response["message"] = "Distance metric changed to " + metric;
+    response["note"] = "This will affect all future searches. Existing cached results will be cleared.";
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("PUT", "/config/distance-metric", 200);
+    
+  } catch (const json::exception& e) {
+    res.status = 400;
+    json error;
+    error["error"] = "Invalid JSON: " + std::string(e.what());
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/distance-metric", 400);
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/distance-metric", 500);
+  }
+}
+
+void VectorDBServer::handleGetDistanceMetric(const httplib::Request& /*req*/, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    json response;
+    response["current_metric"] = current_distance_metric;
+    response["available_metrics"] = json::array({
+      {
+        {"name", "euclidean"},
+        {"description", "L2 distance - sqrt(sum((a[i]-b[i])^2))"},
+        {"use_case", "General purpose, images, dense embeddings"},
+        {"simd_accelerated", true}
+      },
+      {
+        {"name", "manhattan"},
+        {"description", "L1 distance - sum(|a[i]-b[i]|)"},
+        {"use_case", "Sparse vectors, grid-like data, robust to outliers"},
+        {"simd_accelerated", false}
+      },
+      {
+        {"name", "cosine"},
+        {"description", "1 - (a·b)/(||a|| ||b||) - Angular distance"},
+        {"use_case", "Text embeddings, normalized vectors, direction matters"},
+        {"simd_accelerated", true}
+      }
+    });
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("GET", "/config/distance-metric", 200);
+    
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("GET", "/config/distance-metric", 500);
+  }
+}
+
+void VectorDBServer::handleSetAlgorithm(const httplib::Request& req, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    auto request = json::parse(req.body);
+    
+    if (!request.contains("algorithm")) {
+      res.status = 400;
+      json error;
+      error["error"] = "Missing 'algorithm' field";
+      error["available_algorithms"] = json::array({"exact", "lsh", "hnsw"});
+      res.set_content(error.dump(), "application/json");
+      failed_requests++;
+      logRequest("PUT", "/config/algorithm", 400);
+      return;
+    }
+    
+    std::string algorithm = request["algorithm"];
+    
+    // Validate algorithm
+    if (algorithm != "exact" && algorithm != "lsh" && algorithm != "hnsw") {
+      res.status = 400;
+      json error;
+      error["error"] = "Invalid algorithm. Must be 'exact', 'lsh', or 'hnsw'";
+      error["provided"] = algorithm;
+      res.set_content(error.dump(), "application/json");
+      failed_requests++;
+      logRequest("PUT", "/config/algorithm", 400);
+      return;
+    }
+    
+    std::lock_guard<std::mutex> lock(db_mutex);
+    
+    // Get parameters with defaults
+    size_t param1 = 10;  // Default for LSH tables / HNSW M
+    size_t param2 = 8;   // Default for LSH hash functions / HNSW ef_construction
+    
+    if (algorithm == "lsh") {
+      if (request.contains("num_tables")) {
+        param1 = request["num_tables"];
+      }
+      if (request.contains("num_hash_functions")) {
+        param2 = request["num_hash_functions"];
+      }
+    } else if (algorithm == "hnsw") {
+      if (request.contains("M")) {
+        param1 = request["M"];
+      }
+      if (request.contains("ef_construction")) {
+        param2 = request["ef_construction"];
+      }
+    }
+    
+    // Switch algorithm
+    db->setApproximateAlgorithm(algorithm, param1, param2);
+    current_algorithm = algorithm;
+    
+    json response;
+    response["success"] = true;
+    response["algorithm"] = algorithm;
+    response["message"] = "Search algorithm updated successfully";
+    
+    if (algorithm == "lsh") {
+      response["parameters"] = {
+        {"num_tables", param1},
+        {"num_hash_functions", param2}
+      };
+      response["expected_performance"] = "10-100x faster searches with 80-95% recall";
+    } else if (algorithm == "hnsw") {
+      response["parameters"] = {
+        {"M", param1},
+        {"ef_construction", param2}
+      };
+      response["expected_performance"] = "100-1000x faster searches with 95-99% recall";
+    } else {
+      response["expected_performance"] = "100% accuracy, slower on large datasets";
+    }
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("PUT", "/config/algorithm", 200);
+    
+  } catch (const json::parse_error& e) {
+    res.status = 400;
+    json error;
+    error["error"] = "Invalid JSON";
+    error["details"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/algorithm", 400);
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/algorithm", 500);
+  }
+}
+
+void VectorDBServer::handleGetAlgorithm(const httplib::Request& /*req*/, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    json response;
+    response["current_algorithm"] = current_algorithm;
+    response["available_algorithms"] = json::array({
+      {
+        {"name", "exact"},
+        {"description", "KD-Tree exact nearest neighbor search"},
+        {"accuracy", "100%"},
+        {"speed", "Slow on large datasets (>100K vectors)"},
+        {"memory", "Low"},
+        {"use_case", "Small datasets, when accuracy is critical"},
+        {"parameters", json::object()}
+      },
+      {
+        {"name", "lsh"},
+        {"description", "Locality-Sensitive Hashing approximate search"},
+        {"accuracy", "80-95% recall"},
+        {"speed", "10-100x faster than exact"},
+        {"memory", "Medium"},
+        {"use_case", "Large datasets, moderate accuracy needed"},
+        {"parameters", {
+          {"num_tables", "Number of hash tables (default: 10)"},
+          {"num_hash_functions", "Hash functions per table (default: 8)"}
+        }},
+        {"example", {
+          {"algorithm", "lsh"},
+          {"num_tables", 10},
+          {"num_hash_functions", 8}
+        }}
+      },
+      {
+        {"name", "hnsw"},
+        {"description", "Hierarchical Navigable Small World approximate search"},
+        {"accuracy", "95-99% recall"},
+        {"speed", "100-1000x faster than exact"},
+        {"memory", "High"},
+        {"use_case", "Large datasets, high accuracy needed, production systems"},
+        {"parameters", {
+          {"M", "Max connections per node (default: 16)"},
+          {"ef_construction", "Construction time trade-off (default: 200)"}
+        }},
+        {"example", {
+          {"algorithm", "hnsw"},
+          {"M", 16},
+          {"ef_construction", 200}
+        }}
+      }
+    });
+    
+    // Add current statistics
+    auto stats = db->getStatistics();
+    response["current_stats"] = {
+      {"total_vectors", stats.total_vectors},
+      {"total_searches", stats.total_searches},
+      {"algorithm_in_use", stats.algorithm}
+    };
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("GET", "/config/algorithm", 200);
+    
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("GET", "/config/algorithm", 500);
+  }
 }

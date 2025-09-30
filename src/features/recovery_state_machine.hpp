@@ -1,4 +1,3 @@
-// Copyright [year] <Owner>
 #pragma once
 
 #include <chrono>
@@ -9,8 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "json.hpp"   // << use your single-header copy
-
+#include "json.hpp" 
 class RecoveryStateMachine {
 public:
     // High-level phases the system can be in
@@ -155,3 +153,4 @@ inline void to_json(nlohmann::json& j, const RecoveryStateMachine::RecoveryInfo&
         {"error_message", r.error_message}
     };
 }
+

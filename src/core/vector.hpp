@@ -1,4 +1,3 @@
-// Copyright [year] <Copyright Owner>
 
 #pragma once
 #include <cstddef>
@@ -20,6 +19,10 @@ public:
     const float* data_ptr() const;
     float* data_ptr();
     static float dot_product(const Vector& v1, const Vector& v2);
+    
+    // SIMD control
+    static void enable_simd(bool enable);
+    static bool is_simd_enabled();
 
     bool operator==(const Vector& other) const {
         return data == other.data;

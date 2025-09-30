@@ -1,4 +1,3 @@
-// Copyright [year] <Copyright Owner>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -17,11 +16,14 @@ VectorDatabase::VectorDatabase(size_t dimensions,
                                const std::string& algorithm,
                                bool enable_atomic_persistence,
                                bool enable_batch_operations,
-                               const PersistenceConfig& persistence_config)
+                               const PersistenceConfig& persistence_config,
+                               bool enable_query_cache,
+                               size_t cache_capacity)
     : dimensions(dimensions),
       approximate_algorithm(algorithm),
       atomic_persistence_enabled(enable_atomic_persistence),
       batch_operations_enabled(enable_batch_operations),
+      query_cache_enabled(enable_query_cache),
       persistence_config(persistence_config),
       total_inserts(0),
       total_searches(0),
@@ -37,6 +39,11 @@ VectorDatabase::VectorDatabase(size_t dimensions,
         lsh_index = std::make_unique<LSHIndex>(dimensions, 10, 8, distance_metric.get());
     } else if (algorithm == "hnsw") {
         hnsw_index = std::make_unique<HNSWIndex>(dimensions, 10, 8, 8, distance_metric.get());
+    }
+    
+    // Query cache
+    if (enable_query_cache) {
+        query_cache = std::make_unique<QueryCache>(cache_capacity);
     }
 }
 
@@ -197,6 +204,11 @@ bool VectorDatabase::insert(const Vector& vector, const std::string& key, const 
     kd_tree->insert(vector, key);
     if (lsh_index)  lsh_index->insert(vector, key);
     if (hnsw_index) hnsw_index->insert(vector, key);
+    
+    // Invalidate query cache since data changed
+    if (query_cache) {
+        query_cache->clear();
+    }
 
     // durable WAL
     if (persistence_manager) {
@@ -238,6 +250,11 @@ bool VectorDatabase::update(const Vector& vector, const std::string& key, const 
     kd_tree->insert(vector, key);
     if (lsh_index)  lsh_index->insert(vector, key);
     if (hnsw_index) hnsw_index->insert(vector, key);
+    
+    // Invalidate query cache since data changed
+    if (query_cache) {
+        query_cache->clear();
+    }
 
     // durable WAL
     if (persistence_manager) {
@@ -269,6 +286,11 @@ bool VectorDatabase::remove(const std::string& key) {
     // mutate in-memory first
     vector_map.erase(key);
     metadata_map.erase(key);
+    
+    // Invalidate query cache since data changed
+    if (query_cache) {
+        query_cache->clear();
+    }
 
     // durable WAL
     if (persistence_manager) {
@@ -325,13 +347,28 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
 
     total_searches.fetch_add(1);
 
-    if (approximate_algorithm == "lsh" && lsh_index) {
-        return lsh_index->search(query, k);
-    } else if (approximate_algorithm == "hnsw" && hnsw_index) {
-        return hnsw_index->search(query, k);
-    } else {
-        return kd_tree->nearestNeighbors(query, k);
+    // Try cache first
+    std::vector<std::pair<std::string, float>> results;
+    if (query_cache && query_cache->get(query, results)) {
+        // Cache hit - return cached results
+        return results;
     }
+
+    // Cache miss - perform actual search
+    if (approximate_algorithm == "lsh" && lsh_index) {
+        results = lsh_index->search(query, k);
+    } else if (approximate_algorithm == "hnsw" && hnsw_index) {
+        results = hnsw_index->search(query, k);
+    } else {
+        results = kd_tree->nearestNeighbors(query, k);
+    }
+    
+    // Store in cache for future queries
+    if (query_cache) {
+        query_cache->put(query, results);
+    }
+    
+    return results;
 }
 
 std::vector<std::pair<std::string, float>>
@@ -616,12 +653,16 @@ VectorDatabase::DatabaseStatistics VectorDatabase::getStatistics() const {
     stats.algorithm = approximate_algorithm;
     stats.atomic_persistence_enabled = atomic_persistence_enabled;
     stats.batch_operations_enabled = batch_operations_enabled;
+    stats.query_cache_enabled = query_cache_enabled;
 
     if (persistence_manager) {
         stats.persistence_stats = persistence_manager->getStatistics();
     }
     if (batch_manager) {
         stats.batch_stats = batch_manager->getStatistics();
+    }
+    if (query_cache) {
+        stats.cache_stats = query_cache->getStatistics();
     }
 
     return stats;
@@ -674,4 +715,12 @@ void VectorDatabase::setRecovering(bool is_recovering) {
 std::unordered_map<std::string, Vector> VectorDatabase::getAllVectorsCopy() const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(db_mutex));
     return vector_map;
+}
+
+void VectorDatabase::enableSIMD(bool enable) {
+    Vector::enable_simd(enable);
+}
+
+bool VectorDatabase::isSIMDEnabled() const {
+    return Vector::is_simd_enabled();
 }

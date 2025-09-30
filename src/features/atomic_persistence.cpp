@@ -1,7 +1,6 @@
 // Complete atomic_persistence.cpp with WAL rotation approach
 
 // src/features/atomic_persistence.cpp
-// Copyright
 
 #include "atomic_persistence.hpp"
 
@@ -13,12 +12,10 @@
 #include <iostream>
 #include <utility>
 #include <vector>
-#include <cstdio> // std::rename, std::remove
+#include <cstdio>
 
 
-// ===========================================================
-// small helpers
-// ===========================================================
+
 namespace {
 inline uint64_t now_us() {
     return static_cast<uint64_t>(
@@ -28,9 +25,7 @@ inline uint64_t now_us() {
 }
 } // namespace
 
-// ===========================================================
-// AtomicPersistence (public)
-// ===========================================================
+
 
 AtomicPersistence::AtomicPersistence(const PersistenceConfig& cfg)
     : config_(cfg) {

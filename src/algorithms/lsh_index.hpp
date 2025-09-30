@@ -1,8 +1,7 @@
-// Copyright [year] <Copyright Owner>
 
 #pragma once
 
-#include <string>        // Added for std::string
+#include <string>
 #include <unordered_map>
 #include <vector>
 

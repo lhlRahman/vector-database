@@ -1,4 +1,3 @@
-// Copyright
 #pragma once
 
 #include <atomic>
@@ -14,7 +13,7 @@
 #include "atomic_file_writer.hpp"
 #include "commit_log.hpp"
 #include "recovery_state_machine.hpp"
-#include "../json.hpp"  // local single-file nlohmann json
+#include "../json.hpp"
 
 using json = nlohmann::json;
 

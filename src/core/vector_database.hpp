@@ -1,4 +1,3 @@
-// Copyright [year] <Copyright Owner>
 #pragma once
 
 #include <atomic>
@@ -14,7 +13,6 @@
 #include "../core/vector.hpp"
 #include "../features/atomic_batch_insert.hpp"
 #include "../features/atomic_persistence.hpp"
-#include "../features/dimensionality_reduction.hpp"
 #include "../features/query_cache.hpp"
 #include "../utils/distance_metrics.hpp"
 
@@ -42,8 +40,10 @@ public:
         std::string algorithm;
         bool atomic_persistence_enabled;
         bool batch_operations_enabled;
+        bool query_cache_enabled;
         AtomicPersistence::Statistics persistence_stats;
         AtomicBatchInsert::Statistics batch_stats;
+        QueryCache::Statistics cache_stats;
     };
 
 private:
@@ -63,8 +63,10 @@ private:
     // Features
     bool atomic_persistence_enabled;
     bool batch_operations_enabled;
+    bool query_cache_enabled;
     std::shared_ptr<AtomicPersistence> persistence_manager;
     std::unique_ptr<AtomicBatchInsert> batch_manager;
+    std::unique_ptr<QueryCache> query_cache;
     PersistenceConfig persistence_config;
 
     // State
@@ -87,7 +89,9 @@ public:
                    const std::string& algorithm = "exact",
                    bool enable_atomic_persistence = false,
                    bool enable_batch_operations = false,
-                   const PersistenceConfig& persistence_config = {});
+                   const PersistenceConfig& persistence_config = {},
+                   bool enable_query_cache = true,
+                   size_t cache_capacity = 1000);
 
     ~VectorDatabase();
 
@@ -151,4 +155,8 @@ public:
     void updatePersistenceConfig(const PersistenceConfig& config);
     
     std::unordered_map<std::string, Vector> getAllVectorsCopy() const;
+    
+    // SIMD control
+    void enableSIMD(bool enable);
+    bool isSIMDEnabled() const;
 };
