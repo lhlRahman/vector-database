@@ -1,4 +1,3 @@
-// Copyright [year] <Copyright Owner>
 
 #include <algorithm>
 #include <limits>

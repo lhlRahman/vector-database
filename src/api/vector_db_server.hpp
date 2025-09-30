@@ -1,4 +1,3 @@
-// Copyright [year] <Copyright Owner>
 
 #pragma once
 
@@ -43,6 +42,12 @@ private:
     std::atomic<bool> recovery_in_progress{false};
     std::thread recovery_monitor_thread;
     std::atomic<bool> should_stop_monitoring{false};
+    
+    // Current distance metric
+    std::string current_distance_metric{"euclidean"};
+    
+    // Current algorithm
+    std::string current_algorithm{"hnsw"};
     
     // Setup routes
     void setupRoutes();
@@ -174,4 +179,16 @@ public:
                      bool enable_recovery,
                      bool enable_batch,
                      bool enable_stats);
+    
+    // SIMD configuration handlers
+    void handleToggleSIMD(const httplib::Request& req, httplib::Response& res);
+    void handleGetSIMDStatus(const httplib::Request& req, httplib::Response& res);
+    
+    // Distance metric configuration handlers
+    void handleSetDistanceMetric(const httplib::Request& req, httplib::Response& res);
+    void handleGetDistanceMetric(const httplib::Request& req, httplib::Response& res);
+    
+    // Algorithm configuration handlers
+    void handleSetAlgorithm(const httplib::Request& req, httplib::Response& res);
+    void handleGetAlgorithm(const httplib::Request& req, httplib::Response& res);
 };

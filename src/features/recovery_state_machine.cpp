@@ -1,4 +1,3 @@
-// Copyright [year] <Owner>
 #include "recovery_state_machine.hpp"
 
 #include <algorithm>

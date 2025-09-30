@@ -69,6 +69,7 @@
         "span": "cpp",
         "valarray": "cpp",
         "filesystem": "cpp",
-        "random": "cpp"
+        "random": "cpp",
+        "utility": "cpp"
     }
 }

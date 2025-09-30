@@ -18,7 +18,6 @@ inline uint64_t now_us() {
 }
 } // namespace
 
-// ========================== LogEntry Implementation ==========================
 
 LogEntry::LogEntry(LogEntryType t, uint64_t seq, const std::vector<uint8_t>& d)
     : timestamp(now_us()), type(t), sequence_number(seq), data_length(static_cast<uint32_t>(d.size())), data(d) {
