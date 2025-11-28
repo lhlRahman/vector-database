@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "vector_database.hpp"
+#include "../optimizations/gpu_operations.hpp"
 
 // -------------------- ctor / dtor --------------------
 
@@ -209,6 +211,9 @@ bool VectorDatabase::insert(const Vector& vector, const std::string& key, const 
     if (query_cache) {
         query_cache->clear();
     }
+    
+    // Mark GPU buffer as needing rebuild
+    markGPUBufferDirty();
 
     // durable WAL
     if (persistence_manager) {
@@ -255,6 +260,9 @@ bool VectorDatabase::update(const Vector& vector, const std::string& key, const 
     if (query_cache) {
         query_cache->clear();
     }
+    
+    // Mark GPU buffer as needing rebuild
+    markGPUBufferDirty();
 
     // durable WAL
     if (persistence_manager) {
@@ -291,6 +299,9 @@ bool VectorDatabase::remove(const std::string& key) {
     if (query_cache) {
         query_cache->clear();
     }
+    
+    // Mark GPU buffer as needing rebuild
+    markGPUBufferDirty();
 
     // durable WAL
     if (persistence_manager) {
@@ -354,8 +365,13 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
         return results;
     }
 
-    // Cache miss - perform actual search
-    if (approximate_algorithm == "lsh" && lsh_index) {
+    // Use GPU for large datasets (brute-force on GPU is faster than CPU indexes)
+    if (gpu_enabled && vector_map.size() > gpu_threshold) {
+        std::cout << "[GPU] Using GPU search (vectors=" << vector_map.size() << ", threshold=" << gpu_threshold << ")" << std::endl;
+        results = gpuAcceleratedSearch(query, k);
+    }
+    // Cache miss - perform actual search using CPU indexes
+    else if (approximate_algorithm == "lsh" && lsh_index) {
         results = lsh_index->search(query, k);
     } else if (approximate_algorithm == "hnsw" && hnsw_index) {
         results = hnsw_index->search(query, k);
@@ -670,11 +686,6 @@ VectorDatabase::DatabaseStatistics VectorDatabase::getStatistics() const {
 
 // -------------------- state helpers --------------------
 
-RecoveryStateMachine::RecoveryInfo VectorDatabase::getRecoveryInfo() const {
-    if (persistence_manager) return persistence_manager->getRecoveryInfo();
-    return RecoveryStateMachine::RecoveryInfo();
-}
-
 bool VectorDatabase::isReady() const {
     if (!ready.load()) return false;
     if (persistence_manager) return !persistence_manager->isRecovering();
@@ -723,4 +734,124 @@ void VectorDatabase::enableSIMD(bool enable) {
 
 bool VectorDatabase::isSIMDEnabled() const {
     return Vector::is_simd_enabled();
+}
+
+// -------------------- GPU acceleration --------------------
+
+void VectorDatabase::enableGPU(bool enable) {
+    if (enable && !gpu_initialized) {
+        // Lazy initialization of GPU
+        if (gpu_ops::initialize()) {
+            gpu_initialized = true;
+            gpu_enabled = true;
+            std::cout << "GPU acceleration enabled" << std::endl;
+        } else {
+            std::cerr << "Failed to initialize GPU, falling back to CPU" << std::endl;
+            gpu_enabled = false;
+        }
+    } else if (enable && gpu_initialized) {
+        gpu_enabled = true;
+        std::cout << "GPU acceleration enabled" << std::endl;
+    } else {
+        gpu_enabled = false;
+        std::cout << "GPU acceleration disabled" << std::endl;
+    }
+}
+
+bool VectorDatabase::isGPUEnabled() const {
+    return gpu_enabled;
+}
+
+bool VectorDatabase::isGPUAvailable() const {
+    return gpu_ops::is_available();
+}
+
+void VectorDatabase::setGPUThreshold(size_t threshold) {
+    gpu_threshold = threshold;
+}
+
+size_t VectorDatabase::getGPUThreshold() const {
+    return gpu_threshold;
+}
+
+std::vector<std::pair<std::string, float>> VectorDatabase::gpuAcceleratedSearch(const Vector& query, size_t k) {
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    // Rebuild GPU buffer if dirty (only happens after insert/update/delete)
+    if (gpu_buffer_dirty) {
+        rebuildGPUBuffer();
+    }
+    
+    auto rebuild_done = std::chrono::high_resolution_clock::now();
+    auto rebuild_ms = std::chrono::duration<double, std::milli>(rebuild_done - start).count();
+    
+    // Use the zero-copy GPU search
+    std::vector<float> distances = gpu_ops::search_euclidean(query);
+    
+    auto gpu_done = std::chrono::high_resolution_clock::now();
+    auto gpu_ms = std::chrono::duration<double, std::milli>(gpu_done - rebuild_done).count();
+    
+    if (rebuild_ms > 0.1) {  // Only log if rebuild actually happened
+        std::cout << "[GPU] Buffer rebuild: " << rebuild_ms << "ms, GPU compute: " << gpu_ms << "ms" << std::endl;
+    }
+    
+    // If GPU failed, fall back to CPU
+    if (distances.empty()) {
+        std::cerr << "[GPU] GPU search failed, falling back to CPU" << std::endl;
+        return kd_tree->nearestNeighbors(query, k);
+    }
+    
+    // Find top-k using partial sort
+    std::vector<std::pair<size_t, float>> indexed;
+    indexed.reserve(distances.size());
+    for (size_t i = 0; i < distances.size(); i++) {
+        indexed.emplace_back(i, distances[i]);
+    }
+    
+    size_t actual_k = std::min(k, indexed.size());
+    std::partial_sort(indexed.begin(), 
+                      indexed.begin() + actual_k,
+                      indexed.end(),
+                      [](const auto& a, const auto& b) { return a.second < b.second; });
+    
+    // Convert to key-distance pairs using our cached keys
+    std::vector<std::pair<std::string, float>> results;
+    results.reserve(actual_k);
+    for (size_t i = 0; i < actual_k; i++) {
+        results.emplace_back(vector_keys[indexed[i].first], indexed[i].second);
+    }
+    
+    return results;
+}
+
+void VectorDatabase::rebuildGPUBuffer() {
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    // Clear and rebuild contiguous storage
+    flat_vectors.clear();
+    vector_keys.clear();
+    flat_vectors.reserve(vector_map.size() * dimensions);
+    vector_keys.reserve(vector_map.size());
+    
+    for (const auto& [key, vec] : vector_map) {
+        vector_keys.push_back(key);
+        for (size_t i = 0; i < vec.size(); i++) {
+            flat_vectors.push_back(vec[i]);
+        }
+    }
+    
+    // Update GPU buffer (zero-copy on Apple Silicon!)
+    if (!flat_vectors.empty()) {
+        gpu_ops::set_database_buffer(flat_vectors.data(), vector_map.size(), dimensions);
+    }
+    
+    gpu_buffer_dirty = false;
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    auto ms = std::chrono::duration<double, std::milli>(end - start).count();
+    std::cout << "[GPU] Rebuilt buffer: " << vector_map.size() << " vectors in " << ms << "ms" << std::endl;
+}
+
+void VectorDatabase::markGPUBufferDirty() {
+    gpu_buffer_dirty = true;
 }

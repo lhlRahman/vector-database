@@ -72,17 +72,17 @@ def test_cache_basic_functionality():
     tester = VectorDBCacheTester()
     
     if not tester.check_health():
-        print("❌ Server is not running. Start the server first.")
+        print("[FAIL] Server is not running. Start the server first.")
         return False
     
-    print("✅ Server is running")
+    print("[PASS] Server is running")
     
     # Insert test vectors
     print("\n📝 Inserting test vectors...")
     for i in range(10):
         vector = tester.generate_random_vector()
         tester.insert_vector(f"test_vec_{i}", vector, f"metadata_{i}")
-    print("✅ Inserted 10 vectors")
+    print("[PASS] Inserted 10 vectors")
     
     # Get initial stats
     stats_before = tester.get_statistics()
@@ -96,7 +96,7 @@ def test_cache_basic_functionality():
     query1 = tester.generate_random_vector()
     print(f"\n🔍 Performing first search (should miss cache)...")
     result1 = tester.search(query1, k=5)
-    print(f"✅ Found {len(result1.get('results', []))} results")
+    print(f"[PASS] Found {len(result1.get('results', []))} results")
     
     # Check stats after first search
     stats_after_1 = tester.get_statistics()
@@ -107,7 +107,7 @@ def test_cache_basic_functionality():
     print(f"   Expected: 0 hits, 1 miss")
     
     assert cache_after_1.get('misses', 0) == 1, "First search should be a cache miss"
-    print("✅ First search correctly registered as cache miss")
+    print("[PASS] First search correctly registered as cache miss")
     
     # Perform same search again (should be cache hit)
     print(f"\n🔍 Performing same search again (should hit cache)...")
@@ -125,11 +125,11 @@ def test_cache_basic_functionality():
     
     assert cache_after_2.get('hits', 0) == 1, "Second search should be a cache hit"
     assert result1 == result2, "Results should be identical"
-    print("✅ Second search correctly registered as cache hit")
-    print("✅ Results are identical")
+    print("[PASS] Second search correctly registered as cache hit")
+    print("[PASS] Results are identical")
     
     print("\n" + "="*70)
-    print("✅ TEST 1 PASSED: Basic cache functionality works correctly")
+    print("[PASS] TEST 1 PASSED: Basic cache functionality works correctly")
     print("="*70)
     return True
 
@@ -167,7 +167,7 @@ def test_cache_invalidation():
     cache2 = stats2.get("cache_stats", {})
     
     assert cache2.get('hits', 0) > initial_hits, "Should have cache hit"
-    print(f"✅ Cache hit confirmed: {cache2.get('hits', 0)} hits")
+    print(f"[PASS] Cache hit confirmed: {cache2.get('hits', 0)} hits")
     
     # Insert new vector (should invalidate cache)
     print("\n📝 Inserting new vector (should invalidate cache)...")
@@ -181,7 +181,7 @@ def test_cache_invalidation():
     print(f"   Cache size: {cache3.get('current_size', 0)}")
     
     assert cache3.get('current_size', -1) == 0, "Cache should be cleared after insert"
-    print("✅ Cache correctly cleared after insert")
+    print("[PASS] Cache correctly cleared after insert")
     
     # Perform same search again (should miss because cache was cleared)
     print("\n🔍 Performing same search again (should miss - cache was cleared)...")
@@ -191,10 +191,10 @@ def test_cache_invalidation():
     
     # After clearing, hits reset to 0, so this will be miss
     assert cache4.get('misses', 0) > 0, "Should have cache miss after invalidation"
-    print(f"✅ Cache miss confirmed after invalidation: {cache4.get('misses', 0)} misses")
+    print(f"[PASS] Cache miss confirmed after invalidation: {cache4.get('misses', 0)} misses")
     
     print("\n" + "="*70)
-    print("✅ TEST 2 PASSED: Cache invalidation works correctly")
+    print("[PASS] TEST 2 PASSED: Cache invalidation works correctly")
     print("="*70)
     return True
 
@@ -212,7 +212,7 @@ def test_cache_performance():
     for i in range(100):
         vector = tester.generate_random_vector()
         tester.insert_vector(f"perf_test_{i}", vector)
-    print("✅ Inserted 100 vectors")
+    print("[PASS] Inserted 100 vectors")
     
     # Generate a query
     query = tester.generate_random_vector()
@@ -249,7 +249,7 @@ def test_cache_performance():
     print(f"\n💡 Note: Cached searches should be faster or similar due to skipping computation")
     
     print("\n" + "="*70)
-    print("✅ TEST 3 PASSED: Cache performance validated")
+    print("[PASS] TEST 3 PASSED: Cache performance validated")
     print("="*70)
     return True
 
@@ -293,10 +293,10 @@ def test_cache_capacity():
     print(f"   Total Misses: {cache_stats.get('misses', 0)} (should be 10 unique queries)")
     
     assert cache_stats.get('current_size', 0) <= capacity, "Cache size should not exceed capacity"
-    print("✅ Cache respects capacity limit")
+    print("[PASS] Cache respects capacity limit")
     
     print("\n" + "="*70)
-    print("✅ TEST 4 PASSED: Cache capacity and LRU working correctly")
+    print("[PASS] TEST 4 PASSED: Cache capacity and LRU working correctly")
     print("="*70)
     return True
 
@@ -304,18 +304,18 @@ def test_cache_capacity():
 def run_all_tests():
     """Run all cache tests"""
     print("\n" + "="*70)
-    print("🚀 VECTOR DATABASE QUERY CACHE TEST SUITE")
+    print(" VECTOR DATABASE QUERY CACHE TEST SUITE")
     print("="*70)
     
     tester = VectorDBCacheTester()
     
     # Check server health
     if not tester.check_health():
-        print("\n❌ FATAL: Server is not running!")
+        print("\n[FAIL] FATAL: Server is not running!")
         print("   Please start the server with: ./build/vector_db_server")
         return False
     
-    print("\n✅ Server is running and healthy")
+    print("\n[PASS] Server is running and healthy")
     
     # Run all tests
     tests = [
@@ -331,7 +331,7 @@ def run_all_tests():
             result = test_func()
             results.append((test_name, result))
         except Exception as e:
-            print(f"\n❌ TEST FAILED: {test_name}")
+            print(f"\n[FAIL] TEST FAILED: {test_name}")
             print(f"   Error: {str(e)}")
             import traceback
             traceback.print_exc()
@@ -346,7 +346,7 @@ def run_all_tests():
     total = len(results)
     
     for test_name, result in results:
-        status = "✅ PASSED" if result else "❌ FAILED"
+        status = "[PASS] PASSED" if result else "[FAIL] FAILED"
         print(f"{status}: {test_name}")
     
     print("\n" + "="*70)
@@ -357,7 +357,7 @@ def run_all_tests():
         print("="*70)
         return True
     else:
-        print(f"⚠️  {total - passed} test(s) failed")
+        print(f"  {total - passed} test(s) failed")
         print("="*70)
         return False
 

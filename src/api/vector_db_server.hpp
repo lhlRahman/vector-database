@@ -191,4 +191,8 @@ public:
     // Algorithm configuration handlers
     void handleSetAlgorithm(const httplib::Request& req, httplib::Response& res);
     void handleGetAlgorithm(const httplib::Request& req, httplib::Response& res);
+    
+    // GPU configuration handlers
+    void handleToggleGPU(const httplib::Request& req, httplib::Response& res);
+    void handleGetGPUStatus(const httplib::Request& req, httplib::Response& res);
 };

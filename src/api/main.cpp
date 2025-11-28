@@ -24,7 +24,7 @@ void printUsage(const char* program_name) {
 
 int main(int argc, char* argv[]) {
     // Default configuration
-    size_t dimensions = 128;
+    size_t dimensions = 10240;
     std::string host = "localhost";
     int port = 8080;
     std::string db_file = "vectors.db";

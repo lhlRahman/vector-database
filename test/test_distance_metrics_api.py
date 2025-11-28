@@ -71,10 +71,10 @@ def main():
     
     # Check server
     if not check_server():
-        print("❌ Server is not running! Start it with: ./build/vector_db_server")
+        print("[FAIL] Server is not running! Start it with: ./build/vector_db_server")
         return
     
-    print("✅ Server is running\n")
+    print("[PASS] Server is running\n")
     
     # Get initial configuration
     print("="*70)
@@ -84,7 +84,7 @@ def main():
     print(f"Current metric: {config['current_metric']}")
     print(f"\nAvailable metrics:")
     for metric in config['available_metrics']:
-        simd_status = "✅ SIMD" if metric['simd_accelerated'] else "⚠️  Scalar"
+        simd_status = "[PASS] SIMD" if metric['simd_accelerated'] else "  Scalar"
         print(f"  • {metric['name']:12} - {metric['description']}")
         print(f"    {simd_status:12}   Use case: {metric['use_case']}")
     
@@ -104,7 +104,7 @@ def main():
     
     for key, vector in test_vectors.items():
         insert_vector(key, vector, f"test vector {key}")
-        print(f"  ✅ Inserted {key}")
+        print(f"  [PASS] Inserted {key}")
     
     query = normalize_vector([1.5] * DIMENSIONS)  # Query vector
     
@@ -119,7 +119,7 @@ def main():
         
         # Switch metric
         response = set_distance_metric(metric)
-        print(f"✅ {response['message']}")
+        print(f"[PASS] {response['message']}")
         
         # Perform search
         search_results = search(query, k=5)
@@ -162,9 +162,9 @@ def main():
     cosine_order = [r['key'] for r in results['cosine']]
     
     print(f"\n📊 Ranking Differences:")
-    print(f"  Euclidean vs Manhattan: {'Different ✓' if euclidean_order != manhattan_order else 'Same'}")
-    print(f"  Euclidean vs Cosine:    {'Different ✓' if euclidean_order != cosine_order else 'Same'}")
-    print(f"  Manhattan vs Cosine:    {'Different ✓' if manhattan_order != cosine_order else 'Same'}")
+    print(f"  Euclidean vs Manhattan: {'Different [PASS]' if euclidean_order != manhattan_order else 'Same'}")
+    print(f"  Euclidean vs Cosine:    {'Different [PASS]' if euclidean_order != cosine_order else 'Same'}")
+    print(f"  Manhattan vs Cosine:    {'Different [PASS]' if manhattan_order != cosine_order else 'Same'}")
     
     print(f"\n💡 Observations:")
     print(f"  • Cosine similarity is normalized - good for text embeddings")
@@ -183,20 +183,20 @@ def main():
         )
         if response.status_code == 400:
             error_data = response.json()
-            print(f"✅ Correctly rejected invalid metric:")
+            print(f"[PASS] Correctly rejected invalid metric:")
             print(f"   Error: {error_data['error']}")
             print(f"   Available: {error_data.get('available_metrics', [])}")
         else:
-            print(f"❌ Expected 400 error, got {response.status_code}")
+            print(f"[FAIL] Expected 400 error, got {response.status_code}")
     except Exception as e:
-        print(f"❌ Error testing invalid metric: {e}")
+        print(f"[FAIL] Error testing invalid metric: {e}")
     
     # Restore to Euclidean
     print("\n" + "="*70)
     print("🔄 RESTORING DEFAULT METRIC")
     print("="*70)
     response = set_distance_metric("euclidean")
-    print(f"✅ {response['message']}")
+    print(f"[PASS] {response['message']}")
     
     # Final status
     print("\n" + "="*70)
@@ -206,7 +206,7 @@ def main():
     print(f"Current metric: {final_config['current_metric']}")
     
     print("\n" + "="*70)
-    print("✅ ALL DISTANCE METRIC TESTS COMPLETED!")
+    print("[PASS] ALL DISTANCE METRIC TESTS COMPLETED!")
     print("="*70)
     
     # API Usage Examples
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         exit(1)

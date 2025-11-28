@@ -63,20 +63,20 @@ def benchmark_search(num_queries: int = 100, k: int = 10) -> float:
 
 def main():
     print("\n" + "="*70)
-    print("🚀 SIMD OPERATIONS TEST SUITE")
+    print(" SIMD OPERATIONS TEST SUITE")
     print("="*70)
     
     # Check server health
     try:
         response = requests.get(f"{BASE_URL}/health")
         if response.status_code != 200:
-            print("❌ Server is not healthy!")
+            print("[FAIL] Server is not healthy!")
             return
     except requests.exceptions.ConnectionError:
-        print("❌ Server is not running! Start it with: ./build/vector_db_server")
+        print("[FAIL] Server is not running! Start it with: ./build/vector_db_server")
         return
     
-    print("✅ Server is running\n")
+    print("[PASS] Server is running\n")
     
     # Check initial SIMD status
     print("="*70)
@@ -99,14 +99,14 @@ def main():
         insert_vector(f"simd_test_{i}", vector)
         if (i + 1) % 250 == 0:
             print(f"  Inserted {i + 1}/{num_vectors} vectors...")
-    print(f"✅ Inserted {num_vectors} vectors")
+    print(f"[PASS] Inserted {num_vectors} vectors")
     
     # Benchmark with SIMD enabled
     print("\n" + "="*70)
     print("⏱️  BENCHMARK: SIMD ENABLED")
     print("="*70)
     toggle_simd(True)
-    print("✅ SIMD enabled")
+    print("[PASS] SIMD enabled")
     
     num_queries = 100
     print(f"Running {num_queries} search queries...")
@@ -119,7 +119,7 @@ def main():
     print("⏱️  BENCHMARK: SIMD DISABLED (Scalar Fallback)")
     print("="*70)
     toggle_simd(False)
-    print("✅ SIMD disabled (using scalar operations)")
+    print("[PASS] SIMD disabled (using scalar operations)")
     
     print(f"Running {num_queries} search queries...")
     scalar_time = benchmark_search(num_queries, k=10)
@@ -136,11 +136,11 @@ def main():
     if simd_time < scalar_time:
         speedup = scalar_time / simd_time
         improvement = ((scalar_time - simd_time) / scalar_time) * 100
-        print(f"\n🚀 SIMD is {speedup:.2f}x FASTER!")
+        print(f"\n SIMD is {speedup:.2f}x FASTER!")
         print(f"   Performance improvement: {improvement:.1f}%")
     elif simd_time > scalar_time:
         slowdown = simd_time / scalar_time
-        print(f"\n⚠️  SIMD is {slowdown:.2f}x slower (unexpected - check implementation)")
+        print(f"\n  SIMD is {slowdown:.2f}x slower (unexpected - check implementation)")
     else:
         print(f"\n🤔 Same performance (might be due to network overhead)")
     
@@ -149,7 +149,7 @@ def main():
     print("🔄 RESTORING SIMD STATE")
     print("="*70)
     result = toggle_simd(True)
-    print(f"✅ {result['message']}")
+    print(f"[PASS] {result['message']}")
     
     # Final status
     print("\n" + "="*70)
@@ -160,7 +160,7 @@ def main():
     print(f"SIMD Type: {final_status['simd_type']}")
     
     print("\n" + "="*70)
-    print("✅ SIMD TEST COMPLETED SUCCESSFULLY!")
+    print("[PASS] SIMD TEST COMPLETED SUCCESSFULLY!")
     print("="*70)
     
     # API Usage Examples
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         exit(1)

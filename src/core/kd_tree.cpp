@@ -1,11 +1,11 @@
 
 #include <algorithm>
 #include <limits>
-#include <memory>      // Added for std::make_unique
-#include <string>      // Added for std::string
-#include <unordered_set> // Added for std::unordered_set
-#include <utility>     // Added for std::move
-#include <vector>      // Added for std::vector
+#include <memory>
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "kd_tree.hpp"
 
