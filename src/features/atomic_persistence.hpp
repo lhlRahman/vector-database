@@ -12,7 +12,6 @@
 #include "../core/vector.hpp"
 #include "atomic_file_writer.hpp"
 #include "commit_log.hpp"
-#include "recovery_state_machine.hpp"
 #include "../json.hpp"
 
 using json = nlohmann::json;
@@ -100,7 +99,6 @@ public:
 
     // status
     Statistics getStatistics() const;
-    RecoveryStateMachine::RecoveryInfo getRecoveryInfo() const { return recovery_info_; }
     bool isRecovering() const { return recovering_.load(); }
 
 private:
@@ -140,7 +138,6 @@ private:
     // state / stats
     std::atomic<bool>                 recovering_{false};
     Statistics                        stats_{};
-    RecoveryStateMachine::RecoveryInfo recovery_info_{};
 
     // counters for auto-checkpoint
     uint64_t                          last_checkpoint_wal_seq_{0};

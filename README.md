@@ -2,7 +2,7 @@
 
 A high-performance, in-memory vector database with SIMD optimizations, supporting exact, LSH, and HNSW nearest neighbor search. Built with C++20 and optimized for modern architectures including Apple Silicon (M1/M2) and x86-64.
 
-## 🚀 Features
+## Features
 
 ### Core Functionality
 - **High-dimensional vector storage** with efficient indexing
@@ -14,9 +14,9 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **Persistent storage** with save/load functionality
 
 ### Performance Optimizations
+- **GPU acceleration** with Apple Metal for massive parallel distance computation
 - **SIMD acceleration** with ARM NEON (Apple Silicon) and AVX2 (x86-64)
 - **Query caching** for frequently accessed results
-- **Dimensionality reduction** using PCA for large vectors
 - **Parallel processing** support for multi-core systems
 
 ### API & Integration
@@ -25,7 +25,7 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **Python client** examples
 - **Real-time search** capabilities
 
-## 📊 Performance Metrics
+## Performance Metrics
 
 ### SIMD Performance (Apple Silicon M1)
 - **Dot Product**: 3.7x - 4.9x speedup
@@ -38,7 +38,27 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **HNSW Search**: O(log n) average case with high accuracy
 - **Batch Operations**: Optimized for bulk processing
 
-## 🛠️ Use Cases
+### GPU vs CPU Benchmark (Apple M1, 1000 vectors, 10240 dimensions)
+
+| Method | Total Time (50 queries) | Per Query | Speedup vs CPU |
+|--------|------------------------|-----------|----------------|
+| GPU Brute Force | 797ms | 15.95ms | 7.72x |
+| HNSW (approx) | 4930ms | 98.61ms | 1.25x |
+| CPU Brute Force | 6156ms | 123.12ms | baseline |
+
+Key findings:
+- GPU is 6.18x faster than HNSW for high-dimensional vectors
+- GPU provides exact results (100% recall) unlike approximate methods
+- GPU advantage increases with vector dimensionality
+- For 128-dim vectors: GPU is 5.37x faster than CPU brute force
+
+Run the benchmark yourself:
+```bash
+make benchmark-gpu
+./build/benchmark_gpu 1000 10240 50 10
+```
+
+## Use Cases
 
 ### Machine Learning & AI
 - **Embedding storage** for NLP models
@@ -58,7 +78,7 @@ A high-performance, in-memory vector database with SIMD optimizations, supportin
 - **Document similarity matching**
 - **Audio fingerprinting**
 
-## 📦 Installation & Setup
+## Installation & Setup
 
 ### Prerequisites
 - **C++20 compatible compiler** (GCC 10+, Clang 12+, or MSVC 2019+)
@@ -110,7 +130,7 @@ The build system automatically detects your architecture and applies appropriate
 - **x86-64**: AVX2 SIMD instructions
 - **Other architectures**: Scalar fallback with compiler optimizations
 
-## 🔧 Usage Examples
+## Usage Examples
 
 ### Basic C++ Usage
 ```cpp
@@ -175,7 +195,7 @@ curl -X POST http://localhost:8080/search \
   -d '{"vector": [0.1, 0.2, ...], "k": 5}'
 ```
 
-## 🏗️ Architecture
+## Architecture
 
 ### Core Components
 - **Vector**: High-dimensional vector representation with SIMD operations
@@ -185,9 +205,9 @@ curl -X POST http://localhost:8080/search \
 - **VectorDatabase**: Main database interface with metadata support
 
 ### Optimization Layers
+- **GPU Operations**: Apple Metal compute shaders for parallel distance computation
 - **SIMD Operations**: ARM NEON and AVX2 vectorized operations
 - **Query Cache**: LRU cache for frequently accessed results
-- **Dimensionality Reduction**: PCA for large vector compression
 - **Parallel Processing**: Multi-threaded operations
 
 ### API Layer
@@ -195,11 +215,16 @@ curl -X POST http://localhost:8080/search \
 - **JSON Serialization**: nlohmann/json for data exchange
 - **Client Libraries**: C++ and Python examples
 
-## 📈 Benchmarks
+## Benchmarks
 
 Run performance benchmarks to see optimizations in action:
 
 ```bash
+# GPU vs CPU vs HNSW benchmark
+make benchmark-gpu
+./build/benchmark_gpu 10000 128 100 10    # 10K vectors, 128 dims
+./build/benchmark_gpu 1000 10240 50 10    # 1K vectors, 10240 dims (high-dim)
+
 # Comprehensive SIMD benchmark
 ./build/simd_benchmark
 
@@ -216,7 +241,7 @@ Run performance benchmarks to see optimizations in action:
 python benchmarks/hnsw_performance_benchmark.py
 ```
 
-## 🔍 API Reference
+## API Reference
 
 ### Core Methods
 - `insert(vector, key, metadata?)`: Insert a single vector
@@ -238,7 +263,7 @@ python benchmarks/hnsw_performance_benchmark.py
 
 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -247,13 +272,13 @@ See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 5. Run benchmarks to ensure performance
 6. Submit a pull request
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **cpp-httplib** for the HTTP server implementation
 - **nlohmann/json** for JSON serialization
 - **ARM NEON** and **Intel AVX2** for SIMD optimizations
 
-## 📞 Support
+## Support
 
 - **Issues**: Report bugs and feature requests on GitHub
 - **Documentation**: See [docs/](docs/) for detailed guides

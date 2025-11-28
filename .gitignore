@@ -1,0 +1,45 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Data and logs (runtime generated)
+data/
+logs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled Metal shaders
+*.metallib
+*.air
+
+# Debug files
+*.dSYM/
+*.pdb
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Test output
+*.log
+test_output/
+
+

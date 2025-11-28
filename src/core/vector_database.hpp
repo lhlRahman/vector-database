@@ -72,6 +72,16 @@ private:
     // State
     std::atomic<bool> ready{false};
     std::atomic<bool> recovering{false};
+    
+    // GPU acceleration
+    bool gpu_enabled{false};
+    bool gpu_initialized{false};
+    size_t gpu_threshold{1000};  // Use GPU when vector_map.size() > threshold
+    bool gpu_buffer_dirty{true}; // True when GPU buffer needs rebuild
+    
+    // Contiguous storage for GPU (mirrors vector_map)
+    std::vector<float> flat_vectors;        // [v0[0], v0[1], ..., v1[0], v1[1], ...]
+    std::vector<std::string> vector_keys;   // Keys in same order as flat_vectors
 
     // Stats
     std::atomic<uint64_t> total_inserts{0};
@@ -140,8 +150,6 @@ public:
 
     DatabaseStatistics getStatistics() const;
 
-    RecoveryStateMachine::RecoveryInfo getRecoveryInfo() const;
-
     const PersistenceConfig& getPersistenceConfig() const;
 
     bool isReady() const;
@@ -159,4 +167,19 @@ public:
     // SIMD control
     void enableSIMD(bool enable);
     bool isSIMDEnabled() const;
+    
+    // GPU acceleration control
+    void enableGPU(bool enable);
+    bool isGPUEnabled() const;
+    bool isGPUAvailable() const;
+    void setGPUThreshold(size_t threshold);
+    size_t getGPUThreshold() const;
+    
+private:
+    // GPU-accelerated search (called internally when conditions are met)
+    std::vector<std::pair<std::string, float>> gpuAcceleratedSearch(const Vector& query, size_t k);
+    
+    // Rebuild contiguous storage and GPU buffer
+    void rebuildGPUBuffer();
+    void markGPUBufferDirty();
 };

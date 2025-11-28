@@ -27,11 +27,11 @@ def print_test(name):
 
 def print_pass(message):
     """Print success message"""
-    print(f"✅ PASS: {message}")
+    print(f"[PASS] PASS: {message}")
 
 def print_fail(message):
     """Print failure message"""
-    print(f"❌ FAIL: {message}")
+    print(f"[FAIL] FAIL: {message}")
     
 def print_info(message):
     """Print info message"""
@@ -409,14 +409,14 @@ def run_all_tests():
     print("\n" + "="*60)
     print("TEST SUMMARY")
     print("="*60)
-    print(f"✅ Passed: {passed}/{len(tests)}")
-    print(f"❌ Failed: {failed}/{len(tests)}")
+    print(f"[PASS] Passed: {passed}/{len(tests)}")
+    print(f"[FAIL] Failed: {failed}/{len(tests)}")
     
     if failed == 0:
         print("\n🎉 ALL TESTS PASSED!")
         return 0
     else:
-        print(f"\n⚠️  {failed} TEST(S) FAILED")
+        print(f"\n  {failed} TEST(S) FAILED")
         return 1
 
 if __name__ == "__main__":

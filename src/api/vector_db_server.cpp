@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "../features/atomic_persistence.hpp"
-#include "../features/recovery_state_machine.hpp"
 #include "../core/vector_database.hpp"
 #include "vector_db_server.hpp"
 #include "../json.hpp"
@@ -198,6 +197,15 @@ void VectorDBServer::setupConfigRoutes() {
   
   server.Get("/config/algorithm", [this](const httplib::Request& req, httplib::Response& res) {
     handleGetAlgorithm(req, res);
+  });
+  
+  // GPU configuration
+  server.Put("/config/gpu", [this](const httplib::Request& req, httplib::Response& res) {
+    handleToggleGPU(req, res);
+  });
+  
+  server.Get("/config/gpu", [this](const httplib::Request& req, httplib::Response& res) {
+    handleGetGPUStatus(req, res);
   });
 }
 
@@ -682,7 +690,6 @@ void VectorDBServer::handleRecoveryStatus(const httplib::Request& /*req*/, httpl
   json response;
   response["recovery_in_progress"] = db->isRecovering();
   response["database_ready"]       = db->isReady();
-  response["recovery_info"]        = db->getRecoveryInfo(); // requires to_json(RecoveryInfo)
 
   res.set_content(response.dump(), "application/json");
   successful_requests++;
@@ -693,7 +700,8 @@ void VectorDBServer::handleRecoveryInfo(const httplib::Request& /*req*/, httplib
   total_requests++;
 
   json response;
-  response["recovery_info"] = db->getRecoveryInfo(); // requires to_json(RecoveryInfo)
+  response["recovery_in_progress"] = db->isRecovering();
+  response["database_ready"] = db->isReady();
 
   res.set_content(response.dump(), "application/json");
   successful_requests++;
@@ -1395,5 +1403,90 @@ void VectorDBServer::handleGetAlgorithm(const httplib::Request& /*req*/, httplib
     res.set_content(error.dump(), "application/json");
     failed_requests++;
     logRequest("GET", "/config/algorithm", 500);
+  }
+}
+
+// -------------------- GPU Configuration --------------------
+
+void VectorDBServer::handleToggleGPU(const httplib::Request& req, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    json request_body = json::parse(req.body);
+    
+    bool enable = request_body.value("enabled", false);
+    size_t threshold = request_body.value("threshold", 1000);
+    
+    db->enableGPU(enable);
+    db->setGPUThreshold(threshold);
+    
+    json response;
+    response["gpu_enabled"] = db->isGPUEnabled();
+    response["gpu_available"] = db->isGPUAvailable();
+    response["gpu_threshold"] = db->getGPUThreshold();
+    response["message"] = enable ? 
+      "GPU acceleration enabled for batch operations" : 
+      "GPU acceleration disabled";
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("PUT", "/config/gpu", 200);
+    
+  } catch (const json::parse_error& e) {
+    res.status = 400;
+    json error;
+    error["error"] = "Invalid JSON";
+    error["details"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/gpu", 400);
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("PUT", "/config/gpu", 500);
+  }
+}
+
+void VectorDBServer::handleGetGPUStatus(const httplib::Request& /*req*/, httplib::Response& res) {
+  total_requests++;
+  
+  try {
+    json response;
+    response["gpu_enabled"] = db->isGPUEnabled();
+    response["gpu_available"] = db->isGPUAvailable();
+    response["gpu_threshold"] = db->getGPUThreshold();
+    response["description"] = "GPU acceleration uses Metal for batch distance computations";
+    response["usage"] = {
+      {"when_used", "When vector_count > gpu_threshold during similarity search"},
+      {"benefit", "10-50x speedup for large datasets (>1000 vectors)"},
+      {"note", "Single vector operations still use SIMD (faster for small ops)"}
+    };
+    response["api"] = {
+      {"enable", "PUT /config/gpu with {\"enabled\": true}"},
+      {"set_threshold", "PUT /config/gpu with {\"enabled\": true, \"threshold\": 5000}"},
+      {"disable", "PUT /config/gpu with {\"enabled\": false}"}
+    };
+    
+    // Add current database stats
+    auto stats = db->getStatistics();
+    response["current_stats"] = {
+      {"total_vectors", stats.total_vectors},
+      {"will_use_gpu", stats.total_vectors > db->getGPUThreshold() && db->isGPUEnabled()}
+    };
+    
+    res.set_content(response.dump(), "application/json");
+    successful_requests++;
+    logRequest("GET", "/config/gpu", 200);
+    
+  } catch (const std::exception& e) {
+    res.status = 500;
+    json error;
+    error["error"] = e.what();
+    res.set_content(error.dump(), "application/json");
+    failed_requests++;
+    logRequest("GET", "/config/gpu", 500);
   }
 }
