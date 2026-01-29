@@ -28,18 +28,11 @@ public:
         return data == other.data;
     }
 
-    auto begin() const { return data.begin(); }
-    auto end() const { return data.end(); }
+    auto begin() const { return data.cbegin(); }
+    auto end() const { return data.cend(); }
 
-    void write_to(std::ostream& os) const {
-        os.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
-    }
-
-    static Vector read_from(std::istream& is, size_t dimensions) {
-        Vector v(dimensions);
-        is.read(reinterpret_cast<char*>(v.data.data()), dimensions * sizeof(float));
-        return v;
-    }
+    void write_to(std::ostream& os) const;
+    static Vector read_from(std::istream& is, size_t dimensions);
 };
 
 // Specialize std::hash for Vector
