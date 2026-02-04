@@ -81,7 +81,12 @@ public:
     };
 
     CommitLog(const std::string& log_directory, size_t max_size, size_t max_files);
-    ~CommitLog();
+    ~CommitLog() noexcept;
+
+    CommitLog(const CommitLog&) = delete;
+    CommitLog& operator=(const CommitLog&) = delete;
+    CommitLog(CommitLog&&) = delete;
+    CommitLog& operator=(CommitLog&&) = delete;
 
     void logInsert(const std::string& key, const Vector& vector, const std::string& metadata);
     void logUpdate(const std::string& key, const Vector& vector, const std::string& metadata);

@@ -247,11 +247,11 @@ CommitLog::CommitLog(const std::string& log_directory, size_t max_size, size_t m
     
     // Get current file size
     log_file.seekp(0, std::ios::end);
-    current_log_size = log_file.tellp();
-    log_file.seekp(0, std::ios::end); // Stay at end for appending
+    auto pos = log_file.tellp();
+    current_log_size = (pos >= 0) ? static_cast<uint64_t>(pos) : 0;
 }
 
-CommitLog::~CommitLog() {
+CommitLog::~CommitLog() noexcept {
     if (log_file.is_open()) {
         log_file.close();
     }
@@ -266,7 +266,8 @@ std::string CommitLog::generateLogFilename(uint64_t sequence) const {
 void CommitLog::writeEntry(const LogEntry& entry) {
     auto serialized = entry.serialize();
     
-    log_file.write(reinterpret_cast<const char*>(serialized.data()), serialized.size());
+    log_file.write(reinterpret_cast<const char*>(serialized.data()),
+                   static_cast<std::streamsize>(serialized.size()));
     log_file.flush();
     
     current_log_size += serialized.size();
@@ -320,7 +321,7 @@ void CommitLog::cleanupOldLogs() {
             log_files.erase(log_files.begin());
         }
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Error cleaning up old log files: " << e.what() << std::endl;
+        std::cerr << "Warning: Error cleaning up old log files: " << e.what() << '\n';
     }
 }
 
@@ -389,14 +390,17 @@ std::vector<LogEntry> CommitLog::readEntriesSince(uint64_t since_sequence) const
         for (const auto& file_path : log_files) {
             std::ifstream file(file_path, std::ios::binary);
             if (!file.is_open()) continue;
-            
+
             // Read file content
             file.seekg(0, std::ios::end);
-            size_t file_size = file.tellg();
+            auto fpos = file.tellg();
+            if (fpos <= 0) continue;
+            size_t file_size = static_cast<size_t>(fpos);
             file.seekg(0, std::ios::beg);
-            
+
             std::vector<uint8_t> buffer(file_size);
-            file.read(reinterpret_cast<char*>(buffer.data()), file_size);
+            file.read(reinterpret_cast<char*>(buffer.data()),
+                      static_cast<std::streamsize>(file_size));
             
             // Parse entries
             size_t offset = 0;
@@ -418,7 +422,8 @@ std::vector<LogEntry> CommitLog::readEntriesSince(uint64_t since_sequence) const
                     break; // Not enough data for complete entry
                 }
                 
-                std::vector<uint8_t> entry_data(buffer.begin() + offset, buffer.begin() + offset + entry_size);
+                auto buf_start = buffer.begin() + static_cast<std::ptrdiff_t>(offset);
+                std::vector<uint8_t> entry_data(buf_start, buf_start + static_cast<std::ptrdiff_t>(entry_size));
                 LogEntry entry = LogEntry::deserialize(entry_data);
                 
                 if (entry.isValid() && entry.sequence_number >= since_sequence) {
@@ -429,7 +434,7 @@ std::vector<LogEntry> CommitLog::readEntriesSince(uint64_t since_sequence) const
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error reading log entries: " << e.what() << std::endl;
+        std::cerr << "Error reading log entries: " << e.what() << '\n';
     }
     
     return entries;
@@ -469,7 +474,7 @@ void CommitLog::reset() {
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Error removing old log files: " << e.what() << std::endl;
+        std::cerr << "Warning: Error removing old log files: " << e.what() << '\n';
     }
     
     // Reset state
