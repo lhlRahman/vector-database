@@ -41,7 +41,7 @@ public:
     /**
      * Destructor - aborts if not committed
      */
-    ~AtomicFileWriter();
+    ~AtomicFileWriter() noexcept;
     
     // Non-copyable
     AtomicFileWriter(const AtomicFileWriter&) = delete;

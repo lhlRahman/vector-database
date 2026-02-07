@@ -31,10 +31,13 @@ AtomicFileWriter::AtomicFileWriter(const std::string& filename)
     }
 }
 
-AtomicFileWriter::~AtomicFileWriter() {
+AtomicFileWriter::~AtomicFileWriter() noexcept {
     if (!committed && !aborted) {
-        // Auto-abort if not explicitly committed
-        abort();
+        try {
+            abort();
+        } catch (...) {
+            // Destructors must not throw
+        }
     }
 }
 
@@ -52,7 +55,7 @@ AtomicFileWriter& AtomicFileWriter::operator=(AtomicFileWriter&& other) noexcept
     if (this != &other) {
         // Clean up current state
         if (!committed && !aborted) {
-            abort();
+            try { abort(); } catch (...) {}
         }
         
         temp_filename = std::move(other.temp_filename);
@@ -99,7 +102,7 @@ void AtomicFileWriter::write(const void* data, size_t size) {
         throw std::runtime_error("Cannot write to committed or aborted file");
     }
     
-    file.write(static_cast<const char*>(data), size);
+    file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
     if (!file.good()) {
         throw std::runtime_error("Write operation failed");
     }
