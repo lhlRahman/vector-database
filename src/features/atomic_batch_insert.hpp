@@ -61,9 +61,6 @@ private:
 
     // Tx mgmt
     uint64_t generateTransactionId();
-    void logTransactionStart(uint64_t transaction_id, size_t operation_count);
-    void logTransactionEnd(uint64_t transaction_id, bool success, const std::string& error = "");
-
 public:
     // Declaration only (definition in .cpp)
     AtomicBatchInsert(std::shared_ptr<AtomicPersistence> persistence,

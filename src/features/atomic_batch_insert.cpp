@@ -1,7 +1,7 @@
 // src/features/atomic_batch_insert.cpp
 #include "atomic_batch_insert.hpp"
-#include <cassert>
 #include <iostream>
+#include <stdexcept>
 
 using std::chrono::steady_clock;
 
@@ -13,18 +13,12 @@ AtomicBatchInsert::AtomicBatchInsert(std::shared_ptr<AtomicPersistence> persiste
       max_batch_size(max_batch_size),
       batch_timeout(batch_timeout),
       enable_validation(enable_validation) {
-    assert(persistence_ && "AtomicBatchInsert: persistence must not be null");
+    if (!persistence_) {
+        throw std::invalid_argument("AtomicBatchInsert: persistence must not be null");
+    }
 }
 
 uint64_t AtomicBatchInsert::generateTransactionId() { return ++transaction_counter; }
-
-void AtomicBatchInsert::logTransactionStart(uint64_t tx, size_t count) {
-    (void)tx; (void)count;
-}
-
-void AtomicBatchInsert::logTransactionEnd(uint64_t tx, bool ok, const std::string& err) {
-    (void)tx; (void)ok; (void)err;
-}
 
 bool AtomicBatchInsert::validateOperation(const BatchOperation& op) const {
     if (op.key.empty()) return false;
@@ -57,47 +51,47 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
         return result;
     }
 
-    std::unique_lock<std::mutex> lk(batch_mutex);
-    const uint64_t tx = generateTransactionId();
-    logTransactionStart(tx, operations.size());
-
+    uint64_t tx = 0;
     size_t committed = 0;
-    for (const auto& op : operations) {
-        bool ok = false;
-        switch (op.type) {
-            case OperationType::INSERT:
-                ok = persistence_->insert(op.key, op.vector, op.metadata);
+
+    {
+        std::lock_guard<std::mutex> lk(batch_mutex);
+        tx = generateTransactionId();
+
+        for (const auto& op : operations) {
+            bool ok = false;
+            switch (op.type) {
+                case OperationType::INSERT:
+                    ok = persistence_->insert(op.key, op.vector, op.metadata);
+                    break;
+                case OperationType::UPDATE:
+                    ok = persistence_->update(op.key, op.vector, op.metadata);
+                    break;
+                case OperationType::DELETE:
+                    ok = persistence_->remove(op.key);
+                    break;
+            }
+            if (!ok) {
+                result.error_message = "operation failed";
                 break;
-            case OperationType::UPDATE:
-                ok = persistence_->update(op.key, op.vector, op.metadata);
-                break;
-            case OperationType::DELETE:
-                ok = persistence_->remove(op.key);
-                break;
+            }
+            committed++;
         }
-        if (!ok) {
-            result.error_message = "operation failed";
-            break;
+
+        if (committed == operations.size()) {
+            result.success = true;
+            successful_batches++;
+        } else {
+            failed_batches++;
         }
-        committed++;
+
+        total_batches++;
+        total_operations += committed;
     }
-
-    if (committed == operations.size()) {
-        result.success = true;
-        successful_batches++;
-    } else {
-        failed_batches++;
-    }
-
-    total_batches++;
-    total_operations += committed;
-
-    lk.unlock();
 
     result.operations_committed = committed;
     result.transaction_id = tx;
     result.duration = steady_clock::now() - t0;
-    logTransactionEnd(tx, result.success, result.error_message);
     return result;
 }
 
@@ -145,8 +139,8 @@ AtomicBatchInsert::Statistics AtomicBatchInsert::getStatistics() const {
     s.failed_batches = failed_batches.load();
     s.total_operations = total_operations.load();
     const uint64_t total = s.total_batches;
-    s.success_rate = total ? (double)s.successful_batches / (double)total : 0.0;
-    s.average_batch_size = total ? (double)s.total_operations / (double)total : 0.0;
+    s.success_rate = total ? static_cast<double>(s.successful_batches) / static_cast<double>(total) : 0.0;
+    s.average_batch_size = total ? static_cast<double>(s.total_operations) / static_cast<double>(total) : 0.0;
     s.average_batch_duration = std::chrono::duration<double>(0);
     return s;
 }
