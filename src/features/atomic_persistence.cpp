@@ -16,16 +16,6 @@
 
 
 
-namespace {
-inline uint64_t now_us() {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
-}
-} // namespace
-
-
 
 AtomicPersistence::AtomicPersistence(const PersistenceConfig& cfg)
     : config_(cfg) {
@@ -177,7 +167,7 @@ bool AtomicPersistence::saveDatabase(const std::unordered_map<std::string, Vecto
     
     std::cout << "[checkpoint] WAL rotated at seq " << seq 
               << ". Old WAL files cleared. New entries will start at seq " 
-              << seq + 1 << std::endl;
+              << seq + 1 << '\n';
     
     return true;
 }
@@ -202,11 +192,11 @@ void AtomicPersistence::cleanupOldWALFiles() {
             for (size_t i = 0; i < wal_files.size() - 1; ++i) {
                 std::filesystem::remove(wal_files[i]);
                 std::cout << "[checkpoint] Removed old WAL: " 
-                          << std::filesystem::path(wal_files[i]).filename() << std::endl;
+                          << std::filesystem::path(wal_files[i]).filename() << '\n';
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Error cleaning old WAL files: " << e.what() << std::endl;
+        std::cerr << "Warning: Error cleaning old WAL files: " << e.what() << '\n';
     }
 }
 
@@ -255,15 +245,15 @@ void AtomicPersistence::replayAll(uint64_t since_seq,
     }
     
     if (entries.empty()) {
-        std::cout << "[recovery] No WAL entries to replay after seq " << (since_seq - 1) << std::endl;
+        std::cout << "[recovery] No WAL entries to replay after seq " << (since_seq - 1) << '\n';
         auto st = log_->getStatistics();
         stats_.last_replayed_sequence = (st.next_sequence > 0 ? st.next_sequence - 1 : since_seq - 1);
         return;
     }
 
-    std::cout << "[recovery] Found " << all_entries.size() << " total WAL entries" << std::endl;
+    std::cout << "[recovery] Found " << all_entries.size() << " total WAL entries" << '\n';
     std::cout << "[recovery] Replaying " << entries.size() 
-              << " WAL entries with seq >= " << since_seq << std::endl;
+              << " WAL entries with seq >= " << since_seq << '\n';
 
     uint64_t max_seq = since_seq ? since_seq - 1 : 0;
     int replayed_count = 0;
@@ -297,7 +287,7 @@ void AtomicPersistence::replayAll(uint64_t since_seq,
             }
             case LogEntryType::CHECKPOINT:
                 // Skip checkpoint entries during replay
-                std::cout << "[recovery] Skipping checkpoint entry at seq " << e.sequence_number << std::endl;
+                std::cout << "[recovery] Skipping checkpoint entry at seq " << e.sequence_number << '\n';
                 break;
             case LogEntryType::COMMIT:
             default:
@@ -308,7 +298,7 @@ void AtomicPersistence::replayAll(uint64_t since_seq,
 
     stats_.last_replayed_sequence = max_seq;
     std::cout << "[recovery] Replay complete. Replayed " << replayed_count 
-              << " operations. Last sequence: " << max_seq << std::endl;
+              << " operations. Last sequence: " << max_seq << '\n';
 }
 
 bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& vectors,
@@ -319,7 +309,7 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
         out_seq = 0;
-        std::cout << "[recovery] No checkpoint file found at " << path << std::endl;
+        std::cout << "[recovery] No checkpoint file found at " << path << '\n';
         return false; // no snapshot yet
     }
 
@@ -330,7 +320,7 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
         return static_cast<bool>(f.read(reinterpret_cast<char*>(&v), sizeof(v)));
     };
     auto read_exact = [](std::ifstream& f, void* p, size_t n)->bool {
-        return static_cast<bool>(f.read(reinterpret_cast<char*>(p), n));
+        return static_cast<bool>(f.read(reinterpret_cast<char*>(p), static_cast<std::streamsize>(n)));
     };
 
     uint32_t magic=0, version=0;
@@ -341,7 +331,7 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     if (!read_u64(in, seq) || !read_u64(in, ts_us) || !read_u64(in, count)) return false;
 
     std::cout << "[recovery] Loading checkpoint with " << count 
-              << " vectors at seq " << seq << std::endl;
+              << " vectors at seq " << seq << '\n';
 
     std::unordered_map<std::string, Vector> tmp_vectors;
     std::unordered_map<std::string, std::string> tmp_meta;
@@ -387,7 +377,7 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     metadata.swap(tmp_meta);
     out_seq = seq;
     
-    std::cout << "[recovery] Checkpoint loaded successfully. Sequence: " << seq << std::endl;
+    std::cout << "[recovery] Checkpoint loaded successfully. Sequence: " << seq << '\n';
     return true;
 }
 
@@ -468,13 +458,13 @@ bool AtomicPersistence::saveCheckpointFile(
 
         std::cout << "[checkpoint] wrote " << vectors.size()
                   << " vectors at seq " << sequence
-                  << " -> " << final_path << std::endl;
+                  << " -> " << final_path << '\n';
 
         return true;
     } catch (const std::exception& e) {
         // best effort cleanup
         std::remove(tmp.c_str());
-        std::cerr << "saveCheckpointFile failed: " << e.what() << std::endl;
+        std::cerr << "saveCheckpointFile failed: " << e.what() << '\n';
         return false;
     }
 }

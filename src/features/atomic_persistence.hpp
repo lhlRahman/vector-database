@@ -73,21 +73,18 @@ public:
     void shutdown();     // flush WAL, stop janitor thread
 
     // durable ops (caller already mutated in-memory DB)
-    bool insert(const std::string& key, const Vector& v, const std::string& metadata);
-    bool update(const std::string& key, const Vector& v, const std::string& metadata);
-    bool remove(const std::string& key);
-
-    // convenience cache hook (optional, no-op here)
-    std::pair<Vector*, std::string*> get(const std::string& /*key*/) { return {nullptr, nullptr}; }
+    [[nodiscard]] bool insert(const std::string& key, const Vector& v, const std::string& metadata);
+    [[nodiscard]] bool update(const std::string& key, const Vector& v, const std::string& metadata);
+    [[nodiscard]] bool remove(const std::string& key);
 
     // maintenance
-    size_t flush();                 // fsync WAL
-    bool   checkpoint();            // marker-only; real snapshot done via saveDatabase(...)
+    [[nodiscard]] size_t flush();                 // fsync WAL
+    [[nodiscard]] bool   checkpoint();            // marker-only; real snapshot done via saveDatabase(...)
     void   updateConfig(const PersistenceConfig& cfg);
 
     // recovery: load DB from checkpoint + WAL
-    bool loadDatabase(std::unordered_map<std::string, Vector>& vectors,
-                      std::unordered_map<std::string, std::string>& metadata);
+    [[nodiscard]] bool loadDatabase(std::unordered_map<std::string, Vector>& vectors,
+                                    std::unordered_map<std::string, std::string>& metadata);
 
     // DB-coordination for auto-checkpointing
     bool shouldCheckpoint() const;  // check thresholds (ops or WAL size or time)
