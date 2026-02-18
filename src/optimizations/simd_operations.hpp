@@ -11,6 +11,9 @@
 namespace simd_ops {
     float dot_product(const Vector& v1, const Vector& v2);
 
+    // SIMD-accelerated squared euclidean distance: sum((v1[i]-v2[i])^2)
+    float squared_distance(const Vector& v1, const Vector& v2);
+
     void add(const Vector& v1, const Vector& v2, Vector& result);
 
     void subtract(const Vector& v1, const Vector& v2, Vector& result);
