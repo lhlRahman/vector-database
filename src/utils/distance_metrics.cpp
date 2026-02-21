@@ -1,12 +1,13 @@
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
 #include "distance_metrics.hpp"
+#include "../optimizations/simd_operations.hpp"
 
 float EuclideanDistance::distance(const Vector& v1, const Vector& v2) const {
-    return std::sqrt(Vector::dot_product(v1, v1) + 
-                     Vector::dot_product(v2, v2) - 
-                     2 * Vector::dot_product(v1, v2));
+    // SIMD-accelerated single-pass squared distance
+    return std::sqrt(simd_ops::squared_distance(v1, v2));
 }
 
 float ManhattanDistance::distance(const Vector& v1, const Vector& v2) const {
@@ -21,8 +22,16 @@ float ManhattanDistance::distance(const Vector& v1, const Vector& v2) const {
 }
 
 float CosineSimilarity::distance(const Vector& v1, const Vector& v2) const {
-    float dot_product = Vector::dot_product(v1, v2);
-    float norm1 = std::sqrt(Vector::dot_product(v1, v1));
-    float norm2 = std::sqrt(Vector::dot_product(v2, v2));
-    return 1.0f - dot_product / (norm1 * norm2);
+    // Single-pass: compute dot, norm1_sq, norm2_sq simultaneously
+    float dot = 0.0f, norm1_sq = 0.0f, norm2_sq = 0.0f;
+    for (size_t i = 0; i < v1.size(); ++i) {
+        float a = v1[i], b = v2[i];
+        dot += a * b;
+        norm1_sq += a * a;
+        norm2_sq += b * b;
+    }
+    if (norm1_sq == 0.0f || norm2_sq == 0.0f) {
+        return 1.0f;
+    }
+    return 1.0f - dot / (std::sqrt(norm1_sq) * std::sqrt(norm2_sq));
 }
