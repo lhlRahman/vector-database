@@ -8,27 +8,32 @@
 #include <algorithm>
 
 RandomProjectionTrees::Node::Node(const Vector& vec, const std::string& k)
-    : vector(vec), key(k), split_dimension(-1) {}
+    : vector(vec), key(k), split_dimension(0) {}
 
-RandomProjectionTrees::RandomProjectionTrees(size_t dimensions, size_t num_trees, size_t max_depth)
-    : dimensions(dimensions), num_trees(num_trees), max_depth(max_depth) {
+RandomProjectionTrees::RandomProjectionTrees(size_t dimensions, size_t num_trees, size_t /*max_depth*/)
+    : dimensions(dimensions) {
     trees.resize(num_trees);
 }
 
 void RandomProjectionTrees::insert(const Vector& vector, const std::string& key) {
+    deleted_keys_.erase(key);
     for (auto& tree : trees) {
         insert_recursive(tree, vector, key, 0);
     }
 }
 
-void RandomProjectionTrees::insert_recursive(std::unique_ptr<Node>& node, const Vector& vector, const std::string& key, int depth) {
+void RandomProjectionTrees::remove(const std::string& key) {
+    deleted_keys_.insert(key);
+}
+
+void RandomProjectionTrees::insert_recursive(std::unique_ptr<Node>& node, const Vector& vector, const std::string& key, size_t depth) {
     if (!node) {
         node = std::make_unique<Node>(vector, key);
         node->split_dimension = depth % dimensions;
         return;
     }
 
-    int dim = depth % dimensions;
+    size_t dim = depth % dimensions;
     if (vector[dim] < node->vector[dim]) {
         insert_recursive(node->left, vector, key, depth + 1);
     } else {
@@ -58,10 +63,16 @@ void RandomProjectionTrees::search_recursive(const Node* node, const Vector& que
         return;
     }
 
+    if (deleted_keys_.count(node->key) > 0) {
+        search_recursive(node->left.get(), query, k, results);
+        search_recursive(node->right.get(), query, k, results);
+        return;
+    }
+
     float distance = Vector::dot_product(query, node->vector);
     results.emplace_back(node->key, distance);
 
-    int dim = node->split_dimension;
+    size_t dim = node->split_dimension;
     if (query[dim] < node->vector[dim]) {
         search_recursive(node->left.get(), query, k, results);
         if (results.size() < k || std::abs(query[dim] - node->vector[dim]) < results.back().second) {
@@ -75,13 +86,13 @@ void RandomProjectionTrees::search_recursive(const Node* node, const Vector& que
     }
 }
 
-std::unique_ptr<ApproximateNN> ApproximateNNFactory::create(const std::string& algorithm, size_t dimensions, size_t param1, size_t param2, const DistanceMetric* metric) {
+std::unique_ptr<ApproximateNN> ApproximateNNFactory::create(const std::string& algorithm, size_t dimensions, size_t param1, size_t param2, std::shared_ptr<const DistanceMetric> metric) {
     if (algorithm == "LSH") {
         return std::make_unique<LSHIndex>(dimensions, param1, param2, metric);
     } else if (algorithm == "RPT") {
         return std::make_unique<RandomProjectionTrees>(dimensions, param1, param2);
     } else if (algorithm == "HNSW") {
-        return std::make_unique<HNSWIndex>(dimensions, param1, param2, param2, metric);
+        return std::make_unique<HNSWIndex>(dimensions, param1, param2, param2, std::move(metric));
     }
     throw std::invalid_argument("Unknown algorithm: " + algorithm);
 }
