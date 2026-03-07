@@ -19,32 +19,26 @@ private:
     struct HNSWNode {
         Vector vector;
         std::string key;
-        int level;  // Layer in the hierarchy (0 = bottom layer)
+        size_t level;  // Layer in the hierarchy (0 = bottom layer)
         std::vector<std::vector<size_t>> neighbors;  // neighbors[level] = neighbors at that level
-        std::vector<std::vector<float>> distances;   // distances[level] = distances to neighbors at that level
-        
-        HNSWNode(const Vector& vec, const std::string& k, int lvl);
-        void addNeighbor(size_t neighbor_id, float distance, int level);
-        void removeNeighbor(size_t neighbor_id, int level);
-        const std::vector<size_t>& getNeighbors(int level) const;
-        const std::vector<float>& getDistances(int level) const;
+        std::vector<std::vector<float>> neighbor_dists;   // neighbor_dists[level] = distances to neighbors at that level
+
+        HNSWNode(const Vector& vec, const std::string& k, size_t lvl);
+        void addNeighbor(size_t neighbor_id, float distance, size_t at_level);
+        void removeNeighbor(size_t neighbor_id, size_t at_level);
+        const std::vector<size_t>& getNeighbors(size_t at_level) const;
+        const std::vector<float>& getNeighborDists(size_t at_level) const;
     };
 
     // Priority queue element for search
     struct SearchCandidate {
         size_t node_id;
         float distance;
+        bool operator<(const SearchCandidate& other) const {
+            return distance < other.distance;
+        }
         bool operator>(const SearchCandidate& other) const {
             return distance > other.distance;
-        }
-    };
-
-    // Visited set element for search
-    struct VisitedElement {
-        size_t node_id;
-        float distance;
-        bool operator<(const VisitedElement& other) const {
-            return distance < other.distance;
         }
     };
 
@@ -60,22 +54,22 @@ private:
     std::vector<size_t> entry_points;  // Entry points for each level
     size_t max_level;                  // Current maximum level
     size_t dimensions;
-    const DistanceMetric* distance_metric;
+    std::shared_ptr<const DistanceMetric> distance_metric;
     
+    // Lazy deletion
+    std::unordered_set<std::string> deleted_keys_;
+
     // Random number generation for level assignment
     mutable std::mt19937 rng;
     mutable std::uniform_real_distribution<float> uniform_dist;
 
     // Core HNSW algorithms
-    int getRandomLevel() const;
-    std::vector<size_t> searchLayer(const Vector& query, size_t ef, int level) const;
-    std::vector<size_t> searchLayerBase(const Vector& query, size_t ef) const;
-    void addConnections(size_t node_id, const std::vector<size_t>& candidates, int level);
-    std::vector<size_t> selectNeighbors(const Vector& query, 
-                                       const std::vector<size_t>& candidates, 
-                                       size_t M, int level) const;
-    std::vector<size_t> selectNeighborsSimple(const std::vector<size_t>& candidates, 
-                                             size_t M) const;
+    size_t getRandomLevel() const;
+    std::vector<SearchCandidate> searchLayer(const Vector& query, size_t ef, size_t level) const;
+    std::vector<SearchCandidate> searchLayerBase(const Vector& query, size_t ef) const;
+    void addConnections(size_t node_id, const std::vector<SearchCandidate>& candidates, size_t level);
+    std::vector<SearchCandidate> selectNeighbors(const std::vector<SearchCandidate>& candidates,
+                                                 size_t M) const;
     
     // Distance computation helpers
     float getDistance(const Vector& v1, const Vector& v2) const;
@@ -84,11 +78,12 @@ private:
 
 public:
     // Constructor with hnswlib-style parameters
-    HNSWIndex(size_t dimensions, size_t M = 16, size_t ef_construction = 200, 
-              size_t ef_search = 50, const DistanceMetric* metric = nullptr);
+    HNSWIndex(size_t dimensions, size_t M = 16, size_t ef_construction = 200,
+              size_t ef_search = 50, std::shared_ptr<const DistanceMetric> metric = nullptr);
     
     // ApproximateNN interface implementation
     void insert(const Vector& vector, const std::string& key) override;
+    void remove(const std::string& key) override;
     std::vector<std::pair<std::string, float>> search(const Vector& query, size_t k) const override;
     
     // HNSW-specific methods
