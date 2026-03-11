@@ -3,6 +3,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -49,10 +50,14 @@ VectorDBServer::VectorDBServer(size_t dims,
   startRecoveryMonitoring();
 }
 
-VectorDBServer::~VectorDBServer() {
-  stopRecoveryMonitoring();
-  if (db) {
-    db->shutdown();
+VectorDBServer::~VectorDBServer() noexcept {
+  try {
+    stopRecoveryMonitoring();
+    if (db) {
+      db->shutdown();
+    }
+  } catch (...) {
+    // Destructors must not throw
   }
 }
 
@@ -217,7 +222,7 @@ void VectorDBServer::handleHealth(const httplib::Request& /*req*/, httplib::Resp
   response["database_ready"]        = db->isReady();
   response["recovery_in_progress"]  = db->isRecovering();
   response["dimensions"]            = dimensions;
-  response["total_vectors"]         = db->getAllVectors().size();
+  response["total_vectors"]         = db->vectorCount();
   response["timestamp"]             = std::chrono::duration_cast<std::chrono::milliseconds>(
                                         std::chrono::system_clock::now().time_since_epoch()).count();
 
@@ -229,11 +234,12 @@ void VectorDBServer::handleHealth(const httplib::Request& /*req*/, httplib::Resp
 void VectorDBServer::handleGetVectors(const httplib::Request& /*req*/, httplib::Response& res) {
   total_requests++;
   try {
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
     json response;
     response["vectors"] = json::array();
 
-    for (const auto& [key, vector] : db->getAllVectors()) {
+    auto all_vectors = db->getAllVectors();
+    for (const auto& [key, vector] : all_vectors) {
       json v;
       v["key"]    = key;
       v["vector"] = std::vector<float>(vector.begin(), vector.end());
@@ -242,7 +248,7 @@ void VectorDBServer::handleGetVectors(const httplib::Request& /*req*/, httplib::
       response["vectors"].push_back(v);
     }
 
-    response["count"]      = db->getAllVectors().size();
+    response["count"]      = all_vectors.size();
     response["dimensions"] = dimensions;
 
     res.set_content(response.dump(), "application/json");
@@ -279,7 +285,7 @@ void VectorDBServer::handlePostVectors(const httplib::Request& req, httplib::Res
     std::vector<float> data = body["vector"];
     Vector v(data);
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     if (db->insert(v, key, metadata)) {
       json r;
       r["success"] = true;
@@ -304,10 +310,10 @@ void VectorDBServer::handleGetVector(const httplib::Request& req, httplib::Respo
   total_requests++;
   try {
     std::string key = req.matches[1];
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
 
-    const Vector* vec = db->get(key);
-    if (vec) {
+    auto vec = db->get(key);
+    if (vec.has_value()) {
       json r;
       r["key"]    = key;
       r["vector"] = std::vector<float>(vec->begin(), vec->end());
@@ -353,7 +359,7 @@ void VectorDBServer::handlePutVector(const httplib::Request& req, httplib::Respo
     std::vector<float> data = body["vector"];
     Vector v(data);
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     if (db->update(v, key, metadata)) {
       json r;
       r["success"] = true;
@@ -378,7 +384,7 @@ void VectorDBServer::handleDeleteVector(const httplib::Request& req, httplib::Re
   total_requests++;
   try {
     std::string key = req.matches[1];
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
 
     if (db->remove(key)) {
       json r;
@@ -422,7 +428,7 @@ void VectorDBServer::handleSearch(const httplib::Request& req, httplib::Response
     size_t k = body["k"];
     bool include_metadata = body.value("include_metadata", false);
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
 
     json response;
     response["query"]   = q;
@@ -483,7 +489,7 @@ void VectorDBServer::handleBatchSearch(const httplib::Request& req, httplib::Res
     }
 
     size_t k = body["k"];
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
 
     auto results = db->batchSimilaritySearch(queries, k);
     json response;
@@ -540,7 +546,7 @@ void VectorDBServer::handleBatchInsert(const httplib::Request& req, httplib::Res
       vectors.emplace_back(vf);
     }
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     auto batch_result = db->batchInsert(keys, vectors, metadata);
 
     json response;
@@ -594,7 +600,7 @@ void VectorDBServer::handleBatchUpdate(const httplib::Request& req, httplib::Res
       vectors.emplace_back(vf);
     }
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     auto batch_result = db->batchUpdate(keys, vectors, metadata);
 
     json response;
@@ -634,7 +640,7 @@ void VectorDBServer::handleBatchDelete(const httplib::Request& req, httplib::Res
     }
 
     std::vector<std::string> keys = body["keys"];
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
 
     auto batch_result = db->batchDelete(keys);
 
@@ -711,7 +717,7 @@ void VectorDBServer::handleRecoveryInfo(const httplib::Request& /*req*/, httplib
 void VectorDBServer::handleForceCheckpoint(const httplib::Request& /*req*/, httplib::Response& res) {
   total_requests++;
   try {
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
     if (db->checkpoint()) {
       json r;
       r["success"] = true;
@@ -734,7 +740,7 @@ void VectorDBServer::handleForceCheckpoint(const httplib::Request& /*req*/, http
 void VectorDBServer::handleForceFlush(const httplib::Request& /*req*/, httplib::Response& res) {
   total_requests++;
   try {
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
     size_t ops = db->flush();
 
     json r;
@@ -916,7 +922,7 @@ void VectorDBServer::handleUpdatePersistenceConfig(const httplib::Request& req, 
     if (body.contains("log_directory"))          cfg.log_directory          = body["log_directory"];
     if (body.contains("data_directory"))         cfg.data_directory         = body["data_directory"];
 
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     db->updatePersistenceConfig(cfg);
 
     json r;
@@ -935,7 +941,7 @@ void VectorDBServer::handleUpdatePersistenceConfig(const httplib::Request& req, 
 void VectorDBServer::logRequest(const std::string& method, const std::string& path, int status_code) {
   auto now = std::chrono::system_clock::now();
   auto ts  = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-  std::cout << "[" << ts << "] " << method << " " << path << " " << status_code << std::endl;
+  std::cout << "[" << ts << "] " << method << " " << path << " " << status_code << '\n';
 }
 
 void VectorDBServer::handleError(httplib::Response& res, int status_code, const std::string& message) {
@@ -960,11 +966,11 @@ void VectorDBServer::recoveryMonitorFunction() {
     try {
       recovery_in_progress = db->isRecovering();
       if (recovery_in_progress) {
-        std::cout << "Recovery in progress..." << std::endl;
+        std::cout << "Recovery in progress...\n";
       }
       std::this_thread::sleep_for(std::chrono::seconds(5));
     } catch (const std::exception& e) {
-      std::cerr << "Recovery monitor error: " << e.what() << std::endl;
+      std::cerr << "Recovery monitor error: " << e.what() << '\n';
       std::this_thread::sleep_for(std::chrono::seconds(10));
     }
   }
@@ -1002,13 +1008,13 @@ bool VectorDBServer::validateBatchRequest(const json& body) {
 }
 
 void VectorDBServer::start(bool blocking) {
-  std::cout << "Starting Vector Database Server on " << host << ":" << port << std::endl;
+  std::cout << "Starting Vector Database Server on " << host << ":" << port << '\n';
   db->initialize();
   server.listen(host, port); // blocking either way in this simple server
 }
 
 void VectorDBServer::stop() {
-  std::cout << "Stopping Vector Database Server..." << std::endl;
+  std::cout << "Stopping Vector Database Server...\n";
   server.stop();
 }
 
@@ -1059,7 +1065,7 @@ void VectorDBServer::handleToggleSIMD(const httplib::Request& req, httplib::Resp
     
     bool enable = body["enabled"];
     
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     db->enableSIMD(enable);
     
     json response;
@@ -1092,7 +1098,7 @@ void VectorDBServer::handleGetSIMDStatus(const httplib::Request& /*req*/, httpli
   total_requests++;
   
   try {
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::shared_lock<std::shared_mutex> lock(db_mutex);
     
     json response;
     response["simd_enabled"] = db->isSIMDEnabled();
@@ -1160,7 +1166,7 @@ void VectorDBServer::handleSetDistanceMetric(const httplib::Request& req, httpli
       return;
     }
     
-    std::lock_guard<std::mutex> lock(db_mutex);
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
     db->setDistanceMetric(dm);
     current_distance_metric = metric;
     
@@ -1263,8 +1269,8 @@ void VectorDBServer::handleSetAlgorithm(const httplib::Request& req, httplib::Re
       return;
     }
     
-    std::lock_guard<std::mutex> lock(db_mutex);
-    
+    std::unique_lock<std::shared_mutex> lock(db_mutex);
+
     // Get parameters with defaults
     size_t param1 = 10;  // Default for LSH tables / HNSW M
     size_t param2 = 8;   // Default for LSH hash functions / HNSW ef_construction
@@ -1415,7 +1421,7 @@ void VectorDBServer::handleToggleGPU(const httplib::Request& req, httplib::Respo
     json request_body = json::parse(req.body);
     
     bool enable = request_body.value("enabled", false);
-    size_t threshold = request_body.value("threshold", 1000);
+    size_t threshold = static_cast<size_t>(request_body.value("threshold", 1000));
     
     db->enableGPU(enable);
     db->setGPUThreshold(threshold);

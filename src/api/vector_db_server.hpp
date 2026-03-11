@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 
@@ -20,7 +21,7 @@
 class VectorDBServer {
 private:
     std::unique_ptr<VectorDatabase> db;
-    std::mutex db_mutex;
+    mutable std::shared_mutex db_mutex;
     httplib::Server server;
     size_t dimensions;
     std::string db_file;
@@ -127,7 +128,7 @@ public:
     /**
      * Destructor
      */
-    ~VectorDBServer();
+    ~VectorDBServer() noexcept;
     
     // Non-copyable
     VectorDBServer(const VectorDBServer&) = delete;
