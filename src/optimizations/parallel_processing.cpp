@@ -18,7 +18,7 @@ void batchInsert(VectorDatabase& db, const std::vector<Vector>& vectors, const s
     auto task = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {
             // FIX: Call the 3-argument version of insert to resolve ambiguity.
-            db.insert(vectors[i], keys[i], "");
+            (void)db.insert(vectors[i], keys[i], "");
         }
     };
 
@@ -45,7 +45,7 @@ void batchInsert(VectorDatabase& db, const std::vector<Vector>& vectors, const s
 }
 
 std::vector<std::vector<std::pair<std::string, float>>> batchSimilaritySearch(
-    const VectorDatabase& db, const std::vector<Vector>& queries, size_t k) {
+    VectorDatabase& db, const std::vector<Vector>& queries, size_t k) {
     
     std::vector<std::vector<std::pair<std::string, float>>> results(queries.size());
 
@@ -79,7 +79,7 @@ std::vector<std::vector<std::pair<std::string, float>>> batchSimilaritySearch(
     return results;
 }
 
-void parallel_for_each(std::vector<int>& indices, std::function<void(int)>& func) {
+void parallel_for_each(std::vector<int>& indices, const std::function<void(int)>& func) {
     auto task = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i) {
             func(indices[i]);
