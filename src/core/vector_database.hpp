@@ -3,6 +3,8 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,6 +25,14 @@
  * atomic ops, and batch inserts.
  */
 class VectorDatabase {
+    static constexpr size_t kDefaultLSHTables = 10;
+    static constexpr size_t kDefaultLSHHashFunctions = 8;
+    static constexpr size_t kDefaultHNSW_M = 10;
+    static constexpr size_t kDefaultHNSW_EfConstruction = 8;
+    static constexpr size_t kDefaultHNSW_EfSearch = 8;
+    static constexpr size_t kDefaultGPUThreshold = 1000;
+    static constexpr size_t kDefaultCacheCapacity = 1000;
+
 public:
     struct SearchResult {
         std::string key;
@@ -53,12 +63,17 @@ private:
     std::unique_ptr<KDTree> kd_tree;
     std::shared_ptr<DistanceMetric> distance_metric;
     size_t dimensions;
-    mutable std::mutex db_mutex;   // mutable so const methods can lock
+    mutable std::shared_mutex db_mutex;  // shared for reads, exclusive for writes
 
     // Approximate indexes
     std::string approximate_algorithm;
     std::unique_ptr<LSHIndex> lsh_index;
     std::unique_ptr<HNSWIndex> hnsw_index;
+    size_t lsh_num_tables{kDefaultLSHTables};
+    size_t lsh_num_hash_functions{kDefaultLSHHashFunctions};
+    size_t hnsw_M{kDefaultHNSW_M};
+    size_t hnsw_ef_construction{kDefaultHNSW_EfConstruction};
+    size_t hnsw_ef_search{kDefaultHNSW_EfSearch};
 
     // Features
     bool atomic_persistence_enabled;
@@ -73,15 +88,16 @@ private:
     std::atomic<bool> ready{false};
     std::atomic<bool> recovering{false};
     
-    // GPU acceleration
+    // GPU acceleration (protected by gpu_mutex, not db_mutex)
     bool gpu_enabled{false};
     bool gpu_initialized{false};
-    size_t gpu_threshold{1000};  // Use GPU when vector_map.size() > threshold
-    bool gpu_buffer_dirty{true}; // True when GPU buffer needs rebuild
-    
-    // Contiguous storage for GPU (mirrors vector_map)
-    std::vector<float> flat_vectors;        // [v0[0], v0[1], ..., v1[0], v1[1], ...]
-    std::vector<std::string> vector_keys;   // Keys in same order as flat_vectors
+    size_t gpu_threshold{kDefaultGPUThreshold};
+    std::atomic<bool> gpu_buffer_dirty{true};
+    mutable std::mutex gpu_mutex_;
+
+    // Contiguous storage for GPU (mirrors vector_map, protected by gpu_mutex_)
+    std::vector<float> flat_vectors;
+    std::vector<std::string> vector_keys;
 
     // Stats
     std::atomic<uint64_t> total_inserts{0};
@@ -93,6 +109,7 @@ private:
     // Private
     void initializeAtomicPersistence();
     void loadExistingData();
+    void rebuildIndexes();
 
 public:
     VectorDatabase(size_t dimensions,
@@ -101,9 +118,9 @@ public:
                    bool enable_batch_operations = false,
                    const PersistenceConfig& persistence_config = {},
                    bool enable_query_cache = true,
-                   size_t cache_capacity = 1000);
+                   size_t cache_capacity = kDefaultCacheCapacity);
 
-    ~VectorDatabase();
+    ~VectorDatabase() noexcept;
 
     VectorDatabase(const VectorDatabase&) = delete;
     VectorDatabase& operator=(const VectorDatabase&) = delete;
@@ -113,18 +130,17 @@ public:
 
     void setDistanceMetric(std::shared_ptr<DistanceMetric> metric);
 
-    const std::unordered_map<std::string, Vector>& getAllVectors() const;
+    std::unordered_map<std::string, Vector> getAllVectors() const;
 
     void setApproximateAlgorithm(const std::string& algorithm, size_t param1, size_t param2);
 
-    bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
-    bool insert(const Vector& vector, const std::string& key);
+    [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
 
-    bool update(const Vector& vector, const std::string& key, const std::string& metadata = "");
+    [[nodiscard]] bool update(const Vector& vector, const std::string& key, const std::string& metadata = "");
 
-    bool remove(const std::string& key);
+    [[nodiscard]] bool remove(const std::string& key);
 
-    const Vector* get(const std::string& key) const;
+    [[nodiscard]] std::optional<Vector> get(const std::string& key) const;
 
     std::string getMetadata(const std::string& key) const;
 
@@ -137,16 +153,15 @@ public:
     AtomicBatchInsert::BatchResult batchDelete(const std::vector<std::string>& keys);
 
     std::vector<std::pair<std::string, float>> similaritySearch(const Vector& query, size_t k);
-    std::vector<std::pair<std::string, float>> similaritySearch(const Vector& query, size_t k) const;
 
     std::vector<SearchResult> similaritySearchWithMetadata(const Vector& query, size_t k);
 
     std::vector<std::vector<std::pair<std::string, float>>> batchSimilaritySearch(
         const std::vector<Vector>& queries, size_t k);
 
-    size_t flush();
+    [[nodiscard]] size_t flush();
 
-    bool checkpoint();
+    [[nodiscard]] bool checkpoint();
 
     DatabaseStatistics getStatistics() const;
 
@@ -162,7 +177,7 @@ public:
 
     void updatePersistenceConfig(const PersistenceConfig& config);
     
-    std::unordered_map<std::string, Vector> getAllVectorsCopy() const;
+    size_t vectorCount() const;
     
     // SIMD control
     void enableSIMD(bool enable);
