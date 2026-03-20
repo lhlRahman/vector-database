@@ -4,6 +4,9 @@
 
 #include "gpu_operations.hpp"
 #include <vector>
+#include <cstdlib>
+#include <string>
+#include <mach-o/dyld.h>
 #include <stdexcept>
 #include <iostream>
 
@@ -71,6 +74,36 @@ namespace {
             resultsBufferSize = needed;
         }
     }
+
+    // Helper: Resolve shader path from env/cwd/exe dir
+    NSString* resolveShaderPath() {
+        const char* envPath = std::getenv("VDB_SHADER_PATH");
+        if (envPath && envPath[0] != '\0') {
+            return [NSString stringWithUTF8String:envPath];
+        }
+
+        NSMutableArray<NSString*>* candidates = [NSMutableArray array];
+        [candidates addObject:@"src/optimizations/shaders/vector_ops.metal"];
+
+        uint32_t size = 0;
+        _NSGetExecutablePath(nullptr, &size);
+        if (size > 0) {
+            std::string exePath(size, '\0');
+            if (_NSGetExecutablePath(exePath.data(), &size) == 0) {
+                NSString* exeDir = [[NSString stringWithUTF8String:exePath.c_str()] stringByDeletingLastPathComponent];
+                NSString* relPath = [exeDir stringByAppendingPathComponent:@"../src/optimizations/shaders/vector_ops.metal"];
+                [candidates addObject:relPath];
+            }
+        }
+
+        NSFileManager* fm = [NSFileManager defaultManager];
+        for (NSString* path in candidates) {
+            if ([fm fileExistsAtPath:path]) {
+                return path;
+            }
+        }
+        return nil;
+    }
 }
 
 namespace gpu_ops {
@@ -99,7 +132,11 @@ bool initialize() {
         }
         
         // 3. Load shader library - compile from source at runtime
-        NSString* shaderPath = @"src/optimizations/shaders/vector_ops.metal";
+        NSString* shaderPath = resolveShaderPath();
+        if (!shaderPath) {
+            NSLog(@"Failed to resolve shader path. Set VDB_SHADER_PATH or run from repo root.");
+            return false;
+        }
         NSString* source = [NSString stringWithContentsOfFile:shaderPath
                                                      encoding:NSUTF8StringEncoding
                                                         error:nil];
@@ -381,7 +418,7 @@ std::vector<float> batch_dot_products(
         std::vector<float> flat_database(num_vectors * dimensions);
         for (size_t i = 0; i < num_vectors; i++) {
             std::copy(database[i].begin(), database[i].end(), 
-                      flat_database.begin() + i * dimensions);
+                      flat_database.begin() + static_cast<std::ptrdiff_t>(i * dimensions));
         }
         
         // Create Metal buffers
@@ -435,7 +472,7 @@ std::vector<float> batch_euclidean_distances(
         std::vector<float> flat_database(num_vectors * dimensions);
         for (size_t i = 0; i < num_vectors; i++) {
             std::copy(database[i].begin(), database[i].end(), 
-                      flat_database.begin() + i * dimensions);
+                      flat_database.begin() + static_cast<std::ptrdiff_t>(i * dimensions));
         }
         
         id<MTLBuffer> queryBuffer = createSharedBuffer(query.data_ptr(), dimensions * sizeof(float));
@@ -490,8 +527,9 @@ std::vector<std::vector<std::pair<size_t, float>>> batch_knn(
             indexed_distances.emplace_back(i, distances[i]);
         }
         
+        size_t actual_k = std::min(k, indexed_distances.size());
         std::partial_sort(indexed_distances.begin(),
-                          indexed_distances.begin() + std::min(k, indexed_distances.size()),
+                          indexed_distances.begin() + static_cast<std::ptrdiff_t>(actual_k),
                           indexed_distances.end(),
                           [](const auto& a, const auto& b) { return a.second < b.second; });
         

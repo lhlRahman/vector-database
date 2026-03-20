@@ -219,13 +219,17 @@ int main(int argc, char* argv[]) {
     
     std::cout << std::endl;
     std::cout << "  Comparisons:" << std::endl;
-    std::cout << "  • GPU vs CPU Brute: " << std::setprecision(2) << (cpu_brute_time / gpu_time) << "x faster" << std::endl;
-    std::cout << "  • GPU vs HNSW:      " << std::setprecision(2) << (hnsw_time / gpu_time) << "x " 
-              << (gpu_time < hnsw_time ? "faster" : "slower") << std::endl;
+    if (gpu_available && gpu_time > 0) {
+        std::cout << "  • GPU vs CPU Brute: " << std::setprecision(2) << (cpu_brute_time / gpu_time) << "x faster" << std::endl;
+        std::cout << "  • GPU vs HNSW:      " << std::setprecision(2) << (hnsw_time / gpu_time) << "x "
+                  << (gpu_time < hnsw_time ? "faster" : "slower") << std::endl;
+    } else {
+        std::cout << "  • GPU comparisons: unavailable (GPU not enabled or failed)" << std::endl;
+    }
     std::cout << "  • HNSW vs CPU Brute: " << std::setprecision(2) << (cpu_brute_time / hnsw_time) << "x faster" << std::endl;
     
     std::cout << std::endl;
-    if (gpu_time < hnsw_time) {
+    if (gpu_available && gpu_time > 0 && gpu_time < hnsw_time) {
         std::cout << "  GPU wins! Best for exact search at scale." << std::endl;
     } else {
         std::cout << "  HNSW wins! Best for approximate search." << std::endl;
