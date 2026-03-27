@@ -139,8 +139,54 @@ benchmark-gpu: $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(
 		$(METAL_FRAMEWORKS) -o $(BENCHMARK_GPU)
 	@echo "Benchmark built: $(BENCHMARK_GPU)"
 
+# Build SIMD tail test
+SIMD_TAIL_TEST = $(BUILD_DIR)/simd_tail_test
+simd-tail-test: $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/simd_tail_test.cpp -o $(BUILD_DIR)/simd_tail_test.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(BUILD_DIR)/simd_tail_test.o \
+		$(BUILD_DIR)/core/vector.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(SIMD_TAIL_TEST)
+	@echo "SIMD tail test built: $(SIMD_TAIL_TEST)"
+
+# Common library objects (everything except main.o)
+LIB_OBJS = $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/core/kd_tree.o \
+           $(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
+           $(BUILD_DIR)/features/atomic_file_writer.o $(BUILD_DIR)/features/atomic_persistence.o \
+           $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/approximate_nn.o \
+           $(BUILD_DIR)/algorithms/lsh_index.o $(BUILD_DIR)/algorithms/hnsw_index.o \
+           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
+           $(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
+           $(BUILD_DIR)/optimizations/gpu_operations.o
+
+# Unit tests
+UNIT_TEST = $(BUILD_DIR)/unit_tests
+unit-test: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/unit_tests.cpp -o $(BUILD_DIR)/unit_tests.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/unit_tests.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(UNIT_TEST)
+	@echo "Running unit tests..."
+	@./$(UNIT_TEST)
+
+# End-to-end tests
+E2E_TEST = $(BUILD_DIR)/e2e_tests
+e2e-test: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/e2e_tests.cpp -o $(BUILD_DIR)/e2e_tests.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/e2e_tests.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(E2E_TEST)
+	@echo "Running end-to-end tests..."
+	@./$(E2E_TEST)
+
+# Performance tests
+PERF_TEST = $(BUILD_DIR)/perf_tests
+perf-test: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/perf_tests.cpp -o $(BUILD_DIR)/perf_tests.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/perf_tests.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(PERF_TEST)
+	@echo "Running performance tests..."
+	@./$(PERF_TEST)
+
+# Run all tests
+test: unit-test e2e-test
+
 # Clean up
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all release debug clean run-server run-debug metal benchmark-gpu
+.PHONY: all release debug clean run-server run-debug metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test

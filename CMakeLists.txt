@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(VectorDatabase)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable ARM NEON for ARM architectures
@@ -27,25 +27,37 @@ file(GLOB_RECURSE SOURCES
 # Create library
 add_library(vector_database STATIC ${SOURCES})
 
-# Add examples
-add_executable(basic_usage examples/basic_usage.cpp)
-target_link_libraries(basic_usage vector_database)
+# Add examples (if present)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/basic_usage.cpp")
+    add_executable(basic_usage examples/basic_usage.cpp)
+    target_link_libraries(basic_usage vector_database)
+endif()
 
-add_executable(advanced_features examples/advanced_features.cpp)
-target_link_libraries(advanced_features vector_database)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/advanced_features.cpp")
+    add_executable(advanced_features examples/advanced_features.cpp)
+    target_link_libraries(advanced_features vector_database)
+endif()
 
-# Add benchmarks
-add_executable(insertion_benchmark benchmarks/insertion_benchmark.cpp)
-target_link_libraries(insertion_benchmark vector_database)
+# Add benchmarks (if present)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/insertion_benchmark.cpp")
+    add_executable(insertion_benchmark benchmarks/insertion_benchmark.cpp)
+    target_link_libraries(insertion_benchmark vector_database)
+endif()
 
-add_executable(search_benchmark benchmarks/search_benchmark.cpp)
-target_link_libraries(search_benchmark vector_database)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/search_benchmark.cpp")
+    add_executable(search_benchmark benchmarks/search_benchmark.cpp)
+    target_link_libraries(search_benchmark vector_database)
+endif()
 
-add_executable(simd_benchmark benchmarks/simd_benchmark.cpp)
-target_link_libraries(simd_benchmark vector_database)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/simd_benchmark.cpp")
+    add_executable(simd_benchmark benchmarks/simd_benchmark.cpp)
+    target_link_libraries(simd_benchmark vector_database)
+endif()
 
-add_executable(quick_simd_test benchmarks/quick_simd_test.cpp)
-target_link_libraries(quick_simd_test vector_database)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/quick_simd_test.cpp")
+    add_executable(quick_simd_test benchmarks/quick_simd_test.cpp)
+    target_link_libraries(quick_simd_test vector_database)
+endif()
 
 # Enable OpenMP if available
 find_package(OpenMP)
