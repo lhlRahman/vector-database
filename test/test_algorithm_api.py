@@ -251,12 +251,12 @@ def test_performance_comparison():
         
         # Warm up
         for _ in range(5):
-            requests.post(f"{BASE_URL}/search", json={"vector": query_vector, "k": 10})
+            requests.post(f"{BASE_URL}/search", json={"query": query_vector, "k": 10})
         
         # Time searches
         start = time.time()
         for _ in range(num_searches):
-            requests.post(f"{BASE_URL}/search", json={"vector": query_vector, "k": 10})
+            requests.post(f"{BASE_URL}/search", json={"query": query_vector, "k": 10})
         elapsed = time.time() - start
         
         avg_latency = (elapsed / num_searches) * 1000  # ms
