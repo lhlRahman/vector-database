@@ -97,24 +97,9 @@ metal: $(METALLIB)
 
 # Build GPU benchmark
 BENCHMARK_GPU = $(BUILD_DIR)/benchmark_gpu
-benchmark-gpu: $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/core/kd_tree.o \
-               $(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
-               $(BUILD_DIR)/features/atomic_file_writer.o $(BUILD_DIR)/features/atomic_persistence.o \
-               $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/approximate_nn.o \
-               $(BUILD_DIR)/algorithms/lsh_index.o $(BUILD_DIR)/algorithms/hnsw_index.o \
-               $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
-               $(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
-               $(BUILD_DIR)/optimizations/gpu_operations.o
+benchmark-gpu: $(LIB_OBJS)
 	$(CXX) $(CXXFLAGS) -c test/benchmark_gpu.cpp -o $(BUILD_DIR)/benchmark_gpu.o
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(BUILD_DIR)/benchmark_gpu.o \
-		$(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/core/kd_tree.o \
-		$(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
-		$(BUILD_DIR)/features/atomic_file_writer.o $(BUILD_DIR)/features/atomic_persistence.o \
-		$(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/approximate_nn.o \
-		$(BUILD_DIR)/algorithms/lsh_index.o $(BUILD_DIR)/algorithms/hnsw_index.o \
-		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
-		$(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
-		$(BUILD_DIR)/optimizations/gpu_operations.o \
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(BUILD_DIR)/benchmark_gpu.o $(LIB_OBJS) \
 		$(METAL_FRAMEWORKS) -o $(BENCHMARK_GPU)
 	@echo "Benchmark built: $(BENCHMARK_GPU)"
 
@@ -135,7 +120,7 @@ LIB_OBJS = $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(BUIL
            $(BUILD_DIR)/algorithms/lsh_index.o $(BUILD_DIR)/algorithms/hnsw_index.o \
            $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
            $(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
-           $(BUILD_DIR)/optimizations/gpu_operations.o
+           $(BUILD_DIR)/optimizations/gpu_operations.o $(BUILD_DIR)/storage/mmap_storage.o
 
 # Unit tests
 UNIT_TEST = $(BUILD_DIR)/unit_tests
