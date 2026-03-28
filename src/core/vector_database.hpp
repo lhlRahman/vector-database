@@ -4,7 +4,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,16 +12,20 @@
 #include "../algorithms/lsh_index.hpp"
 #include "kd_tree.hpp"
 #include "../core/vector.hpp"
+#include "../core/vector_accessor.hpp"
 #include "../features/atomic_batch_insert.hpp"
 #include "../features/atomic_persistence.hpp"
 #include "../features/query_cache.hpp"
-#include "../utils/distance_metrics.hpp"
+#include "../optimizations/epoch_rcu.hpp"
+#include "../optimizations/scalar_quantization.hpp"
+#include "../storage/mmap_storage.hpp"
 
 /**
- * Vector Database with Atomic Persistence
+ * Vector Database with mmap-backed page storage.
  *
- * Thread-safe, persistent vector DB with exact/approximate search,
- * atomic ops, and batch inserts.
+ * Vectors live in an mmap'd file — the OS pages them in/out like PostgreSQL.
+ * Indexes (KD-tree, HNSW, LSH) store slot IDs, not vector copies.
+ * Reads are lock-free via epoch-based RCU.
  */
 class VectorDatabase {
     static constexpr size_t kDefaultLSHTables = 10;
@@ -57,13 +60,18 @@ public:
     };
 
 private:
-    // Core
-    std::unordered_map<std::string, Vector> vector_map;
-    std::unordered_map<std::string, std::string> metadata_map;
+    // Core — mmap-backed storage
+    std::unique_ptr<MMapStorage> storage_;
+    std::unordered_map<std::string, uint64_t> key_to_slot_;
+    std::string storage_path_;
+
+    // Vector accessor — indexes use this to read vector data from mmap
+    VectorAccessor vec_accessor_;
+
     std::unique_ptr<KDTree> kd_tree;
     std::shared_ptr<DistanceMetric> distance_metric;
     size_t dimensions;
-    mutable std::shared_mutex db_mutex;  // shared for reads, exclusive for writes
+    mutable EpochRCU rcu_;  // epoch-based RCU replaces shared_mutex
 
     // Approximate indexes
     std::string approximate_algorithm;
@@ -84,18 +92,26 @@ private:
     std::unique_ptr<QueryCache> query_cache;
     PersistenceConfig persistence_config;
 
+    // Scalar quantization for fast candidate filtering
+    ScalarQuantizer quantizer_;
+    std::vector<uint8_t> quantized_vectors_;  // contiguous N*dims buffer
+    std::vector<std::string> quantized_keys_;
+    std::vector<uint64_t> quantized_slots_;
+    std::atomic<bool> quantizer_dirty_{true};
+    static constexpr size_t kQuantizerReRankFactor = 4; // re-rank top k*4
+
     // State
     std::atomic<bool> ready{false};
     std::atomic<bool> recovering{false};
-    
-    // GPU acceleration (protected by gpu_mutex, not db_mutex)
+
+    // GPU acceleration (protected by gpu_mutex, not rcu_)
     bool gpu_enabled{false};
     bool gpu_initialized{false};
     size_t gpu_threshold{kDefaultGPUThreshold};
     std::atomic<bool> gpu_buffer_dirty{true};
     mutable std::mutex gpu_mutex_;
 
-    // Contiguous storage for GPU (mirrors vector_map, protected by gpu_mutex_)
+    // Contiguous storage for GPU
     std::vector<float> flat_vectors;
     std::vector<std::string> vector_keys;
 
@@ -110,6 +126,7 @@ private:
     void initializeAtomicPersistence();
     void loadExistingData();
     void rebuildIndexes();
+    void rebuildQuantizer();
 
 public:
     VectorDatabase(size_t dimensions,
@@ -118,7 +135,8 @@ public:
                    bool enable_batch_operations = false,
                    const PersistenceConfig& persistence_config = {},
                    bool enable_query_cache = true,
-                   size_t cache_capacity = kDefaultCacheCapacity);
+                   size_t cache_capacity = kDefaultCacheCapacity,
+                   const std::string& storage_path = "");
 
     ~VectorDatabase() noexcept;
 
@@ -176,25 +194,23 @@ public:
     void setRecovering(bool is_recovering);
 
     void updatePersistenceConfig(const PersistenceConfig& config);
-    
+
     size_t vectorCount() const;
-    
+
     // SIMD control
     void enableSIMD(bool enable);
     bool isSIMDEnabled() const;
-    
+
     // GPU acceleration control
     void enableGPU(bool enable);
     bool isGPUEnabled() const;
     bool isGPUAvailable() const;
     void setGPUThreshold(size_t threshold);
     size_t getGPUThreshold() const;
-    
+
 private:
-    // GPU-accelerated search (called internally when conditions are met)
     std::vector<std::pair<std::string, float>> gpuAcceleratedSearch(const Vector& query, size_t k);
-    
-    // Rebuild contiguous storage and GPU buffer
     void rebuildGPUBuffer();
     void markGPUBufferDirty();
+    static std::string make_temp_path();
 };

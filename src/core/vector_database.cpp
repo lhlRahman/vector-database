@@ -2,18 +2,28 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "vector_database.hpp"
 #include "../optimizations/gpu_operations.hpp"
+#include "../optimizations/simd_operations.hpp"
 
 // -------------------- ctor / dtor --------------------
+
+std::string VectorDatabase::make_temp_path() {
+    auto tmp = std::filesystem::temp_directory_path();
+    auto name = "vdb_" + std::to_string(getpid()) + "_" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".vdb";
+    return (tmp / name).string();
+}
 
 VectorDatabase::VectorDatabase(size_t dimensions,
                                const std::string& algorithm,
@@ -21,87 +31,107 @@ VectorDatabase::VectorDatabase(size_t dimensions,
                                bool enable_batch_operations,
                                const PersistenceConfig& persistence_config,
                                bool enable_query_cache,
-                               size_t cache_capacity)
-    : dimensions(dimensions),
+                               size_t cache_capacity,
+                               const std::string& storage_path)
+    : storage_path_(storage_path.empty() ? make_temp_path() : storage_path),
+      dimensions(dimensions),
       approximate_algorithm(algorithm),
       atomic_persistence_enabled(enable_atomic_persistence),
       batch_operations_enabled(enable_batch_operations),
       query_cache_enabled(enable_query_cache),
       persistence_config(persistence_config),
+      quantizer_(dimensions),
       total_inserts(0),
       total_searches(0),
       total_updates(0),
       total_deletes(0) {
     // Distance metric
     distance_metric = std::make_shared<EuclideanDistance>();
+
+    // Vector accessor — all indexes use this to read from mmap
+    vec_accessor_ = [this](uint64_t slot_id) -> const float* {
+        return storage_->vector_ptr(slot_id);
+    };
+
     // KD-tree
-    kd_tree = std::make_unique<KDTree>(dimensions, distance_metric);
+    kd_tree = std::make_unique<KDTree>(dimensions, distance_metric, vec_accessor_);
 
     // Approximate indexes
     if (algorithm == "lsh") {
         lsh_num_tables = kDefaultLSHTables;
         lsh_num_hash_functions = kDefaultLSHHashFunctions;
-        lsh_index = std::make_unique<LSHIndex>(dimensions, lsh_num_tables, lsh_num_hash_functions, distance_metric);
+        lsh_index = std::make_unique<LSHIndex>(dimensions, lsh_num_tables, lsh_num_hash_functions, distance_metric, vec_accessor_);
     } else if (algorithm == "hnsw") {
         hnsw_M = kDefaultHNSW_M;
         hnsw_ef_construction = kDefaultHNSW_EfConstruction;
         hnsw_ef_search = kDefaultHNSW_EfSearch;
-        hnsw_index = std::make_unique<HNSWIndex>(dimensions, hnsw_M, hnsw_ef_construction, hnsw_ef_search, distance_metric);
+        hnsw_index = std::make_unique<HNSWIndex>(dimensions, hnsw_M, hnsw_ef_construction, hnsw_ef_search, distance_metric, vec_accessor_);
     }
-    
+
     // Query cache
     if (enable_query_cache) {
         query_cache = std::make_unique<QueryCache>(cache_capacity);
     }
+
+    // mmap storage
+    storage_ = std::make_unique<MMapStorage>(storage_path_, dimensions);
 }
 
 VectorDatabase::~VectorDatabase() noexcept {
     try {
         shutdown();
-    } catch (...) {
-        // Destructors must not throw
+    } catch (...) {}
+    if (storage_path_.find("vdb_") != std::string::npos &&
+        storage_path_.find(std::filesystem::temp_directory_path().string()) != std::string::npos) {
+        std::filesystem::remove(storage_path_);
     }
 }
 
 // -------------------- lifecycle --------------------
 
 void VectorDatabase::initialize() {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     if (ready.load()) return;
 
     std::cout << "Initializing Vector Database..." << '\n';
 
+    // Open mmap storage
+    storage_->open();
+
+    // Use sequential access pattern for bulk loading
+    storage_->advise_sequential();
+
+    // Rebuild key→slot index from mmap'd data
+    key_to_slot_ = storage_->build_key_index();
+
+    // Rebuild in-memory indexes from mmap'd vectors (using slot IDs, zero-copy)
+    for (const auto& [key, slot_id] : key_to_slot_) {
+        kd_tree->insert(slot_id, key);
+        if (lsh_index)  lsh_index->insert(slot_id, key);
+        if (hnsw_index) hnsw_index->insert(slot_id, key);
+    }
+
+    // Switch to random access for normal operation
+    storage_->advise_random();
+
     if (atomic_persistence_enabled) {
         initializeAtomicPersistence();
+    }
 
-        if (!persistence_manager) {
-            throw std::runtime_error("persistence_manager is null after initialization");
-        }
-
-        // Recovery
-        setRecovering(true);
-        if (!persistence_manager->loadDatabase(vector_map, metadata_map)) {
-            setRecovering(false);
-            throw std::runtime_error("Failed to recover database from persistent storage.");
-        }
-        setRecovering(false);
-
-        // Rebuild in-memory indexes
-        for (const auto& [key, vector] : vector_map) {
-            kd_tree->insert(vector, key);
-            if (lsh_index)  lsh_index->insert(vector, key);
-            if (hnsw_index) hnsw_index->insert(vector, key);
-        }
+    // Build scalar quantization index
+    quantizer_dirty_.store(true);
+    if (key_to_slot_.size() > 0) {
+        rebuildQuantizer();
     }
 
     ready.store(true);
     std::cout << "Vector Database initialized successfully with "
-              << vector_map.size() << " vectors." << '\n';
+              << key_to_slot_.size() << " vectors." << '\n';
 }
 
 void VectorDatabase::shutdown() {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     if (!ready.load()) return;
 
@@ -111,17 +141,20 @@ void VectorDatabase::shutdown() {
         persistence_manager->shutdown();
     }
 
+    if (storage_) {
+        storage_->sync();
+        storage_->close();
+    }
+
     ready.store(false);
     std::cout << "Vector Database shutdown completed" << '\n';
 }
 
 void VectorDatabase::initializeAtomicPersistence() {
-    // Shared ownership
     persistence_manager = std::make_shared<AtomicPersistence>(persistence_config);
     persistence_manager->initialize();
 
     if (batch_operations_enabled) {
-        // IMPORTANT: share, do NOT move (keeps persistence_manager alive)
         batch_manager = std::make_unique<AtomicBatchInsert>(persistence_manager);
     }
 }
@@ -129,22 +162,18 @@ void VectorDatabase::initializeAtomicPersistence() {
 void VectorDatabase::loadExistingData() {
     if (!persistence_manager) return;
 
-    std::cout << "Loading existing data..." << '\n';
-
     std::unordered_map<std::string, Vector> loaded_vectors;
     std::unordered_map<std::string, std::string> loaded_metadata;
 
     if (persistence_manager->loadDatabase(loaded_vectors, loaded_metadata)) {
         for (const auto& [key, vector] : loaded_vectors) {
-            vector_map[key] = vector;
+            uint64_t slot = storage_->insert(key, vector.data_ptr(), "");
+            key_to_slot_[key] = slot;
 
-            kd_tree->insert(vector, key);
-
-            if (lsh_index)  lsh_index->insert(vector, key);
-            if (hnsw_index) hnsw_index->insert(vector, key);
+            kd_tree->insert(slot, key);
+            if (lsh_index)  lsh_index->insert(slot, key);
+            if (hnsw_index) hnsw_index->insert(slot, key);
         }
-
-        metadata_map = std::move(loaded_metadata);
 
         std::cout << "Loaded " << loaded_vectors.size()
                   << " vectors from persistent storage" << '\n';
@@ -154,7 +183,7 @@ void VectorDatabase::loadExistingData() {
 // -------------------- configuration --------------------
 
 void VectorDatabase::setDistanceMetric(std::shared_ptr<DistanceMetric> metric) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     distance_metric = std::move(metric);
     rebuildIndexes();
@@ -165,7 +194,7 @@ void VectorDatabase::setDistanceMetric(std::shared_ptr<DistanceMetric> metric) {
 }
 
 void VectorDatabase::setApproximateAlgorithm(const std::string& algorithm, size_t param1, size_t param2) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     approximate_algorithm = algorithm;
 
@@ -186,27 +215,64 @@ void VectorDatabase::setApproximateAlgorithm(const std::string& algorithm, size_
 }
 
 void VectorDatabase::rebuildIndexes() {
-    kd_tree = std::make_unique<KDTree>(dimensions, distance_metric);
+    // Use sequential access for bulk rebuild
+    storage_->advise_sequential();
+
+    kd_tree = std::make_unique<KDTree>(dimensions, distance_metric, vec_accessor_);
     lsh_index.reset();
     hnsw_index.reset();
 
     if (approximate_algorithm == "lsh") {
-        lsh_index = std::make_unique<LSHIndex>(dimensions, lsh_num_tables, lsh_num_hash_functions, distance_metric);
+        lsh_index = std::make_unique<LSHIndex>(dimensions, lsh_num_tables, lsh_num_hash_functions, distance_metric, vec_accessor_);
     } else if (approximate_algorithm == "hnsw") {
-        hnsw_index = std::make_unique<HNSWIndex>(dimensions, hnsw_M, hnsw_ef_construction, hnsw_ef_search, distance_metric);
+        hnsw_index = std::make_unique<HNSWIndex>(dimensions, hnsw_M, hnsw_ef_construction, hnsw_ef_search, distance_metric, vec_accessor_);
     }
 
-    for (const auto& [key, vector] : vector_map) {
-        kd_tree->insert(vector, key);
-        if (lsh_index)  lsh_index->insert(vector, key);
-        if (hnsw_index) hnsw_index->insert(vector, key);
+    for (const auto& [key, slot_id] : key_to_slot_) {
+        kd_tree->insert(slot_id, key);
+        if (lsh_index)  lsh_index->insert(slot_id, key);
+        if (hnsw_index) hnsw_index->insert(slot_id, key);
     }
+
+    // Back to random access
+    storage_->advise_random();
 }
 
-// -------------------- mutations (with auto-checkpoint) --------------------
+void VectorDatabase::rebuildQuantizer() {
+    size_t n = key_to_slot_.size();
+    if (n == 0) {
+        quantizer_dirty_.store(false);
+        return;
+    }
+
+    // Collect all vector pointers for training
+    std::vector<const float*> ptrs;
+    ptrs.reserve(n);
+    quantized_keys_.clear();
+    quantized_keys_.reserve(n);
+    quantized_slots_.clear();
+    quantized_slots_.reserve(n);
+
+    for (const auto& [key, slot_id] : key_to_slot_) {
+        ptrs.push_back(storage_->vector_ptr(slot_id));
+        quantized_keys_.push_back(key);
+        quantized_slots_.push_back(slot_id);
+    }
+
+    // Train quantizer on all vectors
+    quantizer_.train(ptrs.data(), ptrs.size());
+
+    // Quantize all vectors
+    quantized_vectors_.resize(n * dimensions);
+    quantizer_.quantize_batch(ptrs.data(), quantized_vectors_.data(), ptrs.size());
+
+    quantizer_dirty_.store(false);
+}
+
+// -------------------- mutations --------------------
 
 bool VectorDatabase::insert(const Vector& vector, const std::string& key, const std::string& metadata) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
     if (vector.size() != dimensions) throw std::invalid_argument("Vector dimension mismatch");
@@ -218,47 +284,33 @@ bool VectorDatabase::insert(const Vector& vector, const std::string& key, const 
         }
     }
 
-    // Mutate in-memory first — single lookup via try_emplace
-    auto [it, inserted] = vector_map.try_emplace(key, vector);
-    if (!inserted) return false;
-    if (!metadata.empty()) metadata_map[key] = metadata;
+    if (key_to_slot_.count(key)) return false;
+
+    uint64_t slot_id = storage_->insert(key, vector.data_ptr(), metadata);
+    key_to_slot_[key] = slot_id;
 
     try {
-        kd_tree->insert(vector, key);
-        if (lsh_index)  lsh_index->insert(vector, key);
-        if (hnsw_index) hnsw_index->insert(vector, key);
+        kd_tree->insert(slot_id, key);
+        if (lsh_index)  lsh_index->insert(slot_id, key);
+        if (hnsw_index) hnsw_index->insert(slot_id, key);
     } catch (...) {
-        // Rollback on index failure
-        vector_map.erase(key);
-        metadata_map.erase(key);
+        storage_->remove(slot_id);
+        key_to_slot_.erase(key);
         throw;
     }
 
-    // Invalidate query cache
-    if (query_cache) {
-        query_cache->invalidate();
-    }
-
+    if (query_cache) query_cache->invalidate();
     markGPUBufferDirty();
+    quantizer_dirty_.store(true);
 
-    // Durable WAL
     if (persistence_manager) {
         if (!persistence_manager->insert(key, vector, metadata)) {
-            vector_map.erase(key);
-            metadata_map.erase(key);
+            storage_->remove(slot_id);
+            key_to_slot_.erase(key);
             kd_tree->remove(key);
             if (lsh_index) lsh_index->remove(key);
             if (hnsw_index) hnsw_index->remove(key);
             return false;
-        }
-
-        // AUTO-CHECKPOINT: Check if we should checkpoint
-        if (persistence_manager->shouldCheckpoint()) {
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                // CRITICAL: Reset the operations counter after successful checkpoint
-                persistence_manager->onCheckpointCompleted();
-            }
         }
     }
 
@@ -267,63 +319,43 @@ bool VectorDatabase::insert(const Vector& vector, const std::string& key, const 
 }
 
 bool VectorDatabase::update(const Vector& vector, const std::string& key, const std::string& metadata) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
     if (vector.size() != dimensions) throw std::invalid_argument("Vector dimension mismatch");
 
-    auto it = vector_map.find(key);
-    if (it == vector_map.end()) return false;
+    auto it = key_to_slot_.find(key);
+    if (it == key_to_slot_.end()) return false;
 
-    // Save old state for rollback
-    Vector old_vector = it->second;
-    auto meta_it = metadata_map.find(key);
-    std::string old_metadata = (meta_it != metadata_map.end()) ? meta_it->second : "";
+    uint64_t slot_id = it->second;
 
-    // Mutate in-memory
-    it->second = vector;
-    if (!metadata.empty()) metadata_map[key] = metadata;
+    const float* old_ptr = storage_->vector_ptr(slot_id);
+    std::vector<float> old_data(old_ptr, old_ptr + dimensions);
+    std::string old_metadata = storage_->get_metadata(slot_id);
 
-    // Incremental index update: remove old, insert new
+    storage_->update(slot_id, vector.data_ptr(), metadata);
+
     try {
         kd_tree->remove(key);
-        kd_tree->insert(vector, key);
-        if (lsh_index) { lsh_index->remove(key); lsh_index->insert(vector, key); }
-        if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(vector, key); }
+        kd_tree->insert(slot_id, key);
+        if (lsh_index) { lsh_index->remove(key); lsh_index->insert(slot_id, key); }
+        if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(slot_id, key); }
     } catch (...) {
-        // Rollback on index failure
-        it->second = old_vector;
-        if (old_metadata.empty()) metadata_map.erase(key);
-        else metadata_map[key] = old_metadata;
+        storage_->update(slot_id, old_data.data(), old_metadata);
         throw;
     }
 
-    // Invalidate query cache
-    if (query_cache) {
-        query_cache->invalidate();
-    }
-
+    if (query_cache) query_cache->invalidate();
     markGPUBufferDirty();
+    quantizer_dirty_.store(true);
 
-    // Durable WAL
     if (persistence_manager) {
         if (!persistence_manager->update(key, vector, metadata)) {
-            // Rollback in-memory state
-            it->second = old_vector;
-            if (old_metadata.empty()) metadata_map.erase(key);
-            else metadata_map[key] = old_metadata;
-            kd_tree->remove(key);
-            kd_tree->insert(old_vector, key);
-            if (lsh_index) { lsh_index->remove(key); lsh_index->insert(old_vector, key); }
-            if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(old_vector, key); }
+            storage_->update(slot_id, old_data.data(), old_metadata);
+            kd_tree->remove(key); kd_tree->insert(slot_id, key);
+            if (lsh_index) { lsh_index->remove(key); lsh_index->insert(slot_id, key); }
+            if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(slot_id, key); }
             return false;
-        }
-
-        if (persistence_manager->shouldCheckpoint()) {
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                persistence_manager->onCheckpointCompleted();
-            }
         }
     }
 
@@ -332,51 +364,38 @@ bool VectorDatabase::update(const Vector& vector, const std::string& key, const 
 }
 
 bool VectorDatabase::remove(const std::string& key) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
 
-    auto it = vector_map.find(key);
-    if (it == vector_map.end()) return false;
+    auto it = key_to_slot_.find(key);
+    if (it == key_to_slot_.end()) return false;
 
-    // Save old state for rollback
-    Vector old_vector = it->second;
-    auto meta_it = metadata_map.find(key);
-    std::string old_metadata = (meta_it != metadata_map.end()) ? meta_it->second : "";
+    uint64_t slot_id = it->second;
 
-    // Mutate in-memory
-    vector_map.erase(it);
-    metadata_map.erase(key);
+    const float* old_ptr = storage_->vector_ptr(slot_id);
+    std::vector<float> old_data(old_ptr, old_ptr + dimensions);
+    std::string old_metadata = storage_->get_metadata(slot_id);
 
-    // Lazy deletion from indexes
+    storage_->remove(slot_id);
+    key_to_slot_.erase(it);
+
     kd_tree->remove(key);
     if (lsh_index) lsh_index->remove(key);
     if (hnsw_index) hnsw_index->remove(key);
 
-    // Invalidate query cache
-    if (query_cache) {
-        query_cache->invalidate();
-    }
-
+    if (query_cache) query_cache->invalidate();
     markGPUBufferDirty();
+    quantizer_dirty_.store(true);
 
-    // Durable WAL
     if (persistence_manager) {
         if (!persistence_manager->remove(key)) {
-            // Rollback: re-insert into all structures
-            vector_map[key] = old_vector;
-            if (!old_metadata.empty()) metadata_map[key] = old_metadata;
-            kd_tree->insert(old_vector, key);
-            if (lsh_index) lsh_index->insert(old_vector, key);
-            if (hnsw_index) hnsw_index->insert(old_vector, key);
+            uint64_t new_slot = storage_->insert(key, old_data.data(), old_metadata);
+            key_to_slot_[key] = new_slot;
+            kd_tree->insert(new_slot, key);
+            if (lsh_index) lsh_index->insert(new_slot, key);
+            if (hnsw_index) hnsw_index->insert(new_slot, key);
             return false;
-        }
-
-        if (persistence_manager->shouldCheckpoint()) {
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                persistence_manager->onCheckpointCompleted();
-            }
         }
     }
 
@@ -387,44 +406,41 @@ bool VectorDatabase::remove(const std::string& key) {
 // -------------------- queries --------------------
 
 std::optional<Vector> VectorDatabase::get(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
-    auto it = vector_map.find(key);
-    if (it != vector_map.end()) return it->second;
+    auto it = key_to_slot_.find(key);
+    if (it == key_to_slot_.end()) return std::nullopt;
 
-    return std::nullopt;
+    const float* ptr = storage_->vector_ptr(it->second);
+    return Vector(std::vector<float>(ptr, ptr + dimensions));
 }
 
 std::string VectorDatabase::getMetadata(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
-    auto it = metadata_map.find(key);
-    if (it != metadata_map.end()) return it->second;
+    auto it = key_to_slot_.find(key);
+    if (it == key_to_slot_.end()) return "";
 
-    return "";
+    return storage_->get_metadata(it->second);
 }
 
 std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(const Vector& query, size_t k) {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
     if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
-    if (vector_map.empty()) return {};
+    if (key_to_slot_.empty()) return {};
 
     total_searches.fetch_add(1, std::memory_order_relaxed);
 
-    // Try cache first
     std::vector<std::pair<std::string, float>> results;
     if (query_cache && query_cache->get(query, results)) {
-        // Cache hit - return cached results
         return results;
     }
 
-    // Use GPU for large datasets (brute-force on GPU is faster than CPU indexes)
-    if (gpu_enabled && vector_map.size() > gpu_threshold) {
+    if (gpu_enabled && key_to_slot_.size() > gpu_threshold) {
         results = gpuAcceleratedSearch(query, k);
     }
-    // Cache miss - perform actual search using CPU indexes
     else if (approximate_algorithm == "lsh" && lsh_index) {
         results = lsh_index->search(query, k);
     } else if (approximate_algorithm == "hnsw" && hnsw_index) {
@@ -432,30 +448,28 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
     } else {
         results = kd_tree->nearestNeighbors(query, k);
     }
-    
-    // Store in cache for future queries
+
     if (query_cache) {
         query_cache->put(query, results);
     }
-    
+
     return results;
 }
 
 std::vector<VectorDatabase::SearchResult>
 VectorDatabase::similaritySearchWithMetadata(const Vector& query, size_t k) {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
     if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
-    if (vector_map.empty()) return {};
+    if (key_to_slot_.empty()) return {};
 
     total_searches.fetch_add(1, std::memory_order_relaxed);
 
-    // Perform search (same logic as similaritySearch but under one lock)
     std::vector<std::pair<std::string, float>> rawResults;
     if (query_cache && query_cache->get(query, rawResults)) {
         // cache hit
-    } else if (gpu_enabled && vector_map.size() > gpu_threshold) {
+    } else if (gpu_enabled && key_to_slot_.size() > gpu_threshold) {
         rawResults = gpuAcceleratedSearch(query, k);
     } else if (approximate_algorithm == "lsh" && lsh_index) {
         rawResults = lsh_index->search(query, k);
@@ -468,14 +482,12 @@ VectorDatabase::similaritySearchWithMetadata(const Vector& query, size_t k) {
         query_cache->put(query, rawResults);
     }
 
-    // Build results with metadata under the same lock
     std::vector<SearchResult> results;
     results.reserve(rawResults.size());
     for (const auto& [key, distance] : rawResults) {
-        auto metaIt = metadata_map.find(key);
-        results.emplace_back(SearchResult{
-            key, distance, (metaIt != metadata_map.end() ? metaIt->second : "")
-        });
+        auto it = key_to_slot_.find(key);
+        std::string meta = (it != key_to_slot_.end()) ? storage_->get_metadata(it->second) : "";
+        results.emplace_back(SearchResult{key, distance, meta});
     }
 
     return results;
@@ -483,7 +495,7 @@ VectorDatabase::similaritySearchWithMetadata(const Vector& query, size_t k) {
 
 std::vector<std::vector<std::pair<std::string, float>>>
 VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t k) {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
 
@@ -492,7 +504,7 @@ VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t
 
     for (const auto& query : queries) {
         if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
-        if (vector_map.empty()) { results.emplace_back(); continue; }
+        if (key_to_slot_.empty()) { results.emplace_back(); continue; }
 
         total_searches.fetch_add(1, std::memory_order_relaxed);
 
@@ -502,7 +514,7 @@ VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t
             continue;
         }
 
-        if (gpu_enabled && vector_map.size() > gpu_threshold) {
+        if (gpu_enabled && key_to_slot_.size() > gpu_threshold) {
             single_result = gpuAcceleratedSearch(query, k);
         } else if (approximate_algorithm == "lsh" && lsh_index) {
             single_result = lsh_index->search(query, k);
@@ -530,11 +542,11 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
     if (!batch_operations_enabled) {
         throw std::runtime_error("Batch operations not enabled");
     }
-    
+
     if (keys.size() != vectors.size()) {
         return AtomicBatchInsert::BatchResult{false, 0, "Keys and vectors size mismatch", 0, std::chrono::duration<double>(0)};
     }
-    
+
     auto start_time = std::chrono::steady_clock::now();
     AtomicBatchInsert::BatchResult result;
     result.transaction_id = ++batch_transaction_counter;
@@ -542,20 +554,17 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
     result.operations_committed = 0;
 
     {
-        std::unique_lock<std::shared_mutex> lock(db_mutex);
+        EpochRCU::WriteGuard wg(rcu_);
 
-        // Pre-reserve to avoid rehashes during batch
-        vector_map.reserve(vector_map.size() + keys.size());
-        metadata_map.reserve(metadata_map.size() + keys.size());
+        // Use sequential access for bulk insert
+        storage_->advise_sequential();
 
         for (size_t i = 0; i < keys.size(); ++i) {
             const std::string& key = keys[i];
             const Vector& vector = vectors[i];
             const std::string& meta = (i < metadata.size()) ? metadata[i] : "";
 
-            if (vector_map.find(key) != vector_map.end()) {
-                continue;
-            }
+            if (key_to_slot_.count(key)) continue;
 
             if (vector.size() != dimensions) {
                 result.success = false;
@@ -563,19 +572,17 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
                 break;
             }
 
-            vector_map[key] = vector;
-            if (!meta.empty()) {
-                metadata_map[key] = meta;
-            }
+            uint64_t slot_id = storage_->insert(key, vector.data_ptr(), meta);
+            key_to_slot_[key] = slot_id;
 
-            kd_tree->insert(vector, key);
-            if (lsh_index) lsh_index->insert(vector, key);
-            if (hnsw_index) hnsw_index->insert(vector, key);
+            kd_tree->insert(slot_id, key);
+            if (lsh_index) lsh_index->insert(slot_id, key);
+            if (hnsw_index) hnsw_index->insert(slot_id, key);
 
             if (persistence_manager) {
                 if (!persistence_manager->insert(key, vector, meta)) {
-                    vector_map.erase(key);
-                    metadata_map.erase(key);
+                    storage_->remove(slot_id);
+                    key_to_slot_.erase(key);
                     result.success = false;
                     result.error_message = "Failed to persist key: " + key;
                     break;
@@ -585,27 +592,16 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
             result.operations_committed++;
         }
 
-        if (query_cache) {
-            query_cache->invalidate();
-        }
+        // Back to random access
+        storage_->advise_random();
 
+        if (query_cache) query_cache->invalidate();
         markGPUBufferDirty();
-    } // lock released before checkpoint I/O
-
-    // Stats outside lock
-    if (result.success) {
-        total_inserts.fetch_add(result.operations_committed, std::memory_order_relaxed);
+        quantizer_dirty_.store(true);
     }
 
-    // Checkpoint outside exclusive lock (saveDatabase acquires its own lock)
-    if (result.success && persistence_manager) {
-        if (persistence_manager->shouldCheckpoint()) {
-            std::shared_lock<std::shared_mutex> read_lock(db_mutex);
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                persistence_manager->onCheckpointCompleted();
-            }
-        }
+    if (result.success) {
+        total_inserts.fetch_add(result.operations_committed, std::memory_order_relaxed);
     }
 
     result.duration = std::chrono::steady_clock::now() - start_time;
@@ -618,11 +614,11 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
     if (!batch_operations_enabled) {
         throw std::runtime_error("Batch operations not enabled");
     }
-    
+
     if (keys.size() != vectors.size()) {
         return AtomicBatchInsert::BatchResult{false, 0, "Keys and vectors size mismatch", 0, std::chrono::duration<double>(0)};
     }
-    
+
     auto start_time = std::chrono::steady_clock::now();
     AtomicBatchInsert::BatchResult result;
     result.transaction_id = ++batch_transaction_counter;
@@ -630,16 +626,15 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
     result.operations_committed = 0;
 
     {
-        std::unique_lock<std::shared_mutex> lock(db_mutex);
+        EpochRCU::WriteGuard wg(rcu_);
 
         for (size_t i = 0; i < keys.size(); ++i) {
             const std::string& key = keys[i];
             const Vector& vector = vectors[i];
             const std::string& meta = (i < metadata.size()) ? metadata[i] : "";
 
-            if (vector_map.find(key) == vector_map.end()) {
-                continue;
-            }
+            auto it = key_to_slot_.find(key);
+            if (it == key_to_slot_.end()) continue;
 
             if (vector.size() != dimensions) {
                 result.success = false;
@@ -647,15 +642,12 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
                 break;
             }
 
-            vector_map[key] = vector;
-            if (!meta.empty()) {
-                metadata_map[key] = meta;
-            }
+            storage_->update(it->second, vector.data_ptr(), meta);
 
             kd_tree->remove(key);
-            kd_tree->insert(vector, key);
-            if (lsh_index) { lsh_index->remove(key); lsh_index->insert(vector, key); }
-            if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(vector, key); }
+            kd_tree->insert(it->second, key);
+            if (lsh_index) { lsh_index->remove(key); lsh_index->insert(it->second, key); }
+            if (hnsw_index) { hnsw_index->remove(key); hnsw_index->insert(it->second, key); }
 
             if (persistence_manager) {
                 if (!persistence_manager->update(key, vector, meta)) {
@@ -668,24 +660,13 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
             result.operations_committed++;
         }
 
-        if (query_cache) {
-            query_cache->invalidate();
-        }
+        if (query_cache) query_cache->invalidate();
         markGPUBufferDirty();
+        quantizer_dirty_.store(true);
     }
 
     if (result.success) {
         total_updates.fetch_add(result.operations_committed, std::memory_order_relaxed);
-    }
-
-    if (result.success && persistence_manager) {
-        if (persistence_manager->shouldCheckpoint()) {
-            std::shared_lock<std::shared_mutex> read_lock(db_mutex);
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                persistence_manager->onCheckpointCompleted();
-            }
-        }
     }
 
     result.duration = std::chrono::steady_clock::now() - start_time;
@@ -704,15 +685,14 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchDelete(const std::vector<std
     result.operations_committed = 0;
 
     {
-        std::unique_lock<std::shared_mutex> lock(db_mutex);
+        EpochRCU::WriteGuard wg(rcu_);
 
         for (const std::string& key : keys) {
-            if (vector_map.find(key) == vector_map.end()) {
-                continue;
-            }
+            auto it = key_to_slot_.find(key);
+            if (it == key_to_slot_.end()) continue;
 
-            vector_map.erase(key);
-            metadata_map.erase(key);
+            storage_->remove(it->second);
+            key_to_slot_.erase(it);
 
             kd_tree->remove(key);
             if (lsh_index) lsh_index->remove(key);
@@ -729,24 +709,13 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchDelete(const std::vector<std
             result.operations_committed++;
         }
 
-        if (query_cache) {
-            query_cache->invalidate();
-        }
+        if (query_cache) query_cache->invalidate();
         markGPUBufferDirty();
+        quantizer_dirty_.store(true);
     }
 
     if (result.success) {
         total_deletes.fetch_add(result.operations_committed, std::memory_order_relaxed);
-    }
-
-    if (result.success && persistence_manager) {
-        if (persistence_manager->shouldCheckpoint()) {
-            std::shared_lock<std::shared_mutex> read_lock(db_mutex);
-            bool checkpoint_success = persistence_manager->saveDatabase(vector_map, metadata_map);
-            if (checkpoint_success) {
-                persistence_manager->onCheckpointCompleted();
-            }
-        }
     }
 
     result.duration = std::chrono::steady_clock::now() - start_time;
@@ -756,36 +725,24 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchDelete(const std::vector<std
 // -------------------- maintenance / stats --------------------
 
 size_t VectorDatabase::flush() {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
+    if (storage_) storage_->sync();
     if (persistence_manager) return persistence_manager->flush();
     return 0;
 }
 
 bool VectorDatabase::checkpoint() {
-    // Snapshot data under read lock, then write outside lock
-    std::unordered_map<std::string, Vector> snapshot_vectors;
-    std::unordered_map<std::string, std::string> snapshot_metadata;
-
-    {
-        std::shared_lock<std::shared_mutex> lock(db_mutex);
-        if (!persistence_manager) return true;
-        snapshot_vectors = vector_map;
-        snapshot_metadata = metadata_map;
+    if (storage_) {
+        storage_->sync();
     }
-
-    // I/O outside lock — doesn't block inserts/updates
-    bool success = persistence_manager->saveDatabase(snapshot_vectors, snapshot_metadata);
-    if (success) {
-        persistence_manager->onCheckpointCompleted();
-    }
-    return success;
+    return true;
 }
 
 VectorDatabase::DatabaseStatistics VectorDatabase::getStatistics() const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
 
     DatabaseStatistics stats;
-    stats.total_vectors = vector_map.size();
+    stats.total_vectors = key_to_slot_.size();
     stats.total_inserts = total_inserts.load(std::memory_order_relaxed);
     stats.total_searches = total_searches.load(std::memory_order_relaxed);
     stats.total_updates = total_updates.load(std::memory_order_relaxed);
@@ -823,18 +780,22 @@ bool VectorDatabase::isRecovering() const {
 }
 
 void VectorDatabase::updatePersistenceConfig(const PersistenceConfig& config) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
-
+    EpochRCU::WriteGuard wg(rcu_);
     persistence_config = config;
-
     if (persistence_manager) {
         persistence_manager->updateConfig(config);
     }
 }
 
 std::unordered_map<std::string, Vector> VectorDatabase::getAllVectors() const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
-    return vector_map;
+    EpochRCU::ReadGuard rg(rcu_);
+    std::unordered_map<std::string, Vector> result;
+    result.reserve(key_to_slot_.size());
+    for (const auto& [key, slot_id] : key_to_slot_) {
+        const float* ptr = storage_->vector_ptr(slot_id);
+        result.emplace(key, Vector(std::vector<float>(ptr, ptr + dimensions)));
+    }
+    return result;
 }
 
 const PersistenceConfig& VectorDatabase::getPersistenceConfig() const {
@@ -850,8 +811,8 @@ void VectorDatabase::setRecovering(bool is_recovering) {
 }
 
 size_t VectorDatabase::vectorCount() const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
-    return vector_map.size();
+    EpochRCU::ReadGuard rg(rcu_);
+    return key_to_slot_.size();
 }
 
 void VectorDatabase::enableSIMD(bool enable) {
@@ -865,27 +826,23 @@ bool VectorDatabase::isSIMDEnabled() const {
 // -------------------- GPU acceleration --------------------
 
 void VectorDatabase::enableGPU(bool enable) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
     if (enable && !gpu_initialized) {
         if (gpu_ops::initialize()) {
             gpu_initialized = true;
             gpu_enabled = true;
-            std::cout << "GPU acceleration enabled\n";
         } else {
-            std::cerr << "Failed to initialize GPU, falling back to CPU\n";
             gpu_enabled = false;
         }
     } else if (enable && gpu_initialized) {
         gpu_enabled = true;
-        std::cout << "GPU acceleration enabled\n";
     } else {
         gpu_enabled = false;
-        std::cout << "GPU acceleration disabled\n";
     }
 }
 
 bool VectorDatabase::isGPUEnabled() const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
     return gpu_enabled;
 }
 
@@ -894,32 +851,28 @@ bool VectorDatabase::isGPUAvailable() const {
 }
 
 void VectorDatabase::setGPUThreshold(size_t threshold) {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::WriteGuard wg(rcu_);
     gpu_threshold = threshold;
 }
 
 size_t VectorDatabase::getGPUThreshold() const {
-    std::shared_lock<std::shared_mutex> lock(db_mutex);
+    EpochRCU::ReadGuard rg(rcu_);
     return gpu_threshold;
 }
 
 std::vector<std::pair<std::string, float>> VectorDatabase::gpuAcceleratedSearch(const Vector& query, size_t k) {
     std::lock_guard<std::mutex> gpu_lock(gpu_mutex_);
 
-    // Rebuild GPU buffer if dirty (only happens after insert/update/delete)
     if (gpu_buffer_dirty.load(std::memory_order_acquire)) {
         rebuildGPUBuffer();
     }
 
-    // Use the zero-copy GPU search
     std::vector<float> distances = gpu_ops::search_euclidean(query);
 
-    // If GPU failed, fall back to CPU
     if (distances.empty()) {
         return kd_tree->nearestNeighbors(query, k);
     }
 
-    // Find top-k using partial sort
     std::vector<std::pair<size_t, float>> indexed;
     indexed.reserve(distances.size());
     for (size_t i = 0; i < distances.size(); i++) {
@@ -932,7 +885,6 @@ std::vector<std::pair<std::string, float>> VectorDatabase::gpuAcceleratedSearch(
                       indexed.end(),
                       [](const auto& a, const auto& b) { return a.second < b.second; });
 
-    // Convert to key-distance pairs using our cached keys
     std::vector<std::pair<std::string, float>> results;
     results.reserve(actual_k);
     for (size_t i = 0; i < actual_k; i++) {
@@ -943,23 +895,21 @@ std::vector<std::pair<std::string, float>> VectorDatabase::gpuAcceleratedSearch(
 }
 
 void VectorDatabase::rebuildGPUBuffer() {
-    // Clear and rebuild contiguous storage
     flat_vectors.clear();
     vector_keys.clear();
-    flat_vectors.reserve(vector_map.size() * dimensions);
-    vector_keys.reserve(vector_map.size());
+    flat_vectors.reserve(key_to_slot_.size() * dimensions);
+    vector_keys.reserve(key_to_slot_.size());
 
-    for (const auto& [key, vec] : vector_map) {
+    for (const auto& [key, slot_id] : key_to_slot_) {
         vector_keys.push_back(key);
-        // Bulk copy via memcpy instead of float-by-float push_back
+        const float* ptr = storage_->vector_ptr(slot_id);
         size_t offset = flat_vectors.size();
         flat_vectors.resize(offset + dimensions);
-        std::memcpy(flat_vectors.data() + offset, vec.data_ptr(), dimensions * sizeof(float));
+        std::memcpy(flat_vectors.data() + offset, ptr, dimensions * sizeof(float));
     }
 
-    // Update GPU buffer (zero-copy on Apple Silicon!)
     if (!flat_vectors.empty()) {
-        gpu_ops::set_database_buffer(flat_vectors.data(), vector_map.size(), dimensions);
+        gpu_ops::set_database_buffer(flat_vectors.data(), key_to_slot_.size(), dimensions);
     }
 
     gpu_buffer_dirty.store(false, std::memory_order_release);
