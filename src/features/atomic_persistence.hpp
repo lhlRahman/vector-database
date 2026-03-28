@@ -12,9 +12,6 @@
 #include "../core/vector.hpp"
 #include "atomic_file_writer.hpp"
 #include "commit_log.hpp"
-#include "../json.hpp"
-
-using json = nlohmann::json;
 
 // ========================== PersistenceConfig ==========================
 struct PersistenceConfig {
@@ -35,20 +32,6 @@ struct PersistenceConfig {
     bool enable_async_flush = true;  // reserved
 };
 
-inline void to_json(json& j, const PersistenceConfig& c) {
-    j = json{
-        {"log_directory", c.log_directory},
-        {"log_rotation_size", c.log_rotation_size},
-        {"max_log_files", c.max_log_files},
-        {"data_directory", c.data_directory},
-        {"checkpoint_interval_ms", c.checkpoint_interval.count()},
-        {"checkpoint_trigger_ops", c.checkpoint_trigger_ops},
-        {"auto_recovery", c.auto_recovery},
-        {"validate_checksums", c.validate_checksums},
-        {"enable_compression", c.enable_compression},
-        {"enable_async_flush", c.enable_async_flush}
-    };
-}
 
 // ========================== AtomicPersistence ==========================
 class AtomicPersistence {
@@ -147,22 +130,3 @@ private:
     std::atomic<bool>                 janitor_stop_{true};
 };
 
-// pretty stats JSON
-inline void to_json(json& j, const AtomicPersistence::Statistics& s) {
-    j = json{
-        {"total_logged_inserts", s.total_logged_inserts},
-        {"total_logged_updates", s.total_logged_updates},
-        {"total_logged_deletes", s.total_logged_deletes},
-        {"total_checkpoints", s.total_checkpoints},
-        {"total_flushes", s.total_flushes},
-        {"last_replayed_sequence", s.last_replayed_sequence},
-        {"ops_since_last_checkpoint", s.ops_since_last_checkpoint},
-        {"recovering", s.recovering},
-        {"wal", {
-            {"total_entries",     s.wal.total_entries},
-            {"total_bytes",       s.wal.total_bytes},
-            {"next_sequence",     s.wal.next_sequence},
-            {"current_log_size",  s.wal.current_log_size}
-        }}
-    };
-}

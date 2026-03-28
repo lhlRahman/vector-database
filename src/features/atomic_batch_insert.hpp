@@ -12,9 +12,6 @@
 
 #include "../core/vector.hpp"
 #include "atomic_persistence.hpp"
-#include "json.hpp"
-
-using json = nlohmann::json;
 
 class AtomicBatchInsert {
 public:
@@ -106,15 +103,3 @@ public:
 
     std::shared_ptr<AtomicPersistence> persistenceHandle() const { return persistence_; }
 };
-
-inline void to_json(json& j, const AtomicBatchInsert::Statistics& stats) {
-    j = json{
-        {"total_batches", stats.total_batches},
-        {"successful_batches", stats.successful_batches},
-        {"failed_batches", stats.failed_batches},
-        {"total_operations", stats.total_operations},
-        {"success_rate", stats.success_rate},
-        {"average_batch_size", stats.average_batch_size},
-        {"average_batch_duration", stats.average_batch_duration.count()}
-    };
-}

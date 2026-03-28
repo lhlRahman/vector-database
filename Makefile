@@ -58,29 +58,12 @@ METAL_SRCS = $(shell find $(SHADER_DIR) -name '*.metal' 2>/dev/null)
 METALLIB = $(BUILD_DIR)/vector_ops.metallib
 
 # Executable
-TARGET = $(BUILD_DIR)/vector_db_server
+TARGET = $(BUILD_DIR)/tcp_server
 
 # Default target when you just run "make"
-all: release
-
-# --- Build Targets ---
-
-# Release target (skip metallib if metal compiler not available)
-release: CXXFLAGS = $(RELEASE_CXXFLAGS)
-release: $(TARGET)
-	@echo "Note: Metal shader compiler not found. Using runtime shader compilation."
-
-# Debug target (skip metallib if metal compiler not available)
-debug: CXXFLAGS = $(DEBUG_CXXFLAGS)
-debug: $(TARGET)
-	@echo "Note: Metal shader compiler not found. Using runtime shader compilation."
+all: tcp-server
 
 # --- Build Rules ---
-
-# Rule to link the final executable
-$(TARGET): $(OBJS)
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -pthread $(OBJS) $(METAL_FRAMEWORKS) -o $@
 
 # Rule to compile a .cpp source file into a .o object file
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
@@ -105,13 +88,9 @@ endif
 
 # --- Convenience Targets ---
 
-# Run API server (release mode)
-run-server: release
+# Run TCP server
+run-server: tcp-server
 	./$(TARGET)
-
-# Run API server with the appropriate debugger (gdb or lldb)
-run-debug: debug
-	$(DEBUGGER) ./$(TARGET)
 
 # Compile only Metal shaders
 metal: $(METALLIB)
@@ -182,6 +161,37 @@ perf-test: $(LIB_OBJS)
 	@echo "Running performance tests..."
 	@./$(PERF_TEST)
 
+# TCP server
+TCP_SERVER = $(BUILD_DIR)/tcp_server
+tcp-server: $(LIB_OBJS)
+	@mkdir -p $(BUILD_DIR)/api
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_server.cpp -o $(BUILD_DIR)/api/tcp_server.o
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_main.cpp -o $(BUILD_DIR)/api/tcp_main.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/api/tcp_main.o $(BUILD_DIR)/api/tcp_server.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(TCP_SERVER)
+	@echo "TCP server built: $(TCP_SERVER)"
+
+# TCP transport tests
+TCP_TEST = $(BUILD_DIR)/tcp_tests
+tcp-test: $(LIB_OBJS)
+	@mkdir -p $(BUILD_DIR)/api
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_server.cpp -o $(BUILD_DIR)/api/tcp_server.o
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_client.cpp -o $(BUILD_DIR)/api/tcp_client.o
+	$(CXX) $(CXXFLAGS) -c test/test_tcp.cpp -o $(BUILD_DIR)/test_tcp.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/test_tcp.o $(BUILD_DIR)/api/tcp_server.o $(BUILD_DIR)/api/tcp_client.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(TCP_TEST)
+	@echo "Running TCP transport tests..."
+	@./$(TCP_TEST)
+
+# TCP network benchmark (direct API vs TCP transport)
+TCP_BENCH = $(BUILD_DIR)/bench_tcp
+bench-tcp: $(LIB_OBJS)
+	@mkdir -p $(BUILD_DIR)/api
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_server.cpp -o $(BUILD_DIR)/api/tcp_server.o
+	$(CXX) $(CXXFLAGS) -c src/api/tcp_client.cpp -o $(BUILD_DIR)/api/tcp_client.o
+	$(CXX) $(CXXFLAGS) -c test/bench_tcp.cpp -o $(BUILD_DIR)/bench_tcp.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/bench_tcp.o $(BUILD_DIR)/api/tcp_server.o $(BUILD_DIR)/api/tcp_client.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(TCP_BENCH)
+	@echo "Running TCP benchmark..."
+	@./$(TCP_BENCH)
+
 # Run all tests
 test: unit-test e2e-test
 
@@ -189,4 +199,4 @@ test: unit-test e2e-test
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all release debug clean run-server run-debug metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp
