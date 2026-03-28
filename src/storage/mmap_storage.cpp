@@ -1,0 +1,329 @@
+#include "mmap_storage.hpp"
+
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <stdexcept>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// ── Helpers ────────────────────────────────────────────────
+
+size_t MMapStorage::compute_slot_size(size_t dims) {
+    size_t raw = SLOT_HEADER_BYTES + dims * sizeof(float);
+    return (raw + 63) & ~size_t(63); // round up to 64-byte boundary
+}
+
+size_t MMapStorage::compute_file_size(size_t slot_size, size_t capacity) {
+    return PAGE_SIZE + slot_size * capacity;
+}
+
+// ── Accessors ──────────────────────────────────────────────
+
+MMapStorage::FileHeader* MMapStorage::header() {
+    return reinterpret_cast<FileHeader*>(mapped_);
+}
+
+const MMapStorage::FileHeader* MMapStorage::header() const {
+    return reinterpret_cast<const FileHeader*>(mapped_);
+}
+
+MMapStorage::SlotHeader* MMapStorage::slot(uint64_t id) {
+    auto* base = static_cast<uint8_t*>(mapped_) + PAGE_SIZE + id * slot_size_;
+    return reinterpret_cast<SlotHeader*>(base);
+}
+
+const MMapStorage::SlotHeader* MMapStorage::slot(uint64_t id) const {
+    auto* base = static_cast<const uint8_t*>(mapped_) + PAGE_SIZE + id * slot_size_;
+    return reinterpret_cast<const SlotHeader*>(base);
+}
+
+float* MMapStorage::slot_vector(uint64_t id) {
+    auto* base = static_cast<uint8_t*>(mapped_) + PAGE_SIZE + id * slot_size_;
+    return reinterpret_cast<float*>(base + SLOT_HEADER_BYTES);
+}
+
+const float* MMapStorage::slot_vector(uint64_t id) const {
+    auto* base = static_cast<const uint8_t*>(mapped_) + PAGE_SIZE + id * slot_size_;
+    return reinterpret_cast<const float*>(base + SLOT_HEADER_BYTES);
+}
+
+// ── Lifecycle ──────────────────────────────────────────────
+
+MMapStorage::MMapStorage(const std::string& path, size_t dims, size_t initial_capacity)
+    : path_(path), dims_(dims), initial_capacity_(initial_capacity) {
+    slot_size_ = compute_slot_size(dims);
+}
+
+MMapStorage::~MMapStorage() noexcept {
+    try { close(); } catch (...) {}
+}
+
+void MMapStorage::open() {
+    if (mapped_) return; // already open
+
+    bool created = false;
+    fd_ = ::open(path_.c_str(), O_RDWR, 0644);
+    if (fd_ < 0) {
+        // Create new file
+        fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
+        if (fd_ < 0) {
+            throw std::runtime_error("open(" + path_ + "): " + strerror(errno));
+        }
+        created = true;
+    }
+
+    if (created) {
+        // Initialize new file
+        size_t file_size = compute_file_size(slot_size_, initial_capacity_);
+        if (ftruncate(fd_, static_cast<off_t>(file_size)) < 0) {
+            ::close(fd_);
+            throw std::runtime_error("ftruncate: " + std::string(strerror(errno)));
+        }
+
+        mapped_size_ = file_size;
+        mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        if (mapped_ == MAP_FAILED) {
+            mapped_ = nullptr;
+            ::close(fd_);
+            throw std::runtime_error("mmap: " + std::string(strerror(errno)));
+        }
+
+        // Zero the header, then fill it
+        std::memset(mapped_, 0, PAGE_SIZE);
+        auto* h = header();
+        std::memcpy(h->magic, "VDBS", 4);
+        h->version = 1;
+        h->dimensions = static_cast<uint32_t>(dims_);
+        h->slot_size = static_cast<uint32_t>(slot_size_);
+        h->slot_capacity = initial_capacity_;
+        h->active_count = 0;
+        h->next_slot_hint = 0;
+
+        // Zero all slots
+        std::memset(static_cast<uint8_t*>(mapped_) + PAGE_SIZE, 0,
+                    slot_size_ * initial_capacity_);
+    } else {
+        // Open existing file — read header to get sizes
+        struct stat st;
+        fstat(fd_, &st);
+        mapped_size_ = static_cast<size_t>(st.st_size);
+
+        mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        if (mapped_ == MAP_FAILED) {
+            mapped_ = nullptr;
+            ::close(fd_);
+            throw std::runtime_error("mmap: " + std::string(strerror(errno)));
+        }
+
+        auto* h = header();
+        if (std::memcmp(h->magic, "VDBS", 4) != 0) {
+            close();
+            throw std::runtime_error("invalid file magic");
+        }
+        if (h->dimensions != dims_) {
+            close();
+            throw std::runtime_error("dimension mismatch: file has " +
+                                     std::to_string(h->dimensions) + ", expected " +
+                                     std::to_string(dims_));
+        }
+        slot_size_ = h->slot_size;
+    }
+}
+
+void MMapStorage::close() {
+    if (mapped_) {
+        msync(mapped_, mapped_size_, MS_SYNC);
+        munmap(mapped_, mapped_size_);
+        mapped_ = nullptr;
+    }
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+    mapped_size_ = 0;
+}
+
+// ── CRUD ───────────────────────────────────────────────────
+
+uint64_t MMapStorage::find_free_slot() {
+    auto* h = header();
+    uint64_t cap = h->slot_capacity;
+    uint64_t start = h->next_slot_hint;
+
+    // Scan from hint forward, wrapping around
+    for (uint64_t i = 0; i < cap; ++i) {
+        uint64_t idx = (start + i) % cap;
+        if (slot(idx)->flags != SLOT_ACTIVE) {
+            h->next_slot_hint = idx + 1;
+            return idx;
+        }
+    }
+    return UINT64_MAX; // full
+}
+
+uint64_t MMapStorage::insert(const std::string& key, const float* vec, const std::string& metadata) {
+    if (key.size() > MAX_KEY_LEN) {
+        throw std::invalid_argument("key too long (max " + std::to_string(MAX_KEY_LEN) + ")");
+    }
+    if (metadata.size() > MAX_META_LEN) {
+        throw std::invalid_argument("metadata too long (max " + std::to_string(MAX_META_LEN) + ")");
+    }
+
+    uint64_t id = find_free_slot();
+    if (id == UINT64_MAX) {
+        // Grow the file
+        grow(header()->slot_capacity * 2);
+        id = find_free_slot();
+        if (id == UINT64_MAX) {
+            throw std::runtime_error("failed to allocate slot after grow");
+        }
+    }
+
+    auto* s = slot(id);
+    s->flags = SLOT_ACTIVE;
+    s->key_len = static_cast<uint32_t>(key.size());
+    std::memset(s->key, 0, MAX_KEY_LEN);
+    std::memcpy(s->key, key.data(), key.size());
+    s->meta_len = static_cast<uint32_t>(metadata.size());
+    std::memset(s->metadata, 0, MAX_META_LEN);
+    std::memcpy(s->metadata, metadata.data(), metadata.size());
+
+    std::memcpy(slot_vector(id), vec, dims_ * sizeof(float));
+
+    header()->active_count++;
+    return id;
+}
+
+bool MMapStorage::update(uint64_t slot_id, const float* vec, const std::string& metadata) {
+    if (slot_id >= header()->slot_capacity) return false;
+    auto* s = slot(slot_id);
+    if (s->flags != SLOT_ACTIVE) return false;
+
+    std::memcpy(slot_vector(slot_id), vec, dims_ * sizeof(float));
+
+    s->meta_len = static_cast<uint32_t>(metadata.size());
+    std::memset(s->metadata, 0, MAX_META_LEN);
+    std::memcpy(s->metadata, metadata.data(), metadata.size());
+    return true;
+}
+
+bool MMapStorage::remove(uint64_t slot_id) {
+    if (slot_id >= header()->slot_capacity) return false;
+    auto* s = slot(slot_id);
+    if (s->flags != SLOT_ACTIVE) return false;
+
+    s->flags = SLOT_TOMBSTONE;
+    header()->active_count--;
+
+    // Update hint if this slot is earlier
+    if (slot_id < header()->next_slot_hint) {
+        header()->next_slot_hint = slot_id;
+    }
+    return true;
+}
+
+// ── Access ─────────────────────────────────────────────────
+
+const float* MMapStorage::vector_ptr(uint64_t slot_id) const {
+    return slot_vector(slot_id);
+}
+
+std::string MMapStorage::get_key(uint64_t slot_id) const {
+    auto* s = slot(slot_id);
+    return std::string(s->key, s->key_len);
+}
+
+std::string MMapStorage::get_metadata(uint64_t slot_id) const {
+    auto* s = slot(slot_id);
+    return std::string(s->metadata, s->meta_len);
+}
+
+bool MMapStorage::is_active(uint64_t slot_id) const {
+    if (slot_id >= header()->slot_capacity) return false;
+    return slot(slot_id)->flags == SLOT_ACTIVE;
+}
+
+// ── Iteration ──────────────────────────────────────────────
+
+uint64_t MMapStorage::capacity() const { return header()->slot_capacity; }
+uint64_t MMapStorage::active_count() const { return header()->active_count; }
+size_t   MMapStorage::dimensions() const { return dims_; }
+
+std::unordered_map<std::string, uint64_t> MMapStorage::build_key_index() const {
+    std::unordered_map<std::string, uint64_t> index;
+    uint64_t cap = header()->slot_capacity;
+    index.reserve(header()->active_count);
+    for (uint64_t i = 0; i < cap; ++i) {
+        if (slot(i)->flags == SLOT_ACTIVE) {
+            index[get_key(i)] = i;
+        }
+    }
+    return index;
+}
+
+// ── Maintenance ────────────────────────────────────────────
+
+void MMapStorage::sync() {
+    if (mapped_) {
+        msync(mapped_, mapped_size_, MS_SYNC);
+    }
+}
+
+void MMapStorage::advise_random() {
+    if (mapped_) {
+        madvise(mapped_, mapped_size_, MADV_RANDOM);
+    }
+}
+
+void MMapStorage::advise_sequential() {
+    if (mapped_) {
+        madvise(mapped_, mapped_size_, MADV_SEQUENTIAL);
+    }
+}
+
+void MMapStorage::advise_willneed(uint64_t slot_start, uint64_t slot_count) {
+    if (!mapped_ || slot_count == 0) return;
+    auto* base = static_cast<uint8_t*>(mapped_) + PAGE_SIZE + slot_start * slot_size_;
+    size_t len = slot_count * slot_size_;
+    // Clamp to mapped region
+    auto* map_end = static_cast<uint8_t*>(mapped_) + mapped_size_;
+    if (base + len > map_end) len = static_cast<size_t>(map_end - base);
+    madvise(base, len, MADV_WILLNEED);
+}
+
+// ── Growth ─────────────────────────────────────────────────
+
+void MMapStorage::grow(size_t new_capacity) {
+    auto* h = header();
+    if (new_capacity <= h->slot_capacity) return;
+
+    size_t old_capacity = h->slot_capacity;
+    size_t new_size = compute_file_size(slot_size_, new_capacity);
+
+    // Unmap current
+    msync(mapped_, mapped_size_, MS_SYNC);
+    munmap(mapped_, mapped_size_);
+    mapped_ = nullptr;
+
+    // Extend file
+    if (ftruncate(fd_, static_cast<off_t>(new_size)) < 0) {
+        throw std::runtime_error("ftruncate grow: " + std::string(strerror(errno)));
+    }
+
+    // Remap
+    mapped_size_ = new_size;
+    mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+    if (mapped_ == MAP_FAILED) {
+        mapped_ = nullptr;
+        throw std::runtime_error("mmap grow: " + std::string(strerror(errno)));
+    }
+
+    // Zero new slots
+    size_t old_data = PAGE_SIZE + slot_size_ * old_capacity;
+    size_t new_data = slot_size_ * (new_capacity - old_capacity);
+    std::memset(static_cast<uint8_t*>(mapped_) + old_data, 0, new_data);
+
+    header()->slot_capacity = new_capacity;
+}
