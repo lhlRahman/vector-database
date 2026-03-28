@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../src/core/vector.hpp"
+#include "../src/core/vector_accessor.hpp"
 #include "../src/core/kd_tree.hpp"
 #include "../src/core/vector_database.hpp"
 #include "../src/algorithms/lsh_index.hpp"
@@ -83,6 +84,24 @@ void run_test(const std::string& name, std::function<void()> fn) {
     }
 }
 
+// ---- test vector store (simulates mmap storage for index unit tests) ----
+
+struct TestVectorStore {
+    std::vector<Vector> vectors;
+
+    uint64_t add(const Vector& v) {
+        uint64_t id = vectors.size();
+        vectors.push_back(v);
+        return id;
+    }
+
+    VectorAccessor accessor() {
+        return [this](uint64_t id) -> const float* {
+            return vectors[id].data_ptr();
+        };
+    }
+};
+
 // =====================================================================
 //  VECTOR TESTS
 // =====================================================================
@@ -114,7 +133,7 @@ void test_vector_dot_product() {
     Vector v1(std::vector<float>{1.0f, 2.0f, 3.0f});
     Vector v2(std::vector<float>{4.0f, 5.0f, 6.0f});
     float dot = Vector::dot_product(v1, v2);
-    ASSERT_NEAR(dot, 32.0f, 1e-4f); // 1*4 + 2*5 + 3*6 = 32
+    ASSERT_NEAR(dot, 32.0f, 1e-4f);
 
     Vector v3(std::vector<float>{1.0f, 0.0f});
     ASSERT_THROWS(Vector::dot_product(v1, v3), std::invalid_argument);
@@ -164,7 +183,6 @@ void test_vector_hash() {
     Vector v2(std::vector<float>{1.0f, 2.0f});
     Vector v3(std::vector<float>{3.0f, 4.0f});
     ASSERT_EQ(std::hash<Vector>{}(v1), std::hash<Vector>{}(v2));
-    // Different vectors should (almost certainly) have different hashes
     ASSERT_TRUE(std::hash<Vector>{}(v1) != std::hash<Vector>{}(v3));
 }
 
@@ -183,12 +201,17 @@ void test_euclidean_distance() {
     Vector v2(std::vector<float>{3.0f, 4.0f});
     float d = metric.distance(v1, v2);
     ASSERT_NEAR(d, 5.0f, 1e-4f);
+
+    // Also test raw-pointer overload
+    float d_raw = metric.distance_raw(v1.data_ptr(), v2.data_ptr(), 2);
+    ASSERT_NEAR(d_raw, 5.0f, 1e-4f);
 }
 
 void test_euclidean_distance_same() {
     EuclideanDistance metric;
     Vector v(std::vector<float>{1.0f, 2.0f, 3.0f});
     ASSERT_NEAR(metric.distance(v, v), 0.0f, 1e-6f);
+    ASSERT_NEAR(metric.distance_raw(v.data_ptr(), v.data_ptr(), 3), 0.0f, 1e-6f);
 }
 
 void test_manhattan_distance() {
@@ -196,7 +219,10 @@ void test_manhattan_distance() {
     Vector v1(std::vector<float>{1.0f, 2.0f, 3.0f});
     Vector v2(std::vector<float>{4.0f, 6.0f, 3.0f});
     float d = metric.distance(v1, v2);
-    ASSERT_NEAR(d, 7.0f, 1e-4f); // |3| + |4| + |0| = 7
+    ASSERT_NEAR(d, 7.0f, 1e-4f);
+
+    float d_raw = metric.distance_raw(v1.data_ptr(), v2.data_ptr(), 3);
+    ASSERT_NEAR(d_raw, 7.0f, 1e-4f);
 }
 
 void test_cosine_similarity() {
@@ -204,10 +230,8 @@ void test_cosine_similarity() {
     Vector v1(std::vector<float>{1.0f, 0.0f});
     Vector v2(std::vector<float>{0.0f, 1.0f});
     float d = metric.distance(v1, v2);
-    // Perpendicular vectors: cosine similarity = 0, cosine distance = 1
     ASSERT_NEAR(d, 1.0f, 1e-4f);
 
-    // Identical direction
     Vector v3(std::vector<float>{2.0f, 0.0f});
     float d2 = metric.distance(v1, v3);
     ASSERT_NEAR(d2, 0.0f, 1e-4f);
@@ -218,7 +242,7 @@ void test_cosine_similarity_parallel() {
     Vector v1(std::vector<float>{1.0f, 1.0f});
     Vector v2(std::vector<float>{2.0f, 2.0f});
     float d = metric.distance(v1, v2);
-    ASSERT_NEAR(d, 0.0f, 1e-4f); // Same direction = 0 distance
+    ASSERT_NEAR(d, 0.0f, 1e-4f);
 }
 
 // =====================================================================
@@ -227,15 +251,16 @@ void test_cosine_similarity_parallel() {
 
 void test_kd_tree_insert_search() {
     auto metric = std::make_shared<EuclideanDistance>();
-    KDTree tree(3, metric);
+    TestVectorStore store;
 
-    Vector v1(std::vector<float>{1.0f, 0.0f, 0.0f});
-    Vector v2(std::vector<float>{0.0f, 1.0f, 0.0f});
-    Vector v3(std::vector<float>{0.0f, 0.0f, 1.0f});
+    auto id_a = store.add(Vector(std::vector<float>{1.0f, 0.0f, 0.0f}));
+    auto id_b = store.add(Vector(std::vector<float>{0.0f, 1.0f, 0.0f}));
+    auto id_c = store.add(Vector(std::vector<float>{0.0f, 0.0f, 1.0f}));
 
-    tree.insert(v1, "a");
-    tree.insert(v2, "b");
-    tree.insert(v3, "c");
+    KDTree tree(3, metric, store.accessor());
+    tree.insert(id_a, "a");
+    tree.insert(id_b, "b");
+    tree.insert(id_c, "c");
 
     Vector query(std::vector<float>{0.9f, 0.1f, 0.0f});
     auto results = tree.nearestNeighbors(query, 1);
@@ -245,33 +270,40 @@ void test_kd_tree_insert_search() {
 
 void test_kd_tree_k_nearest() {
     auto metric = std::make_shared<EuclideanDistance>();
-    KDTree tree(2, metric);
+    TestVectorStore store;
 
-    tree.insert(Vector(std::vector<float>{0.0f, 0.0f}), "origin");
-    tree.insert(Vector(std::vector<float>{1.0f, 0.0f}), "right");
-    tree.insert(Vector(std::vector<float>{10.0f, 10.0f}), "far");
+    auto id0 = store.add(Vector(std::vector<float>{0.0f, 0.0f}));
+    auto id1 = store.add(Vector(std::vector<float>{1.0f, 0.0f}));
+    auto id2 = store.add(Vector(std::vector<float>{10.0f, 10.0f}));
+
+    KDTree tree(2, metric, store.accessor());
+    tree.insert(id0, "origin");
+    tree.insert(id1, "right");
+    tree.insert(id2, "far");
 
     Vector query(std::vector<float>{0.5f, 0.0f});
     auto results = tree.nearestNeighbors(query, 2);
     ASSERT_EQ(results.size(), 2u);
-    // Closest should be "origin" (0.5) or "right" (0.5)
-    // Both are equidistant, just check we get 2 results
     ASSERT_TRUE(results[0].second <= results[1].second);
 }
 
 void test_kd_tree_remove() {
     auto metric = std::make_shared<EuclideanDistance>();
-    KDTree tree(2, metric);
+    TestVectorStore store;
 
-    tree.insert(Vector(std::vector<float>{0.0f, 0.0f}), "a");
-    tree.insert(Vector(std::vector<float>{1.0f, 1.0f}), "b");
-    tree.insert(Vector(std::vector<float>{2.0f, 2.0f}), "c");
+    auto id0 = store.add(Vector(std::vector<float>{0.0f, 0.0f}));
+    auto id1 = store.add(Vector(std::vector<float>{1.0f, 1.0f}));
+    auto id2 = store.add(Vector(std::vector<float>{2.0f, 2.0f}));
+
+    KDTree tree(2, metric, store.accessor());
+    tree.insert(id0, "a");
+    tree.insert(id1, "b");
+    tree.insert(id2, "c");
 
     tree.remove("b");
 
     Vector query(std::vector<float>{1.0f, 1.0f});
     auto results = tree.nearestNeighbors(query, 3);
-    // "b" should not appear in results
     for (const auto& [key, dist] : results) {
         ASSERT_TRUE(key != "b");
     }
@@ -279,7 +311,8 @@ void test_kd_tree_remove() {
 
 void test_kd_tree_empty() {
     auto metric = std::make_shared<EuclideanDistance>();
-    KDTree tree(2, metric);
+    TestVectorStore store;
+    KDTree tree(2, metric, store.accessor());
 
     Vector query(std::vector<float>{0.0f, 0.0f});
     auto results = tree.nearestNeighbors(query, 5);
@@ -292,28 +325,32 @@ void test_kd_tree_empty() {
 
 void test_lsh_insert_search() {
     auto metric = std::make_shared<EuclideanDistance>();
-    LSHIndex lsh(4, 5, 4, metric);
+    TestVectorStore store;
 
-    Vector v1(std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
-    Vector v2(std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});
-    Vector v3(std::vector<float>{1.0f, 0.1f, 0.0f, 0.0f});
+    auto id_a = store.add(Vector(std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f}));
+    auto id_b = store.add(Vector(std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f}));
+    auto id_c = store.add(Vector(std::vector<float>{1.0f, 0.1f, 0.0f, 0.0f}));
 
-    lsh.insert(v1, "a");
-    lsh.insert(v2, "b");
-    lsh.insert(v3, "c");
+    LSHIndex lsh(4, 5, 4, metric, store.accessor());
+    lsh.insert(id_a, "a");
+    lsh.insert(id_b, "b");
+    lsh.insert(id_c, "c");
 
     Vector query(std::vector<float>{1.0f, 0.05f, 0.0f, 0.0f});
     auto results = lsh.search(query, 2);
-    // Should find at least 1 result (LSH is approximate, may not always return all)
     ASSERT_TRUE(results.size() >= 1);
 }
 
 void test_lsh_remove() {
     auto metric = std::make_shared<EuclideanDistance>();
-    LSHIndex lsh(2, 5, 4, metric);
+    TestVectorStore store;
 
-    lsh.insert(Vector(std::vector<float>{1.0f, 0.0f}), "a");
-    lsh.insert(Vector(std::vector<float>{0.0f, 1.0f}), "b");
+    auto id_a = store.add(Vector(std::vector<float>{1.0f, 0.0f}));
+    auto id_b = store.add(Vector(std::vector<float>{0.0f, 1.0f}));
+
+    LSHIndex lsh(2, 5, 4, metric, store.accessor());
+    lsh.insert(id_a, "a");
+    lsh.insert(id_b, "b");
     lsh.remove("a");
 
     Vector query(std::vector<float>{1.0f, 0.0f});
@@ -329,12 +366,18 @@ void test_lsh_remove() {
 
 void test_hnsw_insert_search() {
     auto metric = std::make_shared<EuclideanDistance>();
-    HNSWIndex hnsw(3, 8, 50, 50, metric);
+    TestVectorStore store;
 
-    hnsw.insert(Vector(std::vector<float>{1.0f, 0.0f, 0.0f}), "a");
-    hnsw.insert(Vector(std::vector<float>{0.0f, 1.0f, 0.0f}), "b");
-    hnsw.insert(Vector(std::vector<float>{0.0f, 0.0f, 1.0f}), "c");
-    hnsw.insert(Vector(std::vector<float>{1.0f, 1.0f, 0.0f}), "d");
+    auto id_a = store.add(Vector(std::vector<float>{1.0f, 0.0f, 0.0f}));
+    auto id_b = store.add(Vector(std::vector<float>{0.0f, 1.0f, 0.0f}));
+    auto id_c = store.add(Vector(std::vector<float>{0.0f, 0.0f, 1.0f}));
+    auto id_d = store.add(Vector(std::vector<float>{1.0f, 1.0f, 0.0f}));
+
+    HNSWIndex hnsw(3, 8, 50, 50, metric, store.accessor());
+    hnsw.insert(id_a, "a");
+    hnsw.insert(id_b, "b");
+    hnsw.insert(id_c, "c");
+    hnsw.insert(id_d, "d");
 
     Vector query(std::vector<float>{1.0f, 0.9f, 0.0f});
     auto results = hnsw.search(query, 1);
@@ -344,11 +387,16 @@ void test_hnsw_insert_search() {
 
 void test_hnsw_remove() {
     auto metric = std::make_shared<EuclideanDistance>();
-    HNSWIndex hnsw(2, 8, 50, 50, metric);
+    TestVectorStore store;
 
-    hnsw.insert(Vector(std::vector<float>{0.0f, 0.0f}), "origin");
-    hnsw.insert(Vector(std::vector<float>{1.0f, 0.0f}), "right");
-    hnsw.insert(Vector(std::vector<float>{0.0f, 1.0f}), "up");
+    auto id0 = store.add(Vector(std::vector<float>{0.0f, 0.0f}));
+    auto id1 = store.add(Vector(std::vector<float>{1.0f, 0.0f}));
+    auto id2 = store.add(Vector(std::vector<float>{0.0f, 1.0f}));
+
+    HNSWIndex hnsw(2, 8, 50, 50, metric, store.accessor());
+    hnsw.insert(id0, "origin");
+    hnsw.insert(id1, "right");
+    hnsw.insert(id2, "up");
 
     hnsw.remove("origin");
 
@@ -361,18 +409,19 @@ void test_hnsw_remove() {
 
 void test_hnsw_many_vectors() {
     auto metric = std::make_shared<EuclideanDistance>();
-    HNSWIndex hnsw(4, 8, 50, 50, metric);
+    TestVectorStore store;
 
-    // Insert 100 vectors
+    HNSWIndex hnsw(4, 8, 50, 50, metric, store.accessor());
+
     for (int i = 0; i < 100; i++) {
         float f = static_cast<float>(i);
         Vector v(std::vector<float>{f, f * 0.5f, f * 0.25f, f * 0.1f});
-        hnsw.insert(v, "v" + std::to_string(i));
+        auto id = store.add(v);
+        hnsw.insert(id, "v" + std::to_string(i));
     }
 
     ASSERT_EQ(hnsw.size(), 100u);
 
-    // Search for a vector close to v50
     Vector query(std::vector<float>{50.0f, 25.0f, 12.5f, 5.0f});
     auto results = hnsw.search(query, 3);
     ASSERT_TRUE(results.size() >= 1);
@@ -388,12 +437,12 @@ void test_cache_hit_miss() {
     Vector q(std::vector<float>{1.0f, 2.0f});
 
     std::vector<std::pair<std::string, float>> results;
-    ASSERT_FALSE(cache.get(q, results)); // miss
+    ASSERT_FALSE(cache.get(q, results));
 
     std::vector<std::pair<std::string, float>> data = {{"a", 0.5f}, {"b", 1.0f}};
     cache.put(q, data);
 
-    ASSERT_TRUE(cache.get(q, results)); // hit
+    ASSERT_TRUE(cache.get(q, results));
     ASSERT_EQ(results.size(), 2u);
     ASSERT_EQ(results[0].first, "a");
 }
@@ -405,14 +454,14 @@ void test_cache_invalidation() {
     std::vector<std::pair<std::string, float>> data = {{"a", 0.5f}};
     cache.put(q, data);
 
-    cache.invalidate(); // O(1) generation bump
+    cache.invalidate();
 
     std::vector<std::pair<std::string, float>> results;
-    ASSERT_FALSE(cache.get(q, results)); // stale entry
+    ASSERT_FALSE(cache.get(q, results));
 }
 
 void test_cache_eviction() {
-    QueryCache cache(3); // capacity 3
+    QueryCache cache(3);
 
     for (int i = 0; i < 5; i++) {
         Vector q(std::vector<float>{static_cast<float>(i), 0.0f});
@@ -428,9 +477,9 @@ void test_cache_statistics() {
     Vector q(std::vector<float>{1.0f});
 
     std::vector<std::pair<std::string, float>> out;
-    cache.get(q, out); // miss
+    cache.get(q, out);
     cache.put(q, {{"a", 1.0f}});
-    cache.get(q, out); // hit
+    cache.get(q, out);
 
     auto stats = cache.getStatistics();
     ASSERT_EQ(stats.hits, 1u);
@@ -471,14 +520,14 @@ void test_db_insert_duplicate() {
 
     Vector v(std::vector<float>{1.0f, 2.0f});
     ASSERT_TRUE(db.insert(v, "k"));
-    ASSERT_FALSE(db.insert(v, "k")); // duplicate
+    ASSERT_FALSE(db.insert(v, "k"));
 }
 
 void test_db_insert_dimension_mismatch() {
     VectorDatabase db(3);
     db.initialize();
 
-    Vector v(std::vector<float>{1.0f, 2.0f}); // 2D, db expects 3D
+    Vector v(std::vector<float>{1.0f, 2.0f});
     ASSERT_THROWS(db.insert(v, "k"), std::invalid_argument);
 }
 
@@ -574,7 +623,7 @@ void test_db_similarity_search_exact() {
     Vector query(std::vector<float>{0.9f, 0.1f, 0.0f});
     auto results = db.similaritySearch(query, 2);
     ASSERT_EQ(results.size(), 2u);
-    ASSERT_EQ(results[0].first, "x"); // closest
+    ASSERT_EQ(results[0].first, "x");
 }
 
 void test_db_similarity_search_empty() {
@@ -607,15 +656,13 @@ void test_db_distance_metric_switch() {
     ASSERT_TRUE(db.insert(Vector(std::vector<float>{1.0f, 0.0f}), "a"));
     ASSERT_TRUE(db.insert(Vector(std::vector<float>{0.0f, 1.0f}), "b"));
 
-    // Default: euclidean
     Vector query(std::vector<float>{0.9f, 0.1f});
     auto r1 = db.similaritySearch(query, 1);
     ASSERT_EQ(r1[0].first, "a");
 
-    // Switch to manhattan
     db.setDistanceMetric(std::make_shared<ManhattanDistance>());
     auto r2 = db.similaritySearch(query, 1);
-    ASSERT_EQ(r2[0].first, "a"); // still closest under manhattan
+    ASSERT_EQ(r2[0].first, "a");
 }
 
 void test_db_nan_rejection() {
