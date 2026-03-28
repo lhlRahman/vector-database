@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "lsh_index.hpp"
+#include "../optimizations/simd_operations.hpp"
 
 LSHIndex::HashFunction::HashFunction(size_t dims) : random_vector(dims), bias(0.0f) {
     std::random_device rd;
@@ -18,12 +19,16 @@ LSHIndex::HashFunction::HashFunction(size_t dims) : random_vector(dims), bias(0.
     bias = d(gen);
 }
 
-size_t LSHIndex::HashFunction::hash(const Vector& v) const {
-    return Vector::dot_product(v, random_vector) + bias > 0 ? 1 : 0;
+size_t LSHIndex::HashFunction::hash(const float* v, size_t dims) const {
+    float dot = simd_ops::dot_product(v, random_vector.data(), dims);
+    return dot + bias > 0 ? 1 : 0;
 }
 
-LSHIndex::LSHIndex(size_t dimensions, size_t num_tables, size_t num_hash_functions, std::shared_ptr<const DistanceMetric> metric)
-    : num_tables(num_tables), num_hash_functions(num_hash_functions), distance_metric(std::move(metric)) {
+LSHIndex::LSHIndex(size_t dimensions, size_t num_tables, size_t num_hash_functions,
+                   std::shared_ptr<const DistanceMetric> metric, VectorAccessor accessor)
+    : num_tables(num_tables), num_hash_functions(num_hash_functions),
+      dimensions(dimensions), distance_metric(std::move(metric)),
+      accessor_(std::move(accessor)) {
     hash_tables.resize(num_tables);
     hash_functions.resize(num_tables);
     for (size_t t = 0; t < num_tables; ++t) {
@@ -34,14 +39,15 @@ LSHIndex::LSHIndex(size_t dimensions, size_t num_tables, size_t num_hash_functio
     }
 }
 
-void LSHIndex::insert(const Vector& vector, const std::string& key) {
+void LSHIndex::insert(uint64_t slot_id, const std::string& key) {
     deleted_keys_.erase(key);
+    const float* vec = accessor_(slot_id);
     for (size_t i = 0; i < num_tables; ++i) {
         size_t hash = 0;
         for (size_t j = 0; j < num_hash_functions; ++j) {
-            hash = (hash << 1) | hash_functions[i][j].hash(vector);
+            hash = (hash << 1) | hash_functions[i][j].hash(vec, dimensions);
         }
-        hash_tables[i][hash].emplace_back(vector, key);
+        hash_tables[i][hash].emplace_back(slot_id, key);
     }
 }
 
@@ -50,20 +56,22 @@ void LSHIndex::remove(const std::string& key) {
 }
 
 std::vector<std::pair<std::string, float>> LSHIndex::search(const Vector& query, size_t k) const {
+    const float* q = query.data_ptr();
     std::unordered_map<std::string, float> candidates;
-    candidates.reserve(k * num_tables); // Pre-reserve to avoid rehashes
+    candidates.reserve(k * num_tables);
 
     for (size_t i = 0; i < num_tables; ++i) {
         size_t hash = 0;
         for (size_t j = 0; j < num_hash_functions; ++j) {
-            hash = (hash << 1) | hash_functions[i][j].hash(query);
+            hash = (hash << 1) | hash_functions[i][j].hash(q, dimensions);
         }
 
         auto it = hash_tables[i].find(hash);
         if (it != hash_tables[i].end()) {
-            for (const auto& pair : it->second) {
-                if (deleted_keys_.count(pair.second) == 0) {
-                    candidates[pair.second] = distance_metric->distance(query, pair.first);
+            for (const auto& [slot_id, key] : it->second) {
+                if (deleted_keys_.count(key) == 0 && candidates.find(key) == candidates.end()) {
+                    const float* vec = accessor_(slot_id);
+                    candidates[key] = distance_metric->distance_raw(q, vec, dimensions);
                 }
             }
         }
@@ -75,8 +83,6 @@ std::vector<std::pair<std::string, float>> LSHIndex::search(const Vector& query,
                       results.begin() + static_cast<std::ptrdiff_t>(actual_k),
                       results.end(),
                       [](const auto& a, const auto& b) { return a.second < b.second; });
-
     results.resize(actual_k);
-
     return results;
 }
