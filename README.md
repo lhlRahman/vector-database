@@ -192,7 +192,7 @@ curl -X POST http://localhost:8080/vectors \
 # Search
 curl -X POST http://localhost:8080/search \
   -H "Content-Type: application/json" \
-  -d '{"vector": [0.1, 0.2, ...], "k": 5}'
+  -d '{"query": [0.1, 0.2, ...], "k": 5}'
 ```
 
 ## Architecture

@@ -145,7 +145,7 @@ Search for similar vectors.
 **Request Body:**
 ```json
 {
-  "vector": [0.1, 0.2, 0.3, ...],
+  "query": [0.1, 0.2, 0.3, ...],
   "k": 5,
   "with_metadata": true
 }
@@ -261,7 +261,7 @@ curl -X POST http://localhost:8080/vectors \
 # Search
 curl -X POST http://localhost:8080/search \
   -H "Content-Type: application/json" \
-  -d '{"vector":[0.1,0.2,0.3],"k":5}'
+  -d '{"query":[0.1,0.2,0.3],"k":5}'
 
 # Get info
 curl http://localhost:8080/info
