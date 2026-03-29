@@ -83,7 +83,10 @@ public:
 
     // ── Access (zero-copy where possible) ──────────────────
 
-    // Returns pointer directly into mmap'd memory. Valid until close()/grow().
+    // Returns pointer directly into mmap'd memory.
+    // WARNING: Pointer is invalidated by grow(). Callers must hold an RCU
+    // ReadGuard and only use pointers within the guard's scope. Writers that
+    // trigger grow() hold a WriteGuard, which waits for all readers to exit.
     const float* vector_ptr(uint64_t slot_id) const;
 
     // Copy key/metadata out of slot.

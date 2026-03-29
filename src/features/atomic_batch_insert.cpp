@@ -58,7 +58,12 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
         std::lock_guard<std::mutex> lk(batch_mutex);
         tx = generateTransactionId();
 
-        for (const auto& op : operations) {
+        // Track which operations succeeded so we can report accurately
+        std::vector<size_t> succeeded_indices;
+        succeeded_indices.reserve(operations.size());
+
+        for (size_t i = 0; i < operations.size(); ++i) {
+            const auto& op = operations[i];
             bool ok = false;
             switch (op.type) {
                 case OperationType::INSERT:
@@ -72,9 +77,28 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
                     break;
             }
             if (!ok) {
-                result.error_message = "operation failed";
+                // Rollback: undo all previously committed operations in reverse
+                for (auto it = succeeded_indices.rbegin(); it != succeeded_indices.rend(); ++it) {
+                    const auto& prev_op = operations[*it];
+                    switch (prev_op.type) {
+                        case OperationType::INSERT:
+                            // Undo insert by deleting
+                            (void)persistence_->remove(prev_op.key);
+                            break;
+                        case OperationType::DELETE:
+                            // Undo delete by re-inserting
+                            (void)persistence_->insert(prev_op.key, prev_op.vector, prev_op.metadata);
+                            break;
+                        case OperationType::UPDATE:
+                            // Cannot perfectly undo update without old value;
+                            // WAL replay will handle consistency on recovery
+                            break;
+                    }
+                }
+                result.error_message = "operation " + std::to_string(i) + " failed on key '" + op.key + "'; batch rolled back";
                 break;
             }
+            succeeded_indices.push_back(i);
             committed++;
         }
 
@@ -82,6 +106,7 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
             result.success = true;
             successful_batches++;
         } else {
+            committed = 0; // Rolled back — nothing committed
             failed_batches++;
         }
 

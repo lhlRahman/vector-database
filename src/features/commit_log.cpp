@@ -263,21 +263,30 @@ std::string CommitLog::generateLogFilename(uint64_t sequence) const {
     return oss.str();
 }
 
-void CommitLog::writeEntry(const LogEntry& entry) {
+bool CommitLog::writeEntry(const LogEntry& entry) {
     auto serialized = entry.serialize();
-    
+
     log_file.write(reinterpret_cast<const char*>(serialized.data()),
                    static_cast<std::streamsize>(serialized.size()));
     log_file.flush();
-    
+
+    if (log_file.fail()) {
+        std::cerr << "[WAL] CRITICAL: write/flush failed (disk full?). "
+                  << "Entry seq " << entry.sequence_number << " may be lost.\n";
+        // Try to clear error state for future writes
+        log_file.clear();
+        return false;
+    }
+
     current_log_size += serialized.size();
     total_entries_written++;
     total_bytes_written += serialized.size();
-    
+
     // Check if we need to rotate the log
     if (current_log_size >= max_log_size) {
         rotateLog();
     }
+    return true;
 }
 
 void CommitLog::rotateLog() {
@@ -325,33 +334,33 @@ void CommitLog::cleanupOldLogs() {
     }
 }
 
-void CommitLog::logInsert(const std::string& key, const Vector& vector, const std::string& metadata) {
+bool CommitLog::logInsert(const std::string& key, const Vector& vector, const std::string& metadata) {
     InsertOperation op{key, vector, metadata};
     LogEntry entry(LogEntryType::INSERT, next_sequence_number++, op.serialize());
-    writeEntry(entry);
+    return writeEntry(entry);
 }
 
-void CommitLog::logUpdate(const std::string& key, const Vector& vector, const std::string& metadata) {
+bool CommitLog::logUpdate(const std::string& key, const Vector& vector, const std::string& metadata) {
     UpdateOperation op{key, vector, metadata};
     LogEntry entry(LogEntryType::UPDATE, next_sequence_number++, op.serialize());
-    writeEntry(entry);
+    return writeEntry(entry);
 }
 
-void CommitLog::logDelete(const std::string& key) {
+bool CommitLog::logDelete(const std::string& key) {
     DeleteOperation op{key};
     LogEntry entry(LogEntryType::DELETE, next_sequence_number++, op.serialize());
-    writeEntry(entry);
+    return writeEntry(entry);
 }
 
-void CommitLog::logCheckpoint(uint64_t checkpoint_sequence, const std::string& checkpoint_file) {
+bool CommitLog::logCheckpoint(uint64_t checkpoint_sequence, const std::string& checkpoint_file) {
     CheckpointOperation op{checkpoint_sequence, checkpoint_file};
     LogEntry entry(LogEntryType::CHECKPOINT, next_sequence_number++, op.serialize());
-    writeEntry(entry);
+    return writeEntry(entry);
 }
 
-void CommitLog::logCommit() {
+bool CommitLog::logCommit() {
     LogEntry entry(LogEntryType::COMMIT, next_sequence_number++, std::vector<uint8_t>());
-    writeEntry(entry);
+    return writeEntry(entry);
 }
 
 void CommitLog::flush() {

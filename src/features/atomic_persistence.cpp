@@ -47,7 +47,10 @@ bool AtomicPersistence::insert(const std::string& key,
     if (recovering_.load()) return false;
     if (!log_) return false;
 
-    log_->logInsert(key, v, metadata);
+    if (!log_->logInsert(key, v, metadata)) {
+        std::cerr << "[persistence] WAL insert failed for key: " << key << '\n';
+        return false;
+    }
     stats_.total_logged_inserts++;
     stats_.ops_since_last_checkpoint++;
     return true;
@@ -60,7 +63,10 @@ bool AtomicPersistence::update(const std::string& key,
     if (recovering_.load()) return false;
     if (!log_) return false;
 
-    log_->logUpdate(key, v, metadata);
+    if (!log_->logUpdate(key, v, metadata)) {
+        std::cerr << "[persistence] WAL update failed for key: " << key << '\n';
+        return false;
+    }
     stats_.total_logged_updates++;
     stats_.ops_since_last_checkpoint++;
     return true;
@@ -71,7 +77,10 @@ bool AtomicPersistence::remove(const std::string& key) {
     if (recovering_.load()) return false;
     if (!log_) return false;
 
-    log_->logDelete(key);
+    if (!log_->logDelete(key)) {
+        std::cerr << "[persistence] WAL delete failed for key: " << key << '\n';
+        return false;
+    }
     stats_.total_logged_deletes++;
     stats_.ops_since_last_checkpoint++;
     return true;
@@ -90,7 +99,7 @@ bool AtomicPersistence::checkpoint() {
     // Marker-only (does not persist full DB without maps)
     std::lock_guard<std::mutex> lk(mtx_);
     if (!log_) return false;
-    log_->logCommit();
+    (void)log_->logCommit();
     log_->flush();
     return true;
 }
@@ -152,7 +161,7 @@ bool AtomicPersistence::saveDatabase(const std::unordered_map<std::string, Vecto
     }
 
     // Record checkpoint in WAL
-    log_->logCheckpoint(seq, out_file_path);
+    (void)log_->logCheckpoint(seq, out_file_path);
     log_->flush();
 
     // IMPORTANT: Rotate WAL to new file (preserves sequence numbering)

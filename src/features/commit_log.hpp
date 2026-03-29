@@ -88,11 +88,11 @@ public:
     CommitLog(CommitLog&&) = delete;
     CommitLog& operator=(CommitLog&&) = delete;
 
-    void logInsert(const std::string& key, const Vector& vector, const std::string& metadata);
-    void logUpdate(const std::string& key, const Vector& vector, const std::string& metadata);
-    void logDelete(const std::string& key);
-    void logCheckpoint(uint64_t checkpoint_sequence, const std::string& checkpoint_file);
-    void logCommit();
+    [[nodiscard]] bool logInsert(const std::string& key, const Vector& vector, const std::string& metadata);
+    [[nodiscard]] bool logUpdate(const std::string& key, const Vector& vector, const std::string& metadata);
+    [[nodiscard]] bool logDelete(const std::string& key);
+    [[nodiscard]] bool logCheckpoint(uint64_t checkpoint_sequence, const std::string& checkpoint_file);
+    [[nodiscard]] bool logCommit();
 
     void flush();
     Statistics getStatistics() const;
@@ -123,5 +123,5 @@ private:
     uint64_t   total_bytes_written;
 
     std::string generateLogFilename(uint64_t sequence) const;
-    void writeEntry(const LogEntry& entry);
+    [[nodiscard]] bool writeEntry(const LogEntry& entry);
 };

@@ -95,21 +95,37 @@ void TCPServer::stop() {
 }
 
 void TCPServer::accept_loop() {
-    while (running_.load(std::memory_order_relaxed)) {
+    int consecutive_errors = 0;
+    while (running_.load(std::memory_order_acquire)) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
         if (client_fd < 0) {
-            if (!running_.load(std::memory_order_relaxed)) break;
+            if (!running_.load(std::memory_order_acquire)) break;
+            // Backoff on repeated accept failures (e.g. fd limit)
+            if (++consecutive_errors > 10) {
+                std::cerr << "[server] accept() failing repeatedly: "
+                          << strerror(errno) << '\n';
+                usleep(100'000); // 100ms backoff
+            }
             continue;
         }
+        consecutive_errors = 0;
 
         // Disable Nagle for low latency
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
+        // Set recv timeout (30s) so stalled clients don't block workers forever
+        struct timeval tv{30, 0};
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
         // Pass fd to a worker via pipe
-        (void)write(pipe_fd_[1], &client_fd, sizeof(client_fd));
+        ssize_t w = write(pipe_fd_[1], &client_fd, sizeof(client_fd));
+        if (w != sizeof(client_fd)) {
+            std::cerr << "[server] pipe write failed, dropping connection\n";
+            close(client_fd);
+        }
     }
 }
 

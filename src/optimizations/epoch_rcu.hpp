@@ -32,10 +32,10 @@ class EpochRCU {
     std::mutex writer_mutex_;
 
     size_t acquire_slot() {
-        // Hash thread ID to a slot. Collisions are safe — worst case,
-        // a writer waits slightly longer than necessary.
-        auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
-        return tid % kMaxReaders;
+        // Thread-local slot assignment. Each thread gets a unique slot
+        // on first use via atomic counter, avoiding hash collisions.
+        thread_local size_t my_slot = next_slot_.fetch_add(1, std::memory_order_relaxed) % kMaxReaders;
+        return my_slot;
     }
 
 public:
