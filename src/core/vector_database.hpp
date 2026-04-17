@@ -9,27 +9,25 @@
 #include <vector>
 
 #include "../algorithms/hnsw_index.hpp"
-#include "../algorithms/lsh_index.hpp"
-#include "kd_tree.hpp"
 #include "../core/vector.hpp"
 #include "../core/vector_accessor.hpp"
 #include "../features/atomic_batch_insert.hpp"
 #include "../features/atomic_persistence.hpp"
 #include "../features/query_cache.hpp"
-#include "../optimizations/epoch_rcu.hpp"
+#include "../optimizations/rw_lock.hpp"
 #include "../optimizations/scalar_quantization.hpp"
 #include "../storage/mmap_storage.hpp"
+#include "../storage/segmented_vector_store.hpp"
 
 /**
  * Vector Database with mmap-backed page storage.
  *
  * Vectors live in an mmap'd file — the OS pages them in/out like PostgreSQL.
- * Indexes (KD-tree, HNSW, LSH) store slot IDs, not vector copies.
+ * HNSW stores slot IDs, not vector copies. Exact search uses a flat scan over
+ * mmap-backed vectors.
  * Reads are lock-free via epoch-based RCU.
  */
 class VectorDatabase {
-    static constexpr size_t kDefaultLSHTables = 10;
-    static constexpr size_t kDefaultLSHHashFunctions = 8;
     static constexpr size_t kDefaultHNSW_M = 10;
     static constexpr size_t kDefaultHNSW_EfConstruction = 8;
     static constexpr size_t kDefaultHNSW_EfSearch = 8;
@@ -37,6 +35,16 @@ class VectorDatabase {
     static constexpr size_t kDefaultCacheCapacity = 1000;
 
 public:
+    enum class SearchMode {
+        Exact,
+        HNSW,
+    };
+
+    enum class StorageEngine {
+        MMap,
+        Segmented,
+    };
+
     struct SearchResult {
         std::string key;
         float distance;
@@ -50,38 +58,40 @@ public:
         uint64_t total_updates;
         uint64_t total_deletes;
         size_t dimensions;
-        std::string algorithm;
+        SearchMode search_mode;
         bool atomic_persistence_enabled;
         bool batch_operations_enabled;
         bool query_cache_enabled;
+        StorageEngine storage_engine;
         AtomicPersistence::Statistics persistence_stats;
         AtomicBatchInsert::Statistics batch_stats;
         QueryCache::Statistics cache_stats;
+        SegmentedVectorStore::Statistics segmented_stats;
     };
 
 private:
     // Core — mmap-backed storage
     std::unique_ptr<MMapStorage> storage_;
+    std::unique_ptr<SegmentedVectorStore> segmented_store_;
     std::unordered_map<std::string, uint64_t> key_to_slot_;
     std::string storage_path_;
+    StorageEngine storage_engine{StorageEngine::MMap};
 
     // Vector accessor — indexes use this to read vector data from mmap
     VectorAccessor vec_accessor_;
 
-    std::unique_ptr<KDTree> kd_tree;
     std::shared_ptr<DistanceMetric> distance_metric;
     size_t dimensions;
-    mutable EpochRCU rcu_;  // epoch-based RCU replaces shared_mutex
+    mutable RWLock rw_lock_;
 
-    // Approximate indexes
-    std::string approximate_algorithm;
-    std::unique_ptr<LSHIndex> lsh_index;
+    // Approximate index
+    SearchMode search_mode{SearchMode::Exact};
     std::unique_ptr<HNSWIndex> hnsw_index;
-    size_t lsh_num_tables{kDefaultLSHTables};
-    size_t lsh_num_hash_functions{kDefaultLSHHashFunctions};
     size_t hnsw_M{kDefaultHNSW_M};
     size_t hnsw_ef_construction{kDefaultHNSW_EfConstruction};
     size_t hnsw_ef_search{kDefaultHNSW_EfSearch};
+    HNSWIndex::AllocationStrategy hnsw_allocation_strategy{HNSWIndex::AllocationStrategy::Standard};
+    size_t hnsw_arena_initial_size{1024 * 1024};
 
     // Features
     bool atomic_persistence_enabled;
@@ -104,7 +114,7 @@ private:
     std::atomic<bool> ready{false};
     std::atomic<bool> recovering{false};
 
-    // GPU acceleration (protected by gpu_mutex, not rcu_)
+    // GPU acceleration (protected by gpu_mutex, not rw_lock_)
     bool gpu_enabled{false};
     bool gpu_initialized{false};
     size_t gpu_threshold{kDefaultGPUThreshold};
@@ -130,13 +140,14 @@ private:
 
 public:
     VectorDatabase(size_t dimensions,
-                   const std::string& algorithm = "exact",
+                   SearchMode search_mode = SearchMode::Exact,
                    bool enable_atomic_persistence = false,
                    bool enable_batch_operations = false,
                    const PersistenceConfig& persistence_config = {},
                    bool enable_query_cache = true,
                    size_t cache_capacity = kDefaultCacheCapacity,
-                   const std::string& storage_path = "");
+                   const std::string& storage_path = "",
+                   StorageEngine storage_engine = StorageEngine::MMap);
 
     ~VectorDatabase() noexcept;
 
@@ -150,7 +161,16 @@ public:
 
     std::unordered_map<std::string, Vector> getAllVectors() const;
 
-    void setApproximateAlgorithm(const std::string& algorithm, size_t param1, size_t param2);
+    void setSearchMode(SearchMode mode);
+    SearchMode getSearchMode() const;
+    void configureHNSW(size_t M, size_t ef_construction, size_t ef_search);
+    void configureHNSWAllocator(HNSWIndex::AllocationStrategy strategy,
+                                size_t arena_initial_size = 1024 * 1024);
+    void configureSegmentedStorage(size_t max_mutable_segment_records,
+                                   size_t max_sealed_segments = 16,
+                                   double max_tombstone_ratio = 0.25);
+    void sealMutableSegment();
+    void compactSegments();
 
     [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
 
@@ -209,6 +229,7 @@ public:
     size_t getGPUThreshold() const;
 
 private:
+    std::vector<std::pair<std::string, float>> exactSearch(const Vector& query, size_t k) const;
     std::vector<std::pair<std::string, float>> gpuAcceleratedSearch(const Vector& query, size_t k);
     void rebuildGPUBuffer();
     void markGPUBufferDirty();
