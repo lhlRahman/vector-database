@@ -1,5 +1,5 @@
-# Compiler
-CXX = clang++
+# Compiler. Use the platform default unless the caller overrides CXX.
+CXX ?= c++
 
 # Base flags, common to both release and debug
 BASE_CXXFLAGS = -std=c++20 -Iinclude -Isrc -Wno-psabi -I$(SRC_DIR)
@@ -33,9 +33,11 @@ ifeq ($(UNAME_S),Darwin)
     DEBUGGER = lldb
     # Metal frameworks for GPU acceleration (macOS only)
     METAL_FRAMEWORKS = -framework Metal -framework MetalPerformanceShaders -framework Foundation
+    GPU_OPS_OBJ = $(BUILD_DIR)/optimizations/gpu_operations.o
 else
     DEBUGGER = gdb
     METAL_FRAMEWORKS =
+    GPU_OPS_OBJ = $(BUILD_DIR)/optimizations/gpu_operations_stub.o
 endif
 
 # Set default flags to release mode
@@ -113,14 +115,14 @@ simd-tail-test: $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/optimizations/simd_opera
 	@echo "SIMD tail test built: $(SIMD_TAIL_TEST)"
 
 # Common library objects (everything except main.o)
-LIB_OBJS = $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/core/kd_tree.o \
+LIB_OBJS = $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
            $(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
-           $(BUILD_DIR)/features/atomic_file_writer.o $(BUILD_DIR)/features/atomic_persistence.o \
-           $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/approximate_nn.o \
-           $(BUILD_DIR)/algorithms/lsh_index.o $(BUILD_DIR)/algorithms/hnsw_index.o \
+           $(BUILD_DIR)/features/atomic_persistence.o \
+           $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/hnsw_index.o \
            $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
            $(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
-           $(BUILD_DIR)/optimizations/gpu_operations.o $(BUILD_DIR)/storage/mmap_storage.o
+           $(GPU_OPS_OBJ) $(BUILD_DIR)/storage/mmap_storage.o \
+           $(BUILD_DIR)/storage/segment.o $(BUILD_DIR)/storage/segmented_vector_store.o
 
 # Unit tests
 UNIT_TEST = $(BUILD_DIR)/unit_tests
