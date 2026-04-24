@@ -1,12 +1,20 @@
 #pragma once
 
+#include <bit>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
 
 namespace proto {
+
+// The wire format is little-endian. We don't byte-swap on the way out, so
+// running on a big-endian host would corrupt the protocol. Catch it at
+// compile time rather than at runtime on some surprising port.
+static_assert(std::endian::native == std::endian::little,
+              "proto:: assumes little-endian host");
 
 // Wire format:
 //   Request:  [2B magic][1B cmd][4B payload_len][payload...]
@@ -51,6 +59,9 @@ public:
     void write_f32(float v)    { auto s = buf_.size(); buf_.resize(s + 4); std::memcpy(buf_.data() + s, &v, 4); }
 
     void write_string(const std::string& str) {
+        if (str.size() > std::numeric_limits<uint16_t>::max()) {
+            throw std::runtime_error("string too long for protocol (>64KiB)");
+        }
         write_u16(static_cast<uint16_t>(str.size()));
         auto s = buf_.size();
         buf_.resize(s + str.size());
@@ -98,18 +109,19 @@ public:
         return s;
     }
 
-    const float* read_floats_ptr(size_t count) {
-        size_t bytes = count * sizeof(float);
-        check(bytes);
-        const float* p = reinterpret_cast<const float*>(data_ + pos_);
-        pos_ += bytes;
-        return p;
-    }
-
+    // Copy the next `count` floats out of the buffer.
+    //
+    // Why no zero-copy span variant: the buffer is uint8_t-aligned, so
+    // returning a typed `float*` into it is undefined behaviour on any
+    // platform that requires aligned float loads (UBSan flagged this on
+    // ARM). All callers materialize a std::vector<float> immediately
+    // anyway, so the memcpy is free.
     void read_floats(float* out, size_t count) {
         size_t bytes = count * sizeof(float);
         check(bytes);
-        std::memcpy(out, data_ + pos_, bytes);
+        // memcpy(dst, nullptr, 0) is technically UB even with zero length;
+        // fuzzing caught this on a frame with dims=0 and no payload.
+        if (bytes > 0) std::memcpy(out, data_ + pos_, bytes);
         pos_ += bytes;
     }
 };
@@ -167,6 +179,6 @@ inline void write_response_header(std::vector<uint8_t>& buf, Status status, uint
 // ERROR response payload:
 //   message(str)
 
-static constexpr size_t MAX_PAYLOAD_SIZE = 64 * 1024 * 1024; // 64MB max
+inline constexpr size_t MAX_PAYLOAD_SIZE = 64 * 1024 * 1024; // 64MB max
 
 } // namespace proto

@@ -6,7 +6,16 @@
 #include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <system_error>
 #include <unistd.h>
+
+// Wrap a captured errno into a std::system_error. Callers can then catch by
+// errno value (e.g. ENOENT) instead of grepping runtime_error::what().
+namespace {
+[[noreturn]] void throw_errno(int err, const std::string& what) {
+    throw std::system_error(err, std::system_category(), what);
+}
+}
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -64,30 +73,33 @@ void MMapStorage::open() {
     if (mapped_) return; // already open
 
     bool created = false;
-    fd_ = ::open(path_.c_str(), O_RDWR, 0644);
+    fd_ = ::open(path_.c_str(), O_RDWR | O_CLOEXEC, 0644);
     if (fd_ < 0) {
         // Create new file
-        fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
+        fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
         if (fd_ < 0) {
-            throw std::runtime_error("open(" + path_ + "): " + strerror(errno));
+            throw_errno(errno, "open(" + path_ + ")");
         }
         created = true;
     }
+
 
     if (created) {
         // Initialize new file
         size_t file_size = compute_file_size(slot_size_, initial_capacity_);
         if (ftruncate(fd_, static_cast<off_t>(file_size)) < 0) {
+            int e = errno;
             ::close(fd_);
-            throw std::runtime_error("ftruncate: " + std::string(strerror(errno)));
+            throw_errno(e, "ftruncate");
         }
 
         mapped_size_ = file_size;
         mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (mapped_ == MAP_FAILED) {
+            int e = errno;
             mapped_ = nullptr;
             ::close(fd_);
-            throw std::runtime_error("mmap: " + std::string(strerror(errno)));
+            throw_errno(e, "mmap");
         }
 
         // Zero the header, then fill it
@@ -107,14 +119,20 @@ void MMapStorage::open() {
     } else {
         // Open existing file — read header to get sizes
         struct stat st;
-        fstat(fd_, &st);
+        if (fstat(fd_, &st) < 0) {
+            int e = errno;
+            ::close(fd_);
+            fd_ = -1;
+            throw_errno(e, "fstat");
+        }
         mapped_size_ = static_cast<size_t>(st.st_size);
 
         mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (mapped_ == MAP_FAILED) {
+            int e = errno;
             mapped_ = nullptr;
             ::close(fd_);
-            throw std::runtime_error("mmap: " + std::string(strerror(errno)));
+            throw_errno(e, "mmap");
         }
 
         auto* h = header();
@@ -122,13 +140,17 @@ void MMapStorage::open() {
             close();
             throw std::runtime_error("invalid file magic");
         }
-        if (h->dimensions != dims_) {
+        // Capture header values BEFORE close() unmaps the file. Otherwise
+        // any reference to *h after close() dereferences a freed mapping.
+        const uint32_t file_dims = h->dimensions;
+        const uint32_t file_slot_size = h->slot_size;
+        if (file_dims != dims_) {
             close();
             throw std::runtime_error("dimension mismatch: file has " +
-                                     std::to_string(h->dimensions) + ", expected " +
+                                     std::to_string(file_dims) + ", expected " +
                                      std::to_string(dims_));
         }
-        slot_size_ = h->slot_size;
+        slot_size_ = file_slot_size;
     }
 }
 
@@ -309,7 +331,7 @@ void MMapStorage::grow(size_t new_capacity) {
 
     // Extend file
     if (ftruncate(fd_, static_cast<off_t>(new_size)) < 0) {
-        throw std::runtime_error("ftruncate grow: " + std::string(strerror(errno)));
+        throw_errno(errno, "ftruncate (grow)");
     }
 
     // Remap
@@ -317,7 +339,7 @@ void MMapStorage::grow(size_t new_capacity) {
     mapped_ = mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
     if (mapped_ == MAP_FAILED) {
         mapped_ = nullptr;
-        throw std::runtime_error("mmap grow: " + std::string(strerror(errno)));
+        throw_errno(errno, "mmap (grow)");
     }
 
     // Zero new slots

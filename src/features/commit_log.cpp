@@ -1,12 +1,14 @@
 // src/features/commit_log.cpp
 #include "commit_log.hpp"
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <iomanip>
+#include <iostream>
+#include <limits>
 #include <sstream>
-#include <cstring>
-#include <chrono>
+#include <stdexcept>
 
 // Helper function for timestamp
 namespace {
@@ -20,20 +22,33 @@ inline uint64_t now_us() {
 
 
 LogEntry::LogEntry(LogEntryType t, uint64_t seq, const std::vector<uint8_t>& d)
-    : timestamp(now_us()), type(t), sequence_number(seq), data_length(static_cast<uint32_t>(d.size())), data(d) {
+    : timestamp(now_us()), type(t), sequence_number(seq),
+      data_length(static_cast<uint32_t>(d.size())), data(d) {
+    if (d.size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::length_error("LogEntry payload exceeds 4 GiB");
+    }
     checksum = calculateChecksum();
 }
 
 uint32_t LogEntry::calculateChecksum() const {
-    uint32_t crc = 0;
-    crc ^= static_cast<uint32_t>(timestamp);
-    crc ^= static_cast<uint32_t>(type);
-    crc ^= static_cast<uint32_t>(sequence_number);
-    crc ^= data_length;
-    for (uint8_t byte : data) {
-        crc ^= byte;
-    }
-    return crc;
+    // FNV-1a over every byte of the entry. The previous implementation XOR'd
+    // bytes together, which trivially collides — any pair of equal bytes
+    // cancels, so swapped or duplicated bytes pass validation. Real
+    // corruption would silently slip through isValid().
+    uint32_t hash = 2166136261u;
+    auto mix = [&hash](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) {
+            hash ^= b[i];
+            hash *= 16777619u;
+        }
+    };
+    mix(&timestamp, sizeof(timestamp));
+    mix(&type, sizeof(type));
+    mix(&sequence_number, sizeof(sequence_number));
+    mix(&data_length, sizeof(data_length));
+    mix(data.data(), data.size());
+    return hash;
 }
 
 bool LogEntry::isValid() const {

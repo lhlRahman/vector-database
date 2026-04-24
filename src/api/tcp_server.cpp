@@ -14,7 +14,7 @@ TCPServer::TCPServer(size_t dimensions,
                      int port,
                      size_t thread_pool_size)
     : host_(host), port_(port), pool_size_(thread_pool_size) {
-    db_ = std::make_unique<VectorDatabase>(dimensions, "hnsw",
+    db_ = std::make_unique<VectorDatabase>(dimensions, VectorDatabase::SearchMode::HNSW,
                                            /*enable_atomic_persistence=*/false,
                                            /*enable_batch_operations=*/true);
     db_->initialize();
@@ -71,11 +71,12 @@ void TCPServer::start() {
 void TCPServer::stop() {
     if (!running_.exchange(false)) return;
 
-    // Close listen socket to unblock accept()
-    if (listen_fd_ >= 0) {
-        shutdown(listen_fd_, SHUT_RDWR);
-        close(listen_fd_);
-        listen_fd_ = -1;
+    // Close the listen socket to unblock accept(). Do NOT clear listen_fd_
+    // here — accept_loop is still racing to read it. Clear after the join.
+    int listen_fd_local = listen_fd_;
+    if (listen_fd_local >= 0) {
+        shutdown(listen_fd_local, SHUT_RDWR);
+        close(listen_fd_local);
     }
 
     // Signal workers to wake up and exit — send -1 for each worker
@@ -90,6 +91,8 @@ void TCPServer::stop() {
     }
     workers_.clear();
 
+    // Safe to mutate now: accept_loop has exited and won't read these again.
+    listen_fd_ = -1;
     if (pipe_fd_[0] >= 0) { close(pipe_fd_[0]); pipe_fd_[0] = -1; }
     if (pipe_fd_[1] >= 0) { close(pipe_fd_[1]); pipe_fd_[1] = -1; }
 }
@@ -190,9 +193,14 @@ bool TCPServer::recv_exact(int fd, void* buf, size_t n) {
     size_t remaining = n;
     while (remaining > 0) {
         ssize_t r = recv(fd, p, remaining, 0);
-        if (r <= 0) return false;
-        p += r;
-        remaining -= static_cast<size_t>(r);
+        if (r > 0) {
+            p += r;
+            remaining -= static_cast<size_t>(r);
+            continue;
+        }
+        if (r == 0) return false;                 // peer closed cleanly
+        if (errno == EINTR) continue;             // signal — retry
+        return false;                             // real I/O error
     }
     return true;
 }
@@ -201,10 +209,16 @@ bool TCPServer::send_all(int fd, const void* buf, size_t n) {
     auto* p = static_cast<const uint8_t*>(buf);
     size_t remaining = n;
     while (remaining > 0) {
-        ssize_t w = send(fd, p, remaining, 0);
-        if (w <= 0) return false;
-        p += w;
-        remaining -= static_cast<size_t>(w);
+        // MSG_NOSIGNAL: a closed-peer write returns EPIPE instead of killing
+        // the worker process with SIGPIPE.
+        ssize_t w = send(fd, p, remaining, MSG_NOSIGNAL);
+        if (w > 0) {
+            p += w;
+            remaining -= static_cast<size_t>(w);
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        return false;
     }
     return true;
 }
@@ -263,10 +277,11 @@ void TCPServer::handle_insert(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     std::string key = r.read_string();
     uint32_t dims = r.read_u32();
-    const float* data = r.read_floats_ptr(dims);
+    std::vector<float> data(dims);
+    r.read_floats(data.data(), dims);
     std::string metadata = r.read_string();
 
-    Vector v(std::vector<float>(data, data + dims));
+    Vector v(std::move(data));
     bool ok = db_->insert(v, key, metadata);
     if (ok) {
         send_ok(fd);
@@ -278,10 +293,11 @@ void TCPServer::handle_insert(int fd, const uint8_t* payload, size_t len) {
 void TCPServer::handle_search(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     uint32_t dims = r.read_u32();
-    const float* data = r.read_floats_ptr(dims);
+    std::vector<float> data(dims);
+    r.read_floats(data.data(), dims);
     uint32_t k = r.read_u32();
 
-    Vector query(std::vector<float>(data, data + dims));
+    Vector query(std::move(data));
     auto results = db_->similaritySearch(query, k);
 
     std::vector<uint8_t> resp;
@@ -310,10 +326,11 @@ void TCPServer::handle_update(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     std::string key = r.read_string();
     uint32_t dims = r.read_u32();
-    const float* data = r.read_floats_ptr(dims);
+    std::vector<float> data(dims);
+    r.read_floats(data.data(), dims);
     std::string metadata = r.read_string();
 
-    Vector v(std::vector<float>(data, data + dims));
+    Vector v(std::move(data));
     bool ok = db_->update(v, key, metadata);
     if (ok) {
         send_ok(fd);
@@ -356,8 +373,9 @@ void TCPServer::handle_batch_insert(int fd, const uint8_t* payload, size_t len) 
     for (uint32_t i = 0; i < count; ++i) {
         keys.push_back(r.read_string());
         uint32_t dims = r.read_u32();
-        const float* data = r.read_floats_ptr(dims);
-        vectors.emplace_back(std::vector<float>(data, data + dims));
+        std::vector<float> data(dims);
+        r.read_floats(data.data(), dims);
+        vectors.emplace_back(std::move(data));
         metadata.push_back(r.read_string());
     }
 
@@ -394,13 +412,11 @@ void TCPServer::handle_set_algorithm(int fd, const uint8_t* payload, size_t len)
     std::string algo = r.read_string();
 
     if (algo == "exact") {
-        db_->setApproximateAlgorithm("exact", 0, 0);
-    } else if (algo == "lsh") {
-        db_->setApproximateAlgorithm("lsh", 10, 8);
+        db_->setSearchMode(VectorDatabase::SearchMode::Exact);
     } else if (algo == "hnsw") {
-        db_->setApproximateAlgorithm("hnsw", 10, 8);
+        db_->setSearchMode(VectorDatabase::SearchMode::HNSW);
     } else {
-        send_error(fd, "unknown algorithm: " + algo);
+        send_error(fd, "unknown search mode: " + algo);
         return;
     }
     send_ok(fd);

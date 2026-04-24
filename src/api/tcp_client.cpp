@@ -51,9 +51,14 @@ bool TCPClient::recv_exact(int fd, void* buf, size_t n) {
     size_t remaining = n;
     while (remaining > 0) {
         ssize_t r = recv(fd, p, remaining, 0);
-        if (r <= 0) return false;
-        p += r;
-        remaining -= static_cast<size_t>(r);
+        if (r > 0) {
+            p += r;
+            remaining -= static_cast<size_t>(r);
+            continue;
+        }
+        if (r == 0) return false;       // server closed
+        if (errno == EINTR) continue;
+        return false;
     }
     return true;
 }
@@ -62,10 +67,14 @@ bool TCPClient::send_all(int fd, const void* buf, size_t n) {
     auto* p = static_cast<const uint8_t*>(buf);
     size_t remaining = n;
     while (remaining > 0) {
-        ssize_t w = send(fd, p, remaining, 0);
-        if (w <= 0) return false;
-        p += w;
-        remaining -= static_cast<size_t>(w);
+        ssize_t w = send(fd, p, remaining, MSG_NOSIGNAL);
+        if (w > 0) {
+            p += w;
+            remaining -= static_cast<size_t>(w);
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        return false;
     }
     return true;
 }
@@ -97,6 +106,12 @@ TCPClient::Response TCPClient::recv_response() {
 
     uint32_t payload_len;
     std::memcpy(&payload_len, header + 3, 4);
+
+    // Mirror the server's cap. Without this a buggy or hostile server can
+    // make us allocate up to 4 GiB by sending a header with a large length.
+    if (payload_len > proto::MAX_PAYLOAD_SIZE) {
+        throw std::runtime_error("response payload too large");
+    }
 
     resp.payload.resize(payload_len);
     if (payload_len > 0 && !recv_exact(fd_, resp.payload.data(), payload_len)) {

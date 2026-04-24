@@ -5,12 +5,10 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "../core/vector.hpp"
-#include "atomic_file_writer.hpp"
 #include "commit_log.hpp"
 
 // ========================== PersistenceConfig ==========================
@@ -52,8 +50,8 @@ public:
     ~AtomicPersistence() = default;
 
     // lifecycle
-    void initialize();   // create dirs, open WAL, recover, start janitor thread
-    void shutdown();     // flush WAL, stop janitor thread
+    void initialize();   // create dirs, open WAL, recover
+    void shutdown();     // flush WAL
 
     // durable ops (caller already mutated in-memory DB)
     [[nodiscard]] bool insert(const std::string& key, const Vector& v, const std::string& metadata);
@@ -74,8 +72,8 @@ public:
     void onCheckpointCompleted();   // reset counters after DB saves snapshot
 
     // snapshot I/O (DB calls this to persist full state to main.db)
-    bool saveDatabase(const std::unordered_map<std::string, Vector>& vectors,
-                      const std::unordered_map<std::string, std::string>& metadata);
+    [[nodiscard]] bool saveDatabase(const std::unordered_map<std::string, Vector>& vectors,
+                                    const std::unordered_map<std::string, std::string>& metadata);
 
     // status
     Statistics getStatistics() const;
@@ -124,9 +122,5 @@ private:
 
     // checkpoint file
     std::string                       main_data_file_; // data/main.db
-
-    // janitor thread for periodic checks
-    std::thread                       janitor_;
-    std::atomic<bool>                 janitor_stop_{true};
 };
 

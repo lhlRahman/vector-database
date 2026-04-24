@@ -6,13 +6,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <ostream>
 #include <utility>
 #include <vector>
-#include <cstdio>
+
+#include "../utils/atomic_write.hpp"
 
 
 
@@ -396,83 +399,66 @@ bool AtomicPersistence::saveCheckpointFile(
     uint64_t sequence,
     std::string& out_file)
 {
-    // temp filename in data/
-    const std::string tmp        = config_.data_directory + "/checkpoint_" + std::to_string(sequence) + ".tmp";
-    const std::string final_path = config_.data_directory + "/main.db";
+    const std::filesystem::path final_path =
+        std::filesystem::path(config_.data_directory) / "main.db";
 
     try {
-        AtomicFileWriter writer(tmp);
+        vdb::io::atomic_write(final_path, [&](std::ostream& os) {
+            auto put = [&](const void* p, size_t n) {
+                os.write(static_cast<const char*>(p), static_cast<std::streamsize>(n));
+            };
+            auto put_u32 = [&](uint32_t v) { put(&v, sizeof(v)); };
+            auto put_u64 = [&](uint64_t v) { put(&v, sizeof(v)); };
 
-        // ---------- Header ----------
-        // magic "VDBD" (0x56444244), version 1, sequence, timestamp (us)
-        writer.write<uint32_t>(0x56444244);
-        writer.write<uint32_t>(1);
-        writer.write<uint64_t>(sequence);
+            // ---------- Header ----------
+            // magic "VDBD", version 1, sequence, timestamp (us)
+            put_u32(0x56444244);
+            put_u32(1);
+            put_u64(sequence);
 
-        const auto now_us_val = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::system_clock::now().time_since_epoch()
-            ).count()
-        );
-        writer.write<uint64_t>(now_us_val);
+            const auto now_us_val = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count()
+            );
+            put_u64(now_us_val);
 
-        // ---------- Payload ----------
-        // number of vectors
-        writer.write<uint64_t>(static_cast<uint64_t>(vectors.size()));
+            // ---------- Payload ----------
+            put_u64(static_cast<uint64_t>(vectors.size()));
 
-        // compute footer checksum
-        uint32_t footer_crc = 0;
+            uint32_t footer_crc = 0;
+            for (const auto& [key, vec] : vectors) {
+                const uint32_t key_len = static_cast<uint32_t>(key.size());
+                put_u32(key_len);
+                if (key_len) put(key.data(), key_len);
+                footer_crc ^= key_len;
 
-        for (const auto& kv : vectors) {
-            const std::string& key = kv.first;
-            const Vector&      vec = kv.second;
+                const uint32_t dims = static_cast<uint32_t>(vec.size());
+                put_u32(dims);
+                if (dims) put(vec.data_ptr(), dims * sizeof(float));
+                footer_crc ^= dims;
 
-            // key
-            const uint32_t key_len = static_cast<uint32_t>(key.size());
-            writer.write<uint32_t>(key_len);
-            if (key_len) writer.write(key.data(), key_len);
-            footer_crc ^= key_len;
+                auto it = metadata.find(key);
+                const std::string meta = (it != metadata.end()) ? it->second : std::string{};
+                const uint32_t meta_len = static_cast<uint32_t>(meta.size());
+                put_u32(meta_len);
+                if (meta_len) put(meta.data(), meta_len);
+                footer_crc ^= meta_len;
+            }
 
-            // vector
-            const uint32_t dims = static_cast<uint32_t>(vec.size());
-            writer.write<uint32_t>(dims);
-            if (dims) writer.write(vec.data_ptr(), dims * sizeof(float));
-            footer_crc ^= dims;
+            // ---------- Footer ----------
+            put_u32(0x454E444D);   // "ENDM"
+            put_u32(footer_crc);
+        });
 
-            // metadata (optional)
-            auto it = metadata.find(key);
-            const std::string meta = (it != metadata.end()) ? it->second : std::string{};
-            const uint32_t meta_len = static_cast<uint32_t>(meta.size());
-            writer.write<uint32_t>(meta_len);
-            if (meta_len) writer.write(meta.data(), meta_len);
-            footer_crc ^= meta_len;
-        }
-
-        // ---------- Footer ----------
-        writer.write<uint32_t>(0x454E444D);   // "ENDM"
-        writer.write<uint32_t>(footer_crc);
-
-        // atomically flush to tmp
-        writer.commit();
-
-        // move tmp -> main.db
-        if (std::rename(tmp.c_str(), final_path.c_str()) != 0) {
-            // if rename fails, try to clean tmp and error out
-            std::remove(tmp.c_str());
-            std::cerr << "saveCheckpointFile: rename(" << tmp << " -> " << final_path << ") failed\n";
-            return false;
-        }
-
-        out_file = final_path;
+        out_file = final_path.string();
 
         std::cout << "[checkpoint] wrote " << vectors.size()
                   << " vectors at seq " << sequence
-                  << " -> " << final_path << '\n';
+                  << " -> " << final_path.string() << '\n';
 
         return true;
     } catch (const std::exception& e) {
-        // best effort cleanup
-        std::remove(tmp.c_str());
         std::cerr << "saveCheckpointFile failed: " << e.what() << '\n';
         return false;
     }
