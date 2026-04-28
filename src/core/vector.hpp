@@ -10,9 +10,18 @@ private:
     std::vector<float> data;
 
 public:
-    Vector() = default; // Default constructor
-    explicit Vector(size_t size); // Marked explicit
-    explicit Vector(const std::vector<float>& values); // Marked explicit
+    Vector() = default;
+    explicit Vector(size_t size);
+    explicit Vector(const std::vector<float>& values);
+    explicit Vector(std::vector<float>&& values) noexcept : data(std::move(values)) {}
+
+    // Defaulted moves so that vector<Vector> growth is noexcept-movable.
+    Vector(const Vector&)                = default;
+    Vector(Vector&&) noexcept            = default;
+    Vector& operator=(const Vector&)     = default;
+    Vector& operator=(Vector&&) noexcept = default;
+    ~Vector()                            = default;
+
     float& operator[](size_t index);
     const float& operator[](size_t index) const;
     size_t size() const;
@@ -35,14 +44,14 @@ public:
     static Vector read_from(std::istream& is, size_t dimensions);
 };
 
-// Specialize std::hash for Vector
+// Specialize std::hash for Vector. Boost-style hash combine.
 namespace std {
     template <>
     struct hash<Vector> {
-        size_t operator()(const Vector& v) const {
+        size_t operator()(const Vector& v) const noexcept {
             size_t seed = 0;
-            for (auto& i : v) {
-                seed ^= std::hash<float>()(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            for (const float f : v) {
+                seed ^= std::hash<float>{}(f) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
             return seed;
         }

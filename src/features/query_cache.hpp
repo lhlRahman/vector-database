@@ -42,7 +42,7 @@ private:
 
 public:
     explicit QueryCache(size_t capacity);
-    bool get(const Vector& query, std::vector<std::pair<std::string, float>>& results);
+    [[nodiscard]] bool get(const Vector& query, std::vector<std::pair<std::string, float>>& results);
     void put(const Vector& query, const std::vector<std::pair<std::string, float>>& results);
     void invalidate();
     void clear();
