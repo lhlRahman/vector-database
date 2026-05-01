@@ -178,12 +178,40 @@ bench-tcp: $(LIB_OBJS)
 	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/bench_tcp.o $(BUILD_DIR)/api/tcp_server.o $(BUILD_DIR)/api/tcp_client.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(TCP_BENCH)
 	@echo "Running TCP benchmark..."
 	@./$(TCP_BENCH)
+# HNSW allocator benchmark (standard allocator vs arena)
+HNSW_ALLOC_BENCH = $(BUILD_DIR)/bench_hnsw_allocator
+bench-hnsw-allocator: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+                      $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/bench_hnsw_allocator.cpp -o $(BUILD_DIR)/bench_hnsw_allocator.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_hnsw_allocator.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(HNSW_ALLOC_BENCH)
+	@echo "Running HNSW allocator benchmark..."
+	@./$(HNSW_ALLOC_BENCH)
+
+# Segmented persistence benchmark (legacy mmap/HNSW vs segment WAL/HNSW snapshots)
+SEGMENTED_PERSISTENCE_BENCH = $(BUILD_DIR)/bench_segmented_persistence
+bench-segmented-persistence: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+                             $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+                             $(BUILD_DIR)/storage/mmap_storage.o $(BUILD_DIR)/storage/segment.o \
+                             $(BUILD_DIR)/storage/segmented_vector_store.o
+	$(CXX) $(CXXFLAGS) -c test/bench_segmented_persistence.cpp -o $(BUILD_DIR)/bench_segmented_persistence.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_segmented_persistence.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		$(BUILD_DIR)/storage/mmap_storage.o $(BUILD_DIR)/storage/segment.o \
+		$(BUILD_DIR)/storage/segmented_vector_store.o \
+		-o $(SEGMENTED_PERSISTENCE_BENCH)
+	@echo "Running segmented persistence benchmark..."
+	@./$(SEGMENTED_PERSISTENCE_BENCH)
 
 # Run all tests
-test: unit-test e2e-test
+
+# ── Fuzzers ──────────────────────────────────────────────
 
 # Clean up
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence

@@ -2,12 +2,16 @@
 // End-to-end tests: full workflows through the VectorDatabase public API
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "../src/core/vector.hpp"
@@ -140,10 +144,10 @@ void test_delete_removes_from_search() {
 }
 
 // =====================================================================
-//  WORKFLOW: Algorithm switching (exact -> LSH -> HNSW -> exact)
+//  WORKFLOW: Search mode switching (exact -> HNSW -> exact)
 // =====================================================================
 
-void test_algorithm_switching() {
+void test_search_mode_switching() {
     VectorDatabase db(4);
     db.initialize();
 
@@ -158,18 +162,14 @@ void test_algorithm_switching() {
     auto exact = db.similaritySearch(query, 5);
     ASSERT_EQ(exact.size(), 5u);
 
-    // Switch to LSH
-    db.setApproximateAlgorithm("lsh", 10, 8);
-    auto lsh = db.similaritySearch(query, 5);
-    ASSERT_TRUE(lsh.size() >= 1); // LSH is approximate
-
     // Switch to HNSW
-    db.setApproximateAlgorithm("hnsw", 8, 50);
+    db.configureHNSW(8, 50, 50);
+    db.setSearchMode(VectorDatabase::SearchMode::HNSW);
     auto hnsw = db.similaritySearch(query, 5);
     ASSERT_TRUE(hnsw.size() >= 1);
 
     // Switch back to exact
-    db.setApproximateAlgorithm("exact", 0, 0);
+    db.setSearchMode(VectorDatabase::SearchMode::Exact);
     auto exact2 = db.similaritySearch(query, 5);
     ASSERT_EQ(exact2.size(), 5u);
     // Should return same top result as before
@@ -181,7 +181,7 @@ void test_algorithm_switching() {
 // =====================================================================
 
 void test_batch_insert_workflow() {
-    VectorDatabase db(3, "exact", false, true);
+    VectorDatabase db(3, VectorDatabase::SearchMode::Exact, false, true);
     db.initialize();
 
     std::vector<std::string> keys;
@@ -205,7 +205,7 @@ void test_batch_insert_workflow() {
 }
 
 void test_batch_update_workflow() {
-    VectorDatabase db(2, "exact", false, true);
+    VectorDatabase db(2, VectorDatabase::SearchMode::Exact, false, true);
     db.initialize();
 
     // Insert
@@ -229,7 +229,7 @@ void test_batch_update_workflow() {
 }
 
 void test_batch_delete_workflow() {
-    VectorDatabase db(2, "exact", false, true);
+    VectorDatabase db(2, VectorDatabase::SearchMode::Exact, false, true);
     db.initialize();
 
     for (int i = 0; i < 10; i++) {
@@ -311,7 +311,7 @@ void test_distance_metric_affects_ranking() {
 // =====================================================================
 
 void test_cache_invalidated_on_mutation() {
-    VectorDatabase db(2, "exact", false, false, {}, true, 100);
+    VectorDatabase db(2, VectorDatabase::SearchMode::Exact, false, false, {}, true, 100);
     db.initialize();
 
     ASSERT_TRUE(db.insert(make_vec({1, 0}), "a"));
@@ -340,7 +340,7 @@ void test_cache_invalidated_on_mutation() {
 }
 
 void test_cache_invalidated_on_update() {
-    VectorDatabase db(2, "exact", false, false, {}, true, 100);
+    VectorDatabase db(2, VectorDatabase::SearchMode::Exact, false, false, {}, true, 100);
     db.initialize();
 
     ASSERT_TRUE(db.insert(make_vec({1, 0}), "a"));
@@ -358,7 +358,7 @@ void test_cache_invalidated_on_update() {
 }
 
 void test_cache_invalidated_on_delete() {
-    VectorDatabase db(2, "exact", false, false, {}, true, 100);
+    VectorDatabase db(2, VectorDatabase::SearchMode::Exact, false, false, {}, true, 100);
     db.initialize();
 
     ASSERT_TRUE(db.insert(make_vec({1, 0}), "closest"));
@@ -510,7 +510,7 @@ void test_search_accuracy_known_geometry() {
 // =====================================================================
 
 void test_hnsw_search_quality() {
-    VectorDatabase db(8, "hnsw");
+    VectorDatabase db(8, VectorDatabase::SearchMode::HNSW);
     db.initialize();
 
     // Insert 200 vectors
@@ -519,7 +519,7 @@ void test_hnsw_search_quality() {
     }
 
     // Get exact results for comparison
-    VectorDatabase exact_db(8, "exact");
+    VectorDatabase exact_db(8, VectorDatabase::SearchMode::Exact);
     exact_db.initialize();
     for (int i = 0; i < 200; i++) {
         ASSERT_TRUE(exact_db.insert(random_vec(8, static_cast<unsigned>(i)), "h" + std::to_string(i)));
@@ -602,6 +602,216 @@ void test_large_scale_insert_delete() {
 }
 
 // =====================================================================
+//  PERSISTENCE: data survives restart via segmented storage
+// =====================================================================
+
+void test_segmented_recovery_after_restart() {
+    auto path = std::filesystem::temp_directory_path() /
+                ("e2e_seg_recover_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(path);
+
+    constexpr size_t N = 50;
+    {
+        VectorDatabase db(4,
+                          VectorDatabase::SearchMode::HNSW,
+                          /*atomic_persistence*/false,
+                          /*batch_ops*/false,
+                          {},
+                          /*query_cache*/false,
+                          0,
+                          path.string(),
+                          VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        for (size_t i = 0; i < N; ++i) {
+            ASSERT_TRUE(db.insert(random_vec(4, static_cast<unsigned>(i + 1)),
+                                  "k" + std::to_string(i),
+                                  "m" + std::to_string(i)));
+        }
+        ASSERT_EQ(db.vectorCount(), N);
+        ASSERT_TRUE(db.checkpoint());
+        db.shutdown();
+    }
+    {
+        VectorDatabase db(4,
+                          VectorDatabase::SearchMode::HNSW,
+                          false, false, {}, false, 0,
+                          path.string(),
+                          VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        ASSERT_EQ(db.vectorCount(), N);
+        for (size_t i = 0; i < N; ++i) {
+            auto v = db.get("k" + std::to_string(i));
+            ASSERT_TRUE(v.has_value());
+            ASSERT_EQ(db.getMetadata("k" + std::to_string(i)),
+                      "m" + std::to_string(i));
+        }
+        db.shutdown();
+    }
+    std::filesystem::remove_all(path);
+}
+
+// =====================================================================
+//  CONCURRENCY: many threads, all unique keys → no insert lost
+// =====================================================================
+
+void test_concurrent_inserts_no_data_loss() {
+    VectorDatabase db(4);
+    db.initialize();
+
+    constexpr int kThreads = 8;
+    constexpr int kPerThread = 100;
+    std::vector<std::thread> ts;
+    std::atomic<int> ok_count{0};
+
+    for (int t = 0; t < kThreads; ++t) {
+        ts.emplace_back([&, t] {
+            for (int i = 0; i < kPerThread; ++i) {
+                std::string key = "t" + std::to_string(t) + "_k" + std::to_string(i);
+                if (db.insert(random_vec(4, static_cast<unsigned>(t * 1000 + i + 1)),
+                              key, "")) {
+                    ok_count.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& th : ts) th.join();
+
+    ASSERT_EQ(ok_count.load(), kThreads * kPerThread);
+    ASSERT_EQ(db.vectorCount(), static_cast<size_t>(kThreads * kPerThread));
+
+    // Spot-check that we can retrieve every key.
+    for (int t = 0; t < kThreads; ++t) {
+        for (int i = 0; i < kPerThread; i += 25) {
+            ASSERT_TRUE(db.get("t" + std::to_string(t) +
+                               "_k" + std::to_string(i)).has_value());
+        }
+    }
+}
+
+// =====================================================================
+//  UPDATE SEMANTICS: search reflects latest values
+// =====================================================================
+
+void test_search_reflects_latest_update() {
+    VectorDatabase db(2);
+    db.initialize();
+
+    // Insert two well-separated vectors.
+    ASSERT_TRUE(db.insert(make_vec({0.0f, 0.0f}), "origin", ""));
+    ASSERT_TRUE(db.insert(make_vec({10.0f, 10.0f}), "far", ""));
+
+    // Query near origin → "origin" wins.
+    auto r1 = db.similaritySearch(make_vec({0.1f, 0.1f}), 1);
+    ASSERT_EQ(r1[0].first, std::string{"origin"});
+
+    // Move "origin" to (10, 10) — now "far" should win for the same query.
+    ASSERT_TRUE(db.update(make_vec({10.0f, 10.0f}), "origin", ""));
+    auto r2 = db.similaritySearch(make_vec({0.1f, 0.1f}), 1);
+    ASSERT_TRUE(r2[0].first == std::string{"origin"} ||
+                r2[0].first == std::string{"far"});  // tie now
+    // But query close to (10, 10) should return both.
+    auto r3 = db.similaritySearch(make_vec({10.0f, 10.0f}), 2);
+    std::unordered_set<std::string> keys{r3[0].first, r3[1].first};
+    ASSERT_TRUE(keys.contains("origin"));
+    ASSERT_TRUE(keys.contains("far"));
+}
+
+// =====================================================================
+//  HNSW RECALL@K AT MODERATE SCALE
+// =====================================================================
+
+void test_hnsw_recall_at_moderate_scale() {
+    constexpr size_t N = 1000;
+    constexpr size_t dims = 32;
+    constexpr size_t k = 10;
+    constexpr size_t Q = 50;
+
+    VectorDatabase db(dims, VectorDatabase::SearchMode::HNSW);
+    db.configureHNSW(16, 200, 100);   // higher ef for quality
+    db.initialize();
+
+    std::vector<Vector> all;
+    all.reserve(N);
+    std::mt19937 rng(123);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    auto rand_vec = [&] {
+        std::vector<float> v(dims);
+        for (auto& x : v) x = dist(rng);
+        return Vector(v);
+    };
+
+    for (size_t i = 0; i < N; ++i) {
+        all.push_back(rand_vec());
+        ASSERT_TRUE(db.insert(all.back(), "v" + std::to_string(i), ""));
+    }
+
+    // Brute-force ground truth on the same DB by switching mode to Exact.
+    VectorDatabase exact(dims, VectorDatabase::SearchMode::Exact);
+    exact.initialize();
+    for (size_t i = 0; i < N; ++i) {
+        ASSERT_TRUE(exact.insert(all[i], "v" + std::to_string(i), ""));
+    }
+
+    size_t hits = 0, total = 0;
+    for (size_t q = 0; q < Q; ++q) {
+        Vector query = rand_vec();
+        auto truth  = exact.similaritySearch(query, k);
+        auto approx = db.similaritySearch(query, k);
+        std::unordered_set<std::string> truth_keys;
+        for (auto& [key, _] : truth) truth_keys.insert(key);
+        for (auto& [key, _] : approx)
+            if (truth_keys.contains(key)) ++hits;
+        total += truth.size();
+    }
+    double recall = static_cast<double>(hits) / static_cast<double>(total);
+    if (recall < 0.85) {
+        std::cerr << "  (recall=" << recall << ")\n";
+    }
+    ASSERT_TRUE(recall >= 0.85);
+}
+
+// =====================================================================
+//  CONCURRENCY: search consistency under interleaved deletes
+// =====================================================================
+
+void test_search_remains_consistent_under_delete() {
+    VectorDatabase db(2);
+    db.initialize();
+
+    constexpr int N = 200;
+    for (int i = 0; i < N; ++i) {
+        ASSERT_TRUE(db.insert(make_vec({float(i), 0.0f}), "k" + std::to_string(i), ""));
+    }
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> saw_invalid{false};
+
+    std::thread reader([&] {
+        while (!stop.load()) {
+            auto results = db.similaritySearch(make_vec({0.0f, 0.0f}), 5);
+            for (const auto& [key, _] : results) {
+                // The key must be parseable and within range.
+                if (key.size() < 2 || key[0] != 'k') {
+                    saw_invalid.store(true);
+                }
+            }
+        }
+    });
+    std::thread deleter([&] {
+        for (int i = 0; i < N / 2; ++i) {
+            (void)db.remove("k" + std::to_string(i * 2));
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    });
+
+    deleter.join();
+    stop.store(true);
+    reader.join();
+
+    ASSERT_FALSE(saw_invalid.load());
+}
+
+// =====================================================================
 //  MAIN
 // =====================================================================
 
@@ -615,8 +825,8 @@ int main() {
     run_test("delete removes from search", test_delete_removes_from_search);
     run_test("large-scale insert + delete", test_large_scale_insert_delete);
 
-    std::cout << "\n[Algorithm Switching]\n";
-    run_test("exact -> LSH -> HNSW -> exact", test_algorithm_switching);
+    std::cout << "\n[Search Mode Switching]\n";
+    run_test("exact -> HNSW -> exact", test_search_mode_switching);
     run_test("HNSW search quality (recall)", test_hnsw_search_quality);
 
     std::cout << "\n[Batch Operations]\n";
@@ -640,6 +850,19 @@ int main() {
     std::cout << "\n[Search Accuracy]\n";
     run_test("known geometry search", test_search_accuracy_known_geometry);
     run_test("metadata consistency", test_search_metadata_consistency);
+
+    std::cout << "\n[Persistence]\n";
+    run_test("segmented recovery after restart", test_segmented_recovery_after_restart);
+
+    std::cout << "\n[Concurrency at scale]\n";
+    run_test("concurrent inserts no data loss",  test_concurrent_inserts_no_data_loss);
+    run_test("search consistent under delete",   test_search_remains_consistent_under_delete);
+
+    std::cout << "\n[Update semantics]\n";
+    run_test("search reflects latest update",    test_search_reflects_latest_update);
+
+    std::cout << "\n[HNSW recall at scale]\n";
+    run_test("recall@10 >= 0.85 (n=1000)",       test_hnsw_recall_at_moderate_scale);
 
     std::cout << "\n========================================\n";
     std::cout << " Results: " << tests_passed << "/" << tests_run << " passed";

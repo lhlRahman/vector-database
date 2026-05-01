@@ -76,7 +76,7 @@ int main() {
     double direct_insert_ms, tcp_insert_ms;
 
     {
-        VectorDatabase db(DIMS, "hnsw");
+        VectorDatabase db(DIMS, VectorDatabase::SearchMode::HNSW);
         db.initialize();
         direct_insert_ms = bench_ms([&] {
             for (int i = 0; i < N; ++i) {
@@ -111,7 +111,7 @@ int main() {
     const int SEARCHES = 1000;
 
     {
-        VectorDatabase db(DIMS, "hnsw");
+        VectorDatabase db(DIMS, VectorDatabase::SearchMode::HNSW);
         db.initialize();
         for (int i = 0; i < N; ++i) {
             Vector v(vecs[i]);
@@ -155,7 +155,7 @@ int main() {
     const int GETS = 2000;
 
     {
-        VectorDatabase db(DIMS, "hnsw");
+        VectorDatabase db(DIMS, VectorDatabase::SearchMode::HNSW);
         db.initialize();
         for (int i = 0; i < N; ++i) {
             Vector v(vecs[i]);
@@ -199,7 +199,7 @@ int main() {
     const int NUM_CLIENTS = 4;
 
     {
-        VectorDatabase db(DIMS, "hnsw");
+        VectorDatabase db(DIMS, VectorDatabase::SearchMode::HNSW);
         db.initialize();
         for (int i = 0; i < N; ++i) {
             Vector v(vecs[i]);

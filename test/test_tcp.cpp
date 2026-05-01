@@ -1,10 +1,16 @@
+#include <arpa/inet.h>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <iostream>
+#include <netinet/in.h>
 #include <string>
+#include <sys/socket.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
+#include "../src/api/protocol.hpp"
 #include "../src/api/tcp_server.hpp"
 #include "../src/api/tcp_client.hpp"
 
@@ -291,6 +297,116 @@ bool test_throughput() {
     return true;
 }
 
+// ── Edge-case tests using raw sockets ─────────────────────────
+
+// Open a raw TCP socket to the test server. Returns -1 on failure.
+static int connect_raw() {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(TEST_PORT));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        ::close(fd); return -1;
+    }
+    return fd;
+}
+
+// Server must reject a frame whose declared payload length exceeds the cap,
+// then keep serving subsequent clients.
+bool test_oversize_payload_rejected() {
+    TestFixture f;
+    int fd = connect_raw();
+    ASSERT_TRUE(fd >= 0);
+
+    // Magic + INSERT command + huge declared payload length.
+    uint8_t header[proto::HEADER_SIZE];
+    uint16_t magic = proto::MAGIC;
+    std::memcpy(header, &magic, 2);
+    header[2] = static_cast<uint8_t>(proto::Command::INSERT);
+    uint32_t huge = static_cast<uint32_t>(proto::MAX_PAYLOAD_SIZE) + 1;
+    std::memcpy(header + 3, &huge, 4);
+    ASSERT_EQ(::send(fd, header, sizeof(header), 0), (ssize_t)sizeof(header));
+
+    // Server should respond with an error frame, not just hang up.
+    uint8_t resp[proto::HEADER_SIZE];
+    ssize_t got = ::recv(fd, resp, sizeof(resp), 0);
+    ASSERT_TRUE(got == (ssize_t)sizeof(resp));
+    uint16_t resp_magic;
+    std::memcpy(&resp_magic, resp, 2);
+    ASSERT_EQ(resp_magic, proto::MAGIC);
+    ASSERT_EQ(resp[2], static_cast<uint8_t>(proto::Status::ERROR));
+    ::close(fd);
+
+    // The fixture's client must still be working — server didn't crash.
+    ASSERT_TRUE(f.client.ping());
+    return true;
+}
+
+// Bad magic bytes → server returns an error frame; no SIGPIPE; subsequent
+// clients still work.
+bool test_malformed_magic_rejected() {
+    TestFixture f;
+    int fd = connect_raw();
+    ASSERT_TRUE(fd >= 0);
+
+    uint8_t header[proto::HEADER_SIZE]{0};
+    header[0] = 0xFF; header[1] = 0xFF; // wrong magic
+    header[2] = 0x00;
+    uint32_t zero = 0;
+    std::memcpy(header + 3, &zero, 4);
+    ASSERT_EQ(::send(fd, header, sizeof(header), 0), (ssize_t)sizeof(header));
+
+    uint8_t resp[proto::HEADER_SIZE];
+    ssize_t got = ::recv(fd, resp, sizeof(resp), 0);
+    ASSERT_TRUE(got == (ssize_t)sizeof(resp));
+    ASSERT_EQ(resp[2], static_cast<uint8_t>(proto::Status::ERROR));
+    ::close(fd);
+
+    ASSERT_TRUE(f.client.ping());
+    return true;
+}
+
+// Hostile client connects and immediately drops without sending anything.
+// Server must not crash or wedge a worker.
+bool test_client_abrupt_disconnect() {
+    TestFixture f;
+    for (int i = 0; i < 5; ++i) {
+        int fd = connect_raw();
+        ASSERT_TRUE(fd >= 0);
+        ::close(fd);
+    }
+    // Allow workers to notice the EOFs.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(f.client.ping());
+
+    // And a real insert/get still works after the abuse.
+    std::vector<float> v{1.0f, 2.0f, 3.0f, 4.0f};
+    ASSERT_TRUE(f.client.insert("after-abuse", v, "ok"));
+    auto r = f.client.get("after-abuse");
+    ASSERT_TRUE(r.has_value());
+    return true;
+}
+
+// Stats counters reflect what we've actually done.
+bool test_stats_counters_consistent() {
+    TestFixture f;
+    auto before = f.client.stats();
+
+    std::vector<float> v{1.0f, 2.0f, 3.0f, 4.0f};
+    ASSERT_TRUE(f.client.insert("s1", v, ""));
+    ASSERT_TRUE(f.client.insert("s2", v, ""));
+    (void)f.client.search(v, 5);
+    (void)f.client.search(v, 5);
+    (void)f.client.search(v, 5);
+
+    auto after = f.client.stats();
+    ASSERT_TRUE(after.total_inserts  >= before.total_inserts  + 2);
+    ASSERT_TRUE(after.total_searches >= before.total_searches + 3);
+    return true;
+}
+
 // ── Main ───────────────────────────────────────────────────────
 
 int main() {
@@ -317,6 +433,12 @@ int main() {
     RUN_TEST(test_set_algorithm);
     RUN_TEST(test_set_metric);
     RUN_TEST(test_stats);
+
+    std::cout << "\n[Edge cases]\n";
+    RUN_TEST(test_oversize_payload_rejected);
+    RUN_TEST(test_malformed_magic_rejected);
+    RUN_TEST(test_client_abrupt_disconnect);
+    RUN_TEST(test_stats_counters_consistent);
 
     std::cout << "\n[Concurrency & performance]\n";
     RUN_TEST(test_concurrent_clients);

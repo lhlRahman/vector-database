@@ -75,7 +75,7 @@ BenchResult bench_single_insert(size_t num_vectors, size_t dims) {
 // =====================================================================
 
 BenchResult bench_batch_insert(size_t num_vectors, size_t dims) {
-    VectorDatabase db(dims, "exact", false, true);
+    VectorDatabase db(dims, VectorDatabase::SearchMode::Exact, false, true);
     db.initialize();
 
     std::vector<std::string> keys;
@@ -95,12 +95,12 @@ BenchResult bench_batch_insert(size_t num_vectors, size_t dims) {
 }
 
 // =====================================================================
-//  BENCHMARK: Search latency (exact, LSH, HNSW)
+//  BENCHMARK: Search latency (exact, HNSW)
 // =====================================================================
 
-BenchResult bench_search(const std::string& algorithm, size_t db_size, size_t dims,
+BenchResult bench_search(VectorDatabase::SearchMode mode, const std::string& mode_name, size_t db_size, size_t dims,
                          size_t k, size_t num_queries) {
-    VectorDatabase db(dims, algorithm);
+    VectorDatabase db(dims, mode);
     db.initialize();
 
     for (size_t i = 0; i < db_size; i++) {
@@ -114,7 +114,7 @@ BenchResult bench_search(const std::string& algorithm, size_t db_size, size_t di
         queries.push_back(random_vec(dims, static_cast<unsigned>(i + db_size + 1000)));
     }
 
-    std::string label = algorithm + " search (n=" + std::to_string(db_size) +
+    std::string label = mode_name + " search (n=" + std::to_string(db_size) +
                         ", d=" + std::to_string(dims) + ", k=" + std::to_string(k) + ")";
 
     return bench(label, num_queries, [&]() {
@@ -171,7 +171,7 @@ BenchResult bench_delete(size_t db_size, size_t dims) {
 
 std::pair<BenchResult, BenchResult> bench_cache(size_t db_size, size_t dims, size_t num_queries) {
     // Cache enabled
-    VectorDatabase db_cached(dims, "exact", false, false, {}, true, 1000);
+    VectorDatabase db_cached(dims, VectorDatabase::SearchMode::Exact, false, false, {}, true, 1000);
     db_cached.initialize();
 
     for (size_t i = 0; i < db_size; i++) {
@@ -190,7 +190,7 @@ std::pair<BenchResult, BenchResult> bench_cache(size_t db_size, size_t dims, siz
     });
 
     // Cache disabled
-    VectorDatabase db_no_cache(dims, "exact", false, false, {}, false);
+    VectorDatabase db_no_cache(dims, VectorDatabase::SearchMode::Exact, false, false, {}, false);
     db_no_cache.initialize();
 
     for (size_t i = 0; i < db_size; i++) {
@@ -243,7 +243,7 @@ void bench_dimension_scaling(size_t db_size, size_t num_queries) {
     std::cout << "\n  Dimension scaling (n=" << db_size << ", " << num_queries << " queries):\n";
 
     for (size_t dims : {8, 32, 64, 128, 256}) {
-        auto r = bench_search("exact", db_size, dims, 10, num_queries);
+        auto r = bench_search(VectorDatabase::SearchMode::Exact, "exact", db_size, dims, 10, num_queries);
         std::cout << "    d=" << std::setw(4) << dims << ": "
                   << std::fixed << std::setprecision(1) << r.avg_us << " us/query"
                   << " (" << std::setprecision(0) << r.ops_per_sec << " qps)\n";
@@ -258,7 +258,7 @@ void bench_size_scaling(size_t dims, size_t num_queries) {
     std::cout << "\n  Size scaling (d=" << dims << ", " << num_queries << " queries):\n";
 
     for (size_t n : {100, 500, 1000, 5000}) {
-        auto r = bench_search("exact", n, dims, 10, num_queries);
+        auto r = bench_search(VectorDatabase::SearchMode::Exact, "exact", n, dims, 10, num_queries);
         std::cout << "    n=" << std::setw(5) << n << ": "
                   << std::fixed << std::setprecision(1) << r.avg_us << " us/query"
                   << " (" << std::setprecision(0) << r.ops_per_sec << " qps)\n";
@@ -292,20 +292,18 @@ int main() {
     results.push_back(bench_batch_insert(5000, 32));
     print_result(results.back());
 
-    // -- Search algorithms --
-    std::cout << "\n[Search Latency by Algorithm]\n";
-    results.push_back(bench_search("exact", 1000, 32, 10, 500));
+    // -- Search modes --
+    std::cout << "\n[Search Latency by Mode]\n";
+    results.push_back(bench_search(VectorDatabase::SearchMode::Exact, "exact", 1000, 32, 10, 500));
     print_result(results.back());
-    results.push_back(bench_search("lsh", 1000, 32, 10, 500));
-    print_result(results.back());
-    results.push_back(bench_search("hnsw", 1000, 32, 10, 500));
+    results.push_back(bench_search(VectorDatabase::SearchMode::HNSW, "hnsw", 1000, 32, 10, 500));
     print_result(results.back());
 
     // -- Larger database --
     std::cout << "\n[Search Latency at Scale]\n";
-    results.push_back(bench_search("exact", 5000, 64, 10, 200));
+    results.push_back(bench_search(VectorDatabase::SearchMode::Exact, "exact", 5000, 64, 10, 200));
     print_result(results.back());
-    results.push_back(bench_search("hnsw", 5000, 64, 10, 200));
+    results.push_back(bench_search(VectorDatabase::SearchMode::HNSW, "hnsw", 5000, 64, 10, 200));
     print_result(results.back());
 
     // -- Update --
