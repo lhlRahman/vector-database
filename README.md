@@ -228,17 +228,18 @@ Recovery: ~90× faster on segmented because sealed segments load HNSW
 from a snapshot file instead of replaying every insert through the
 graph builder.
 
+For the full configuration matrix and tradeoff notes, see
+[`docs/benchmarks.md`](docs/benchmarks.md).
+
 **Fuzzing.** Three libFuzzer harnesses (protocol parser, WAL recovery,
-LogEntry deserializer) ran for ~60 M iterations under ASan+UBSan with
-zero crashes. One real bug surfaced and fixed during fuzz development:
-`memcpy(out, nullptr, 0)` in `BufferReader::read_floats` on a frame with
-`dims=0`.
+LogEntry deserializer) ran for 40.2 M iterations under ASan+UBSan with
+zero crashes.
 
 **HNSW arena allocator.** `make bench-hnsw-allocator` validates that
 swapping `std::allocator` for a `std::pmr::monotonic_buffer_resource`
-arena reduces malloc calls **17 500×** with no measurable single-thread
-search regression (309 vs 306 µs). The arena win is real but only shows
-up under contended allocators or many coexisting indexes.
+arena reduces allocation calls **17 443×** while keeping recall identical
+in the current benchmark. Arena search was slightly faster in this run
+(314 vs 324 µs/query), at the cost of higher reserved peak memory.
 
 ## Project layout
 
