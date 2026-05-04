@@ -745,23 +745,42 @@ void test_hnsw_recall_at_moderate_scale() {
         ASSERT_TRUE(db.insert(all.back(), "v" + std::to_string(i), ""));
     }
 
-    // Brute-force ground truth on the same DB by switching mode to Exact.
-    VectorDatabase exact(dims, VectorDatabase::SearchMode::Exact);
-    exact.initialize();
-    for (size_t i = 0; i < N; ++i) {
-        ASSERT_TRUE(exact.insert(all[i], "v" + std::to_string(i), ""));
-    }
+    // Brute-force ground truth in-process. We can't use a second
+    // VectorDatabase with SearchMode::Exact because the Segmented storage
+    // engine (now the default) ignores SearchMode and always runs HNSW
+    // - a known limitation. Compute the truth here so the recall metric
+    // is honest.
+    auto brute_force_topk = [&](const Vector& q) {
+        std::vector<std::pair<float, size_t>> scored;
+        scored.reserve(N);
+        const float* qp = q.data_ptr();
+        for (size_t i = 0; i < N; ++i) {
+            const float* vp = all[i].data_ptr();
+            float dist_sq = 0.0f;
+            for (size_t d = 0; d < dims; ++d) {
+                float diff = qp[d] - vp[d];
+                dist_sq += diff * diff;
+            }
+            scored.emplace_back(dist_sq, i);
+        }
+        std::partial_sort(scored.begin(),
+                          scored.begin() + static_cast<std::ptrdiff_t>(k),
+                          scored.end());
+        std::unordered_set<std::string> keys;
+        for (size_t i = 0; i < k; ++i) {
+            keys.insert("v" + std::to_string(scored[i].second));
+        }
+        return keys;
+    };
 
     size_t hits = 0, total = 0;
     for (size_t q = 0; q < Q; ++q) {
         Vector query = rand_vec();
-        auto truth  = exact.similaritySearch(query, k);
-        auto approx = db.similaritySearch(query, k);
-        std::unordered_set<std::string> truth_keys;
-        for (auto& [key, _] : truth) truth_keys.insert(key);
+        auto truth_keys = brute_force_topk(query);
+        auto approx     = db.similaritySearch(query, k);
         for (auto& [key, _] : approx)
             if (truth_keys.contains(key)) ++hits;
-        total += truth.size();
+        total += truth_keys.size();
     }
     double recall = static_cast<double>(hits) / static_cast<double>(total);
     if (recall < 0.85) {

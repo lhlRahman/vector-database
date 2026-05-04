@@ -95,6 +95,7 @@ VectorSegment::VectorSegment(std::string id, std::filesystem::path directory, Co
 
 void VectorSegment::initializeNew() {
     std::filesystem::create_directories(directory_);
+    fsync_dir(directory_.parent_path());
     if (state_ == State::Mutable) {
         std::ofstream wal(walPath(), std::ios::binary | std::ios::app);
         if (!wal.is_open()) {
@@ -143,6 +144,15 @@ bool VectorSegment::insert(const Vector& vector, const std::string& key, const s
     return applyInsert(vector, key, metadata, sequence);
 }
 
+bool VectorSegment::update(const Vector& vector,
+                           const std::string& key,
+                           const std::string& metadata,
+                           uint64_t sequence) {
+    if (state_ != State::Mutable) return false;
+    appendWalUpdate(vector, key, metadata, sequence);
+    return applyUpdate(vector, key, metadata, sequence);
+}
+
 bool VectorSegment::insertRecovered(const Vector& vector,
                                     const std::string& key,
                                     const std::string& metadata,
@@ -156,12 +166,11 @@ bool VectorSegment::remove(const std::string& key, uint64_t sequence) {
 
     if (state_ == State::Mutable) {
         appendWalDelete(key, sequence);
-    }
-
-    bool removed = applyDelete(key);
-    if (removed && state_ == State::Sealed) {
+    } else {
         appendSealedTombstone(key, sequence);
     }
+
+    bool removed = applyDelete(key, sequence);
     max_sequence_ = std::max(max_sequence_, sequence);
     return removed;
 }
@@ -204,7 +213,19 @@ std::vector<VectorSegment::SearchResult> VectorSegment::search(const Vector& que
 void VectorSegment::forEachLive(const std::function<void(const RecordView&)>& visitor) const {
     for (const auto& record : records_) {
         if (!record.active) continue;
-        visitor(RecordView{record.key, record.metadata, record.values.data(), record.sequence});
+        visitor(RecordView{record.key, record.metadata, record.values.data(), record.sequence, true});
+    }
+}
+
+void VectorSegment::forEachRecord(const std::function<void(const RecordView&)>& visitor) const {
+    for (const auto& record : records_) {
+        visitor(RecordView{
+            record.key,
+            record.metadata,
+            record.values.data(),
+            record.sequence,
+            record.active,
+        });
     }
 }
 
@@ -289,7 +310,20 @@ bool VectorSegment::applyInsert(const Vector& vector,
     return true;
 }
 
-bool VectorSegment::applyDelete(const std::string& key) {
+bool VectorSegment::applyUpdate(const Vector& vector,
+                                const std::string& key,
+                                const std::string& metadata,
+                                uint64_t sequence) {
+    if (vector.size() != config_.dimensions) {
+        throw std::invalid_argument("segment vector dimension mismatch");
+    }
+    if (contains(key)) {
+        applyDelete(key, sequence);
+    }
+    return applyInsert(vector, key, metadata, sequence);
+}
+
+bool VectorSegment::applyDelete(const std::string& key, uint64_t sequence) {
     auto it = key_to_slot_.find(key);
     if (it == key_to_slot_.end()) return false;
 
@@ -301,6 +335,7 @@ bool VectorSegment::applyDelete(const std::string& key) {
     }
 
     record.active = false;
+    record.sequence = std::max(record.sequence, sequence);
     key_to_slot_.erase(it);
     --live_count_;
     ++tombstone_count_;
@@ -344,6 +379,42 @@ void VectorSegment::appendWalInsert(const Vector& vector,
     if (!os.good()) throw std::runtime_error("failed writing WAL insert");
     // Unconditional fsync — the durability contract is "the call doesn't
     // return until the WAL record is on disk."
+    fsync_file(walPath());
+}
+
+void VectorSegment::appendWalUpdate(const Vector& vector,
+                                    const std::string& key,
+                                    const std::string& metadata,
+                                    uint64_t sequence) {
+    std::vector<uint8_t> payload;
+    payload.reserve(key.size() + metadata.size() + vector.size() * sizeof(float));
+    payload.insert(payload.end(), key.begin(), key.end());
+    payload.insert(payload.end(), metadata.begin(), metadata.end());
+    const auto vec_bytes = std::as_bytes(std::span(vector.data_ptr(), vector.size()));
+    payload.insert(payload.end(),
+                   reinterpret_cast<const uint8_t*>(vec_bytes.data()),
+                   reinterpret_cast<const uint8_t*>(vec_bytes.data()) + vec_bytes.size());
+
+    WalRecordHeader header{
+        kWalMagic,
+        static_cast<uint16_t>(kFormatVersion),
+        static_cast<uint16_t>(WalEntry::Op::Update),
+        sequence,
+        static_cast<uint32_t>(key.size()),
+        static_cast<uint32_t>(metadata.size()),
+        static_cast<uint32_t>(config_.dimensions),
+        static_cast<uint32_t>(vector.size() * sizeof(float)),
+        checksum_bytes(payload.data(), payload.size()),
+    };
+
+    std::ofstream os(walPath(), std::ios::binary | std::ios::app);
+    if (!os.is_open()) throw std::runtime_error("cannot append WAL: " + walPath().string());
+    write_pod(os, header);
+    if (!payload.empty()) {
+        os.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+    }
+    os.flush();
+    if (!os.good()) throw std::runtime_error("failed writing WAL update");
     fsync_file(walPath());
 }
 
@@ -420,6 +491,11 @@ std::vector<VectorSegment::WalEntry> VectorSegment::readWal() const {
         WalEntry entry;
         entry.op = static_cast<WalEntry::Op>(header.op);
         entry.sequence = header.sequence;
+        if (entry.op != WalEntry::Op::Insert &&
+            entry.op != WalEntry::Op::Delete &&
+            entry.op != WalEntry::Op::Update) {
+            break;
+        }
 
         size_t offset = 0;
         entry.key.assign(reinterpret_cast<const char*>(payload.data() + offset), header.key_bytes);
@@ -427,7 +503,7 @@ std::vector<VectorSegment::WalEntry> VectorSegment::readWal() const {
         entry.metadata.assign(reinterpret_cast<const char*>(payload.data() + offset), header.metadata_bytes);
         offset += header.metadata_bytes;
 
-        if (entry.op == WalEntry::Op::Insert) {
+        if (entry.op == WalEntry::Op::Insert || entry.op == WalEntry::Op::Update) {
             if (header.vector_bytes != config_.dimensions * sizeof(float)) break;
             entry.values.resize(config_.dimensions);
             std::memcpy(entry.values.data(), payload.data() + offset, header.vector_bytes);
@@ -444,8 +520,11 @@ void VectorSegment::replayWal() {
         if (entry.op == WalEntry::Op::Insert) {
             Vector vector(entry.values);
             applyInsert(vector, entry.key, entry.metadata, entry.sequence);
+        } else if (entry.op == WalEntry::Op::Update) {
+            Vector vector(entry.values);
+            applyUpdate(vector, entry.key, entry.metadata, entry.sequence);
         } else if (entry.op == WalEntry::Op::Delete) {
-            applyDelete(entry.key);
+            applyDelete(entry.key, entry.sequence);
             max_sequence_ = std::max(max_sequence_, entry.sequence);
         }
     }
@@ -543,7 +622,7 @@ void VectorSegment::readTombstonesFile() {
         std::string key;
         if (!read_pod(is, sequence)) break;
         if (!read_string(is, key)) break;
-        applyDelete(key);
+        applyDelete(key, sequence);
         max_sequence_ = std::max(max_sequence_, sequence);
     }
 }

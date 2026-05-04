@@ -75,7 +75,7 @@ private:
     std::unique_ptr<SegmentedVectorStore> segmented_store_;
     std::unordered_map<std::string, uint64_t> key_to_slot_;
     std::string storage_path_;
-    StorageEngine storage_engine{StorageEngine::MMap};
+    StorageEngine storage_engine{StorageEngine::Segmented};
 
     // Vector accessor — indexes use this to read vector data from mmap
     VectorAccessor vec_accessor_;
@@ -147,7 +147,7 @@ public:
                    bool enable_query_cache = true,
                    size_t cache_capacity = kDefaultCacheCapacity,
                    const std::string& storage_path = "",
-                   StorageEngine storage_engine = StorageEngine::MMap);
+                   StorageEngine storage_engine = StorageEngine::Segmented);
 
     ~VectorDatabase() noexcept;
 

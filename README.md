@@ -1,8 +1,8 @@
 # vector-database
 
 A from-scratch C++20 vector similarity-search engine. Exact (flat SIMD) and
-approximate (HNSW) nearest-neighbor search, write-ahead-logged segmented
-storage with crash-safe recovery, binary TCP protocol.
+approximate (HNSW) nearest-neighbor search, default write-ahead-logged
+segmented storage with crash-safe recovery, binary TCP protocol.
 
 > **What this is:** a learning / portfolio project built to understand the
 > internals of a vector database end to end — index, storage, recovery,
@@ -42,9 +42,11 @@ int main() {
 }
 ```
 
-State location: by default the in-process database creates a temp file
-`/tmp/vdb_<pid>_<time>.vdb`. The segmented engine writes under `data/` (and
-WAL under `logs/`) relative to the working directory unless overridden.
+State location: by default `VectorDatabase` uses the segmented engine and
+creates an auto-cleaned temp directory under `/tmp/vdb_auto_<pid>_<time>`.
+Pass an explicit `storage_path` to keep data across process restarts. The
+legacy mmap engine can still be selected explicitly with
+`StorageEngine::MMap`.
 
 ## Features
 
@@ -54,7 +56,9 @@ WAL under `logs/`) relative to the working directory unless overridden.
   policy (Euclidean / Manhattan / cosine).
 - **SegmentedVectorStore** — WAL-backed mutable segments + sealed HNSW
   snapshots, online compaction, recovery via snapshot rather than WAL
-  replay. Every rename is followed by `fsync` on file *and* parent dir.
+  replay. Single insert/update/delete operations are ACID-compliant: each
+  WAL or tombstone append is flushed with `fsync` before the call returns,
+  and every rename is followed by `fsync` on file *and* parent dir.
 - **MMapStorage** — slot-based memory-mapped store, zero-copy reads via
   `std::span<const float>`.
 - **SIMD** distance kernels — ARM NEON and x86 AVX2 (squared L2,
@@ -74,7 +78,7 @@ A `VectorDatabase` composes:
 
 | Layer    | Implementation                                                                         |
 | -------- | -------------------------------------------------------------------------------------- |
-| Storage  | `MMapStorage` (slot-based mmap) **or** `SegmentedVectorStore` (WAL + sealed snapshots) |
+| Storage  | `SegmentedVectorStore` by default (WAL + sealed snapshots), or explicit `MMapStorage` |
 | Index    | `FlatIndex<MetricPolicy>` (exact) **or** `HNSWIndex` (approximate)                     |
 | Cache    | `QueryCache` (LRU, generation-invalidated)                                             |
 | Locking  | `RWLock` — `std::shared_mutex` for readers vs writer exclusion                         |

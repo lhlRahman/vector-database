@@ -31,7 +31,9 @@
 
 #include <atomic>
 #include <random>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 // ---- minimal test harness ----
 
@@ -693,6 +695,69 @@ void test_db_segmented_persistence_recovery() {
     std::filesystem::remove_all(path);
 }
 
+void test_db_default_segmented_single_op_crash_recovery() {
+    auto path = std::filesystem::temp_directory_path() /
+                ("vdb_default_crash_unit_" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(path);
+
+    pid_t pid = fork();
+    ASSERT_TRUE(pid >= 0);
+
+    if (pid == 0) {
+        bool ok = true;
+        try {
+            VectorDatabase db(2,
+                              VectorDatabase::SearchMode::HNSW,
+                              false,
+                              false,
+                              {},
+                              false,
+                              0,
+                              path.string());
+            db.configureSegmentedStorage(1, 16, 0.25);
+            db.initialize();
+            ok = ok && db.getStatistics().storage_engine == VectorDatabase::StorageEngine::Segmented;
+            ok = ok && db.insert(Vector(std::vector<float>{1.0f, 0.0f}), "a", "old");
+            ok = ok && db.insert(Vector(std::vector<float>{0.0f, 1.0f}), "b", "delete-me");
+            ok = ok && db.update(Vector(std::vector<float>{0.25f, 0.75f}), "a", "new");
+            ok = ok && db.remove("b");
+        } catch (...) {
+            ok = false;
+        }
+        _exit(ok ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+
+    {
+        VectorDatabase db(2,
+                          VectorDatabase::SearchMode::HNSW,
+                          false,
+                          false,
+                          {},
+                          false,
+                          0,
+                          path.string());
+        db.initialize();
+
+        ASSERT_TRUE(db.getStatistics().storage_engine == VectorDatabase::StorageEngine::Segmented);
+        ASSERT_EQ(db.vectorCount(), 1u);
+        ASSERT_FALSE(db.get("b").has_value());
+
+        auto a = db.get("a");
+        ASSERT_TRUE(a.has_value());
+        ASSERT_NEAR((*a)[0], 0.25f, 1e-6f);
+        ASSERT_NEAR((*a)[1], 0.75f, 1e-6f);
+        ASSERT_EQ(db.getMetadata("a"), "new");
+    }
+
+    std::filesystem::remove_all(path);
+}
+
 // =====================================================================
 //  PROTOCOL (BufferReader / BufferWriter)
 // =====================================================================
@@ -1076,6 +1141,7 @@ int main() {
     run_test("statistics", test_db_statistics);
     run_test("get all vectors", test_db_get_all_vectors);
     run_test("segmented persistence recovery", test_db_segmented_persistence_recovery);
+    run_test("default segmented single-op crash recovery", test_db_default_segmented_single_op_crash_recovery);
 
     std::cout << "\n[Protocol]\n";
     run_test("buffer roundtrip",          test_protocol_buffer_roundtrip);

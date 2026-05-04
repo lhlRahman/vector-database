@@ -46,6 +46,7 @@ public:
         std::string metadata;
         const float* data;
         uint64_t sequence;
+        bool active{true};
     };
 
     struct Statistics {
@@ -70,6 +71,7 @@ public:
     void load();
 
     [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
+    [[nodiscard]] bool update(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
     [[nodiscard]] bool insertRecovered(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
     [[nodiscard]] bool remove(const std::string& key, uint64_t sequence);
     [[nodiscard]] bool contains(const std::string& key) const;
@@ -78,6 +80,7 @@ public:
 
     [[nodiscard]] std::vector<SearchResult> search(const Vector& query, size_t k) const;
     void forEachLive(const std::function<void(const RecordView&)>& visitor) const;
+    void forEachRecord(const std::function<void(const RecordView&)>& visitor) const;
 
     void seal();
     void flush();
@@ -102,6 +105,7 @@ private:
         enum class Op : uint8_t {
             Insert = 1,
             Delete = 2,
+            Update = 3,
         };
 
         Op op;
@@ -124,8 +128,10 @@ private:
 
     void rebuildIndex();
     bool applyInsert(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
-    bool applyDelete(const std::string& key);
+    bool applyUpdate(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
+    bool applyDelete(const std::string& key, uint64_t sequence);
     void appendWalInsert(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
+    void appendWalUpdate(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence);
     void appendWalDelete(const std::string& key, uint64_t sequence);
     void appendSealedTombstone(const std::string& key, uint64_t sequence);
     std::vector<WalEntry> readWal() const;

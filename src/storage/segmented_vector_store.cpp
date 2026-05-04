@@ -6,20 +6,16 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+
+#include "../utils/atomic_write.hpp"
 
 namespace {
 void atomic_text_write(const std::filesystem::path& path, const std::string& contents) {
-    std::filesystem::create_directories(path.parent_path());
-    auto temp = path;
-    temp += ".tmp";
-    {
-        std::ofstream os(temp, std::ios::trunc);
-        if (!os.is_open()) throw std::runtime_error("cannot write temp manifest: " + temp.string());
+    vdb::io::atomic_write(path, [&](std::ostream& os) {
         os << contents;
-        os.flush();
-        if (!os.good()) throw std::runtime_error("failed writing manifest: " + temp.string());
-    }
-    std::filesystem::rename(temp, path);
+        if (!os.good()) throw std::runtime_error("failed writing manifest: " + path.string());
+    });
 }
 
 std::vector<std::string> split_csv(const std::string& value) {
@@ -41,6 +37,8 @@ void SegmentedVectorStore::initialize() {
     if (initialized_) return;
 
     std::filesystem::create_directories(segmentsDir());
+    vdb::io::fsync_dir(root_.parent_path());
+    vdb::io::fsync_dir(root_);
 
     std::string mutable_id;
     std::vector<std::string> sealed_ids;
@@ -90,10 +88,8 @@ bool SegmentedVectorStore::update(const Vector& vector, const std::string& key, 
     if (vector.size() != config_.dimensions) throw std::invalid_argument("vector dimension mismatch");
     if (key_locations_.count(key) == 0) return false;
 
-    if (!remove(key)) return false;
-
     uint64_t sequence = nextSequence();
-    if (!mutable_segment_->insert(vector, key, metadata, sequence)) return false;
+    if (!mutable_segment_->update(vector, key, metadata, sequence)) return false;
     key_locations_[key] = Location{mutable_segment_, sequence};
 
     maybeSealMutableSegment();
@@ -301,9 +297,6 @@ void SegmentedVectorStore::setMetric(std::shared_ptr<const DistanceMetric> metri
     config_.metric = std::move(metric);
     if (!initialized_) return;
 
-    std::vector<std::shared_ptr<VectorSegment>> all_segments = sealed_segments_;
-    if (mutable_segment_) all_segments.push_back(mutable_segment_);
-
     struct LiveRecord {
         std::string key;
         std::string metadata;
@@ -312,15 +305,17 @@ void SegmentedVectorStore::setMetric(std::shared_ptr<const DistanceMetric> metri
     };
 
     std::vector<LiveRecord> records;
-    for (const auto& segment : all_segments) {
-        segment->forEachLive([&](const VectorSegment::RecordView& view) {
+    records.reserve(key_locations_.size());
+    for (const auto& [key, location] : key_locations_) {
+        auto vector = location.segment->get(key);
+        if (vector) {
             records.push_back(LiveRecord{
-                view.key,
-                view.metadata,
-                std::vector<float>(view.data, view.data + config_.dimensions),
-                view.sequence,
+                key,
+                location.segment->getMetadata(key),
+                std::vector<float>(vector->begin(), vector->end()),
+                location.sequence,
             });
-        });
+        }
     }
 
     sealed_segments_.clear();
@@ -389,23 +384,38 @@ std::shared_ptr<VectorSegment> SegmentedVectorStore::loadSegment(const std::stri
 void SegmentedVectorStore::rebuildKeyLocations() {
     key_locations_.clear();
 
-    auto add_live = [&](const std::shared_ptr<VectorSegment>& segment) {
-        segment->forEachLive([&](const VectorSegment::RecordView& view) {
-            auto existing = key_locations_.find(view.key);
-            if (existing == key_locations_.end()) {
-                key_locations_[view.key] = Location{segment, view.sequence};
+    struct LatestRecord {
+        std::shared_ptr<VectorSegment> segment;
+        uint64_t sequence{0};
+        bool active{false};
+    };
+
+    std::unordered_map<std::string, LatestRecord> latest;
+
+    auto add_records = [&](const std::shared_ptr<VectorSegment>& segment) {
+        segment->forEachRecord([&](const VectorSegment::RecordView& view) {
+            auto existing = latest.find(view.key);
+            if (existing == latest.end()) {
+                latest.emplace(view.key, LatestRecord{segment, view.sequence, view.active});
                 return;
             }
 
-            if (view.sequence >= existing->second.sequence) {
-                key_locations_[view.key] = Location{segment, view.sequence};
+            if (view.sequence > existing->second.sequence ||
+                (view.sequence == existing->second.sequence && view.active)) {
+                existing->second = LatestRecord{segment, view.sequence, view.active};
             }
         });
         latest_sequence_ = std::max(latest_sequence_, segment->maxSequence());
     };
 
-    for (const auto& segment : sealed_segments_) add_live(segment);
-    if (mutable_segment_) add_live(mutable_segment_);
+    for (const auto& segment : sealed_segments_) add_records(segment);
+    if (mutable_segment_) add_records(mutable_segment_);
+
+    for (const auto& [key, record] : latest) {
+        if (record.active) {
+            key_locations_[key] = Location{record.segment, record.sequence};
+        }
+    }
 }
 
 void SegmentedVectorStore::maybeSealMutableSegment() {

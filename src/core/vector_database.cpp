@@ -21,9 +21,16 @@
 // -------------------- ctor / dtor --------------------
 
 std::string VectorDatabase::make_temp_path() {
+    // Both engines accept this path: MMap treats it as a file (writes
+    // it directly), Segmented treats it as a directory (creates
+    // segments/ + manifest.txt inside). The .vdb suffix is dropped
+    // because for the segmented engine this is a directory name.
     auto tmp = std::filesystem::temp_directory_path();
-    auto name = "vdb_" + std::to_string(getpid()) + "_" +
-                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".vdb";
+    // The "vdb_auto_" prefix is the sentinel the destructor checks for
+    // before doing best-effort cleanup. User-supplied paths (any other
+    // prefix, or anything outside /tmp) are never auto-removed.
+    auto name = "vdb_auto_" + std::to_string(getpid()) + "_" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     return (tmp / name).string();
 }
 
@@ -93,10 +100,20 @@ VectorDatabase::~VectorDatabase() noexcept {
     try {
         shutdown();
     } catch (...) {}
-    if (storage_engine == StorageEngine::MMap &&
-        storage_path_.find("vdb_") != std::string::npos &&
-        storage_path_.find(std::filesystem::temp_directory_path().string()) != std::string::npos) {
-        std::filesystem::remove(storage_path_);
+    // Best-effort cleanup of paths we ourselves auto-allocated under
+    // /tmp/vdb_auto_<pid>_<ts>. Anything outside that exact temp-root +
+    // basename pattern is treated as user-supplied and left alone.
+    const auto storage_path = std::filesystem::path(storage_path_);
+    const auto tmp_root = std::filesystem::temp_directory_path();
+    const auto filename = storage_path.filename().string();
+    if (storage_path.parent_path() == tmp_root &&
+        filename.rfind("vdb_auto_", 0) == 0) {
+        std::error_code ec;
+        if (storage_engine == StorageEngine::Segmented) {
+            std::filesystem::remove_all(storage_path_, ec);  // directory
+        } else {
+            std::filesystem::remove(storage_path_, ec);      // single file
+        }
     }
 }
 
