@@ -11,7 +11,7 @@ segmented storage with crash-safe recovery, binary TCP protocol.
 > **What this is not:** a FAISS / hnswlib / Qdrant replacement. Use those
 > for production. Read this for the implementation.
 
-`tests: 99 passing` · `sanitizers: ASan + UBSan + TSan clean` · `fuzzed: ~60M iterations`
+`tests: 100 passing` · `sanitizers: ASan + UBSan clean` · `fuzzed: 40.2M libFuzzer iterations`
 
 ## Quick start
 
@@ -101,7 +101,7 @@ Requires a C++20 compiler (gcc 10+, clang 12+; `make fuzz` needs clang
 
 ```sh
 make tcp-server      # server binary
-make test            # unit + e2e + tcp tests (99 tests)
+make test            # unit + e2e + tcp tests (100 tests)
 make fuzz            # libFuzzer harnesses (uses clang if installed,
                      # falls back to a gcc random-mutation driver)
 ```
@@ -113,9 +113,9 @@ CXX="g++ -fsanitize=address,undefined -fno-omit-frame-pointer -g" make test
 CXX="g++ -fsanitize=thread -O1 -g"                                make test
 ```
 
-Status as of last full run on Linux/aarch64: 99/99 tests pass under
-release / ASan+UBSan / TSan; ~60 M fuzz iterations across three harnesses
-with zero crashes.
+Status as of the latest local run on Linux/aarch64: 100/100 release tests
+pass; unit + e2e pass under ASan+UBSan; 40.2 M libFuzzer iterations across
+three harnesses with zero crashes.
 
 The macOS Metal GPU code path exists in `src/optimizations/` but is not
 exercised by CI on this machine; the Linux build always links the no-op
@@ -126,56 +126,64 @@ GPU stub.
 All numbers below are from a single host (gcc 15, `-O2`, release build,
 no sanitizers, Linux/aarch64 on Apple Silicon under virtualization).
 Point-in-time measurements, not promises. **`make perf-test` to reproduce.**
+The primary API tables use the default segmented engine. On this host
+`/tmp` is tmpfs, so `make perf-test` shows the segmented code path without
+real persistent-disk flush latency; the persistence table below shows the
+cost on btrfs/NVMe.
 
-**Single-thread CRUD** (n=1000, d=128 unless noted):
+**Single-thread default API** (segmented engine, n=1000, d=128 unless noted):
 
 | Operation                           | Throughput  |
 | ----------------------------------- | ----------- |
-| insert (d=32, single)               | 267 K ops/s |
-| insert (d=128, single)              | 293 K ops/s |
-| batch insert (d=32, batch of 5000)  | 6.0 M ops/s |
-| update                              | 577 K ops/s |
-| delete                              | 8.6 M ops/s |
-| exact search (d=32, k=10)           |  52 K qps   |
-| HNSW search (d=32, k=10)            |  39 K qps   |
-| HNSW search (n=5000, d=64, k=10)    |  18 K qps   |
-| query-cache hit                     | 3.1 M ops/s |
+| insert (d=32, single)               |  33 K ops/s |
+| insert (d=128, single)              |  27 K ops/s |
+| batch insert (d=32, batch of 5000)  |  34 K ops/s |
+| update                              |  29 K ops/s |
+| delete                              | 257 K ops/s |
+| segmented search (Exact flag, d=32) |  45 K qps   |
+| segmented search (HNSW flag, d=32)  |  35 K qps   |
+| segmented search (n=5000, d=64)     |  17 K qps   |
+| query-cache hit                     | 3.2 M ops/s |
 
-**Concurrent search** (n=1000, d=32, exact mode):
+With segmented storage, the `SearchMode` enum is not yet wired through to
+choose flat exact search; segmented search uses per-segment HNSW today.
+
+**Concurrent search** (n=1000, d=32, segmented engine):
 
 | Threads | Throughput |
 | ------- | ---------- |
-| 1       |  15 K qps  |
-| 4       |  52 K qps  |
-| 8       |  99 K qps  |
+| 1       |  12 K qps  |
+| 4       |  42 K qps  |
+| 8       |  75 K qps  |
 
-Near-linear scaling up to 8 threads — the `RWLock` lets readers run in
-parallel.
+The `RWLock` lets readers run in parallel, so throughput scales well up
+to 8 threads in this small benchmark.
 
-**HNSW latency vs dimensions** (n=1000):
+**Segmented search latency vs dimensions** (n=1000):
 
 | Dimensions | Per query | qps   |
 | ---------- | --------- | ----- |
-|   8        | 14.6 µs   | 68 K  |
-|  32        | 18.3 µs   | 54 K  |
-|  64        | 25.6 µs   | 39 K  |
-| 128        | 41.7 µs   | 23 K  |
-| 256        | 76.7 µs   | 13 K  |
+|   8        | 24.4 µs   | 41 K  |
+|  32        | 29.0 µs   | 34 K  |
+|  64        | 35.3 µs   | 28 K  |
+| 128        | 52.6 µs   | 19 K  |
+| 256        | 72.4 µs   | 14 K  |
 
 (The single-thread d=32 number here differs from the concurrent table
 above because the two benchmarks use different query batches and warmup;
 each benchmark is self-consistent.)
 
-**TCP transport overhead** (`make bench-tcp`, d=128, loopback). Direct
-calls are sub-µs hashmap-style ops, so the over-TCP overhead is roughly a
-fixed **25–100 µs per call** dominated by the syscall pair, not parsing:
+**TCP transport overhead** (`make bench-tcp`, default segmented engine,
+d=128, loopback). Inserts are dominated by segmented WAL writes, so TCP
+adds only a few microseconds there. Read/search overhead is mostly the
+syscall/framing cost:
 
 | Op                          | Direct call    | TCP framed    | Per-call cost added |
 | --------------------------- | -------------- | ------------- | ------------------- |
-| Insert (1000)               | 22 K ops/s     | 10 K ops/s    | ~50 µs              |
-| Search top-10 (1000)        | 879 K ops/s    | 28 K ops/s    | ~35 µs              |
-| Get by key (2000)           | 8.4 M ops/s    | 32 K ops/s    | ~31 µs              |
-| Concurrent search (4×500)   | 317 K ops/s    | 67 K ops/s    | ~12 µs              |
+| Insert (1000)               | 18 K ops/s     | 17 K ops/s    | ~3 µs               |
+| Search top-10 (1000)        | 545 K ops/s    | 107 K ops/s   | ~8 µs               |
+| Get by key (2000)           | 8.8 M ops/s    | 30 K ops/s    | ~34 µs              |
+| Concurrent search (4×500)   | 333 K ops/s    | 73 K ops/s    | ~11 µs              |
 
 Wire-size: a 128-dim search request is 527 bytes binary vs ~1 352 bytes
 HTTP+JSON (61 % reduction).
@@ -187,13 +195,13 @@ it on a real filesystem to see the truth:
 
 | | mmap-monolith | segmented (tmpfs) | segmented (btrfs/NVMe) |
 | --- | --- | --- | --- |
-| Insert avg | 234 µs | 92 µs | **295 µs** |
-| Insert p99 | — | 173 µs | 1 089 µs |
-| Insert max | — | 3.3 ms | 21.9 ms |
-| Update avg | 387 µs | 32 µs | 291 µs |
-| Delete avg | 0.2 µs | 5 µs | 113 µs |
-| Search avg (post-compact) | 309 µs | 326 µs | 337 µs |
-| **Recovery (cold open)** | **1071 ms** | 11 ms | **12 ms** |
+| Insert avg | 254 µs | 94 µs | **319 µs** |
+| Insert p99 | — | 166 µs | 653 µs |
+| Insert max | — | 3.5 ms | 35.0 ms |
+| Update avg | 415 µs | 28 µs | 254 µs |
+| Delete avg | 0.2 µs | 5 µs | 157 µs |
+| Search avg (post-compact) | 337 µs | 313 µs | 357 µs |
+| **Recovery (cold open)** | **1170 ms** | 11 ms | **13 ms** |
 | Disk usage | 6.1 MiB | 5.1 MiB | 5.1 MiB |
 
 Two things to read out of this:
@@ -201,8 +209,10 @@ Two things to read out of this:
 1. **The tmpfs column was a lie.** Earlier benchmarks ran under `/tmp`
    which is RAM-backed on most Linux distros — `fsync()` is a no-op there.
    Run with `TMPDIR=/path/on/persistent/disk` to get honest numbers.
-2. **Per-write fsync hurts.** ~3× slower inserts, ~25× slower deletes,
-   p99 latency in the millisecond range, and 22 ms tail spikes when the
+2. **Per-write fsync hurts.** Average insert latency is close to mmap on
+   this run, but deletes are hundreds of times slower because the mmap
+   path only updates process-local/page-cache state. The segmented engine
+   also has p99 latency in the sub-ms range and 35 ms tail spikes when the
    filesystem decides to flush a transaction group. The price of true
    durability. Group commit / batched fsync would amortize it but isn't
    implemented yet.
