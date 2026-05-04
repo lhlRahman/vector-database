@@ -1,0 +1,22 @@
+# libFuzzer dictionary for the protocol parser. Each entry is a token
+# libFuzzer will splice into mutations.
+# MAGIC ("VD" little-endian)
+"\x44\x56"
+# Command bytes 0..0x0A
+"\x00"
+"\x01"
+"\x02"
+"\x03"
+"\x04"
+"\x05"
+"\x06"
+"\x07"
+"\x08"
+"\x09"
+"\x0A"
+# Names accepted by SET_ALGORITHM / SET_METRIC
+"euclidean"
+"manhattan"
+"cosine"
+"hnsw"
+"exact"

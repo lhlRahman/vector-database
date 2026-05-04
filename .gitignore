@@ -42,4 +42,11 @@ venv/
 *.log
 test_output/
 
+# Fuzzer corpus and crash artefacts (regenerable; libFuzzer discovers more on each run)
+test/corpus/
+crash-*
+leak-*
+oom-*
+timeout-*
+
 

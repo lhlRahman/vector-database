@@ -178,6 +178,7 @@ bench-tcp: $(LIB_OBJS)
 	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/bench_tcp.o $(BUILD_DIR)/api/tcp_server.o $(BUILD_DIR)/api/tcp_client.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(TCP_BENCH)
 	@echo "Running TCP benchmark..."
 	@./$(TCP_BENCH)
+
 # HNSW allocator benchmark (standard allocator vs arena)
 HNSW_ALLOC_BENCH = $(BUILD_DIR)/bench_hnsw_allocator
 bench-hnsw-allocator: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
@@ -207,11 +208,102 @@ bench-segmented-persistence: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/c
 	@./$(SEGMENTED_PERSISTENCE_BENCH)
 
 # Run all tests
+test: unit-test e2e-test
 
 # ── Fuzzers ──────────────────────────────────────────────
+# Harnesses use the standard `LLVMFuzzerTestOneInput` interface, so the same
+# source builds two ways:
+#   1. With clang (preferred): real coverage-guided libFuzzer via
+#      `-fsanitize=fuzzer,address,undefined`. Trigger by setting
+#      `FUZZ_CC=clang++` (e.g. `make FUZZ_CC=clang++ fuzz`).
+#   2. With gcc (default here, since clang isn't installed): we link in
+#      test/fuzz_main_fallback.cpp which drives the harness with a random +
+#      mutation loop. Same crash-detection coverage from ASan/UBSan, no
+#      coverage-guided mutation. The system has libclang_rt.fuzzer.a but
+#      modern libFuzzer dropped support for gcc's trace-pc instrumentation,
+#      so we can't link it under gcc.
+# Prefer clang for real libFuzzer; fall back to $(CXX) (gcc) only if not present.
+FUZZ_CC ?= $(shell command -v clang++ 2>/dev/null || echo $(CXX))
+USING_CLANG := $(findstring clang,$(notdir $(FUZZ_CC)))
+
+ifneq (,$(USING_CLANG))
+  FUZZ_CXXFLAGS = $(BASE_CXXFLAGS) $(ARCH_FLAGS) -O1 -g \
+                  -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+  FUZZ_LDFLAGS  = -fsanitize=fuzzer,address,undefined
+  FUZZ_MAIN_OBJ =
+else
+  FUZZ_CXXFLAGS = $(BASE_CXXFLAGS) $(ARCH_FLAGS) -O1 -g \
+                  -fsanitize=address,undefined -fno-omit-frame-pointer
+  FUZZ_LDFLAGS  = -fsanitize=address,undefined
+  FUZZ_MAIN_OBJ = $(BUILD_DIR)/fuzz_main_fallback.o
+endif
+
+# Default short run. libFuzzer reads -max_total_time / -runs; the fallback
+# parses the same flags.
+FUZZ_RUN_FLAGS ?= -max_total_time=60 -print_final_stats=1
+
+$(BUILD_DIR)/fuzz_main_fallback.o: test/fuzz_main_fallback.cpp
+	@mkdir -p $(BUILD_DIR)
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_main_fallback.cpp -o $@
+
+# Seed corpus for the protocol fuzzer — generated from valid frames so
+# libFuzzer doesn't have to discover the magic bytes from random input.
+PROTO_CORPUS_DIR = test/corpus/protocol
+PROTO_DICT       = test/fuzz_dict_protocol.txt
+$(PROTO_CORPUS_DIR)/.stamp: test/fuzz_corpus_gen.cpp src/api/protocol.hpp
+	@mkdir -p $(BUILD_DIR)
+	$(CXX) $(BASE_CXXFLAGS) $(ARCH_FLAGS) -O1 test/fuzz_corpus_gen.cpp -o $(BUILD_DIR)/fuzz_corpus_gen
+	@./$(BUILD_DIR)/fuzz_corpus_gen
+	@touch $@
+
+FUZZ_PROTOCOL = $(BUILD_DIR)/fuzz_protocol
+fuzz-protocol: $(FUZZ_MAIN_OBJ) $(PROTO_CORPUS_DIR)/.stamp
+	@mkdir -p $(BUILD_DIR)
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_protocol.cpp -o $(BUILD_DIR)/fuzz_protocol.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_protocol.o $(FUZZ_MAIN_OBJ) $(FUZZ_LDFLAGS) -pthread -o $(FUZZ_PROTOCOL)
+	@echo "Running protocol fuzzer..."
+ifneq (,$(USING_CLANG))
+	@./$(FUZZ_PROTOCOL) $(PROTO_CORPUS_DIR) -dict=$(PROTO_DICT) $(FUZZ_RUN_FLAGS)
+else
+	@./$(FUZZ_PROTOCOL) $(FUZZ_RUN_FLAGS)
+endif
+
+FUZZ_WAL = $(BUILD_DIR)/fuzz_wal
+fuzz-wal: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/storage $(BUILD_DIR)/algorithms $(BUILD_DIR)/core $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/storage/segment.cpp -o $(BUILD_DIR)/storage/segment.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/storage/mmap_storage.cpp -o $(BUILD_DIR)/storage/mmap_storage.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/algorithms/hnsw_index.cpp -o $(BUILD_DIR)/algorithms/hnsw_index.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/core/vector.cpp -o $(BUILD_DIR)/core/vector.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/utils/distance_metrics.cpp -o $(BUILD_DIR)/utils/distance_metrics.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/optimizations/simd_operations.cpp -o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_wal.cpp -o $(BUILD_DIR)/fuzz_wal.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_wal.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/storage/segment.o $(BUILD_DIR)/storage/mmap_storage.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		$(FUZZ_LDFLAGS) -pthread -o $(FUZZ_WAL)
+	@echo "Running WAL fuzzer..."
+	@./$(FUZZ_WAL) $(FUZZ_RUN_FLAGS)
+
+FUZZ_LOGENTRY = $(BUILD_DIR)/fuzz_logentry
+fuzz-logentry: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/features $(BUILD_DIR)/core $(BUILD_DIR)/optimizations
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/features/commit_log.cpp        -o $(BUILD_DIR)/features/commit_log.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/core/vector.cpp                -o $(BUILD_DIR)/core/vector.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/optimizations/simd_operations.cpp -o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_logentry.cpp             -o $(BUILD_DIR)/fuzz_logentry.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_logentry.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/optimizations/simd_operations.o \
+		$(FUZZ_LDFLAGS) -pthread -o $(FUZZ_LOGENTRY)
+	@echo "Running LogEntry fuzzer..."
+	@./$(FUZZ_LOGENTRY) $(FUZZ_RUN_FLAGS)
+
+fuzz: fuzz-protocol fuzz-wal fuzz-logentry
 
 # Clean up
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence fuzz fuzz-protocol fuzz-wal fuzz-logentry
