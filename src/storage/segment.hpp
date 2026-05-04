@@ -20,11 +20,10 @@ public:
         Sealed,
     };
 
-    enum class DurabilityMode {
-        AlwaysSync,
-        Buffered,
-    };
-
+    // Durability is unconditional: every WAL record / tombstone append is
+    // followed by fsync before the call returns. There is no "buffered"
+    // mode — losing recent writes on power failure was an unacceptable
+    // foot-gun for a database that calls itself a database.
     struct Config {
         size_t dimensions{0};
         size_t hnsw_m{16};
@@ -32,7 +31,6 @@ public:
         size_t hnsw_ef_search{50};
         HNSWIndex::AllocationStrategy allocation_strategy{HNSWIndex::AllocationStrategy::Arena};
         size_t arena_initial_size{1024 * 1024};
-        DurabilityMode durability{DurabilityMode::Buffered};
         std::shared_ptr<const DistanceMetric> metric{std::make_shared<EuclideanDistance>()};
     };
 

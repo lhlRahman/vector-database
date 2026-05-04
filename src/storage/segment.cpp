@@ -76,6 +76,7 @@ bool read_string(std::istream& is, std::string& value) {
 
 using vdb::io::atomic_write;
 using vdb::io::fsync_file;
+using vdb::io::fsync_dir;
 
 size_t file_size_or_zero(const std::filesystem::path& path) {
     std::error_code ec;
@@ -99,6 +100,12 @@ void VectorSegment::initializeNew() {
         if (!wal.is_open()) {
             throw std::runtime_error("cannot create WAL: " + walPath().string());
         }
+        wal.close();
+        // Persist the WAL file's directory entry. Without this, a power
+        // failure between create and the first write can lose the file
+        // even though create() returned successfully.
+        fsync_file(walPath());
+        fsync_dir(directory_);
     }
     writeMetadata();
 }
@@ -335,7 +342,9 @@ void VectorSegment::appendWalInsert(const Vector& vector,
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL insert");
-    if (config_.durability == DurabilityMode::AlwaysSync) fsync_file(walPath());
+    // Unconditional fsync — the durability contract is "the call doesn't
+    // return until the WAL record is on disk."
+    fsync_file(walPath());
 }
 
 void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
@@ -360,7 +369,7 @@ void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL delete");
-    if (config_.durability == DurabilityMode::AlwaysSync) fsync_file(walPath());
+    fsync_file(walPath());
 }
 
 void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t sequence) {
@@ -377,7 +386,12 @@ void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t seque
     write_string(os, key);
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing tombstone");
-    if (config_.durability == DurabilityMode::AlwaysSync) fsync_file(tombstonesPath());
+    fsync_file(tombstonesPath());
+    if (new_file) {
+        // First-time create: also persist the directory entry so the
+        // tombstone file isn't lost on power failure.
+        fsync_dir(directory_);
+    }
 }
 
 std::vector<VectorSegment::WalEntry> VectorSegment::readWal() const {

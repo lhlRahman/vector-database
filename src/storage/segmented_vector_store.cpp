@@ -362,7 +362,6 @@ VectorSegment::Config SegmentedVectorStore::segmentConfig() const {
         config_.hnsw_ef_search,
         config_.allocation_strategy,
         config_.arena_initial_size,
-        config_.durability,
         config_.metric,
     };
 }

@@ -177,19 +177,42 @@ Wire-size: a 128-dim search request is 527 bytes binary vs ~1 352 bytes
 HTTP+JSON (61 % reduction).
 
 **Segmented vs legacy persistence** (`make bench-segmented-persistence`,
-n=5000, d=64, plus 250 deletes + 200 updates):
+n=5000, d=64, plus 250 deletes + 200 updates). The segmented engine
+fsyncs the WAL on every mutation — the cost is real and you have to pay
+it on a real filesystem to see the truth:
 
-|                           | mmap-monolith | segmented |
-| ------------------------- | ------------- | --------- |
-| Insert avg                | 235 µs        | 92 µs     |
-| Search avg (post-compact) | 309 µs        | 326 µs    |
-| **Recovery (cold open)**  | **877 ms**    | **11 ms** |
-| Disk usage                | 6.1 MiB       | 5.1 MiB   |
+| | mmap-monolith | segmented (tmpfs) | segmented (btrfs/NVMe) |
+| --- | --- | --- | --- |
+| Insert avg | 234 µs | 92 µs | **295 µs** |
+| Insert p99 | — | 173 µs | 1 089 µs |
+| Insert max | — | 3.3 ms | 21.9 ms |
+| Update avg | 387 µs | 32 µs | 291 µs |
+| Delete avg | 0.2 µs | 5 µs | 113 µs |
+| Search avg (post-compact) | 309 µs | 326 µs | 337 µs |
+| **Recovery (cold open)** | **1071 ms** | 11 ms | **12 ms** |
+| Disk usage | 6.1 MiB | 5.1 MiB | 5.1 MiB |
 
-The segmented engine is **~80× faster on cold recovery** because sealed
-segments load HNSW from a snapshot file instead of replaying inserts.
-Search performance during compaction degrades temporarily (~2× slower);
-post-compact it's within noise of the monolith.
+Two things to read out of this:
+
+1. **The tmpfs column was a lie.** Earlier benchmarks ran under `/tmp`
+   which is RAM-backed on most Linux distros — `fsync()` is a no-op there.
+   Run with `TMPDIR=/path/on/persistent/disk` to get honest numbers.
+2. **Per-write fsync hurts.** ~3× slower inserts, ~25× slower deletes,
+   p99 latency in the millisecond range, and 22 ms tail spikes when the
+   filesystem decides to flush a transaction group. The price of true
+   durability. Group commit / batched fsync would amortize it but isn't
+   implemented yet.
+
+The mmap engine's "fast" insert (234 µs) is a different number entirely
+— it's not durable on power loss, the writes go to the page cache and
+the kernel flushes when it feels like it. **It is wrong to compare those
+numbers as if they measure the same thing.** The segmented engine
+guarantees the call doesn't return until the WAL record is on disk; the
+mmap engine guarantees nothing.
+
+Recovery: ~90× faster on segmented because sealed segments load HNSW
+from a snapshot file instead of replaying every insert through the
+graph builder.
 
 **Fuzzing.** Three libFuzzer harnesses (protocol parser, WAL recovery,
 LogEntry deserializer) ran for ~60 M iterations under ASan+UBSan with

@@ -22,7 +22,6 @@ public:
         double max_tombstone_ratio{0.25};
         HNSWIndex::AllocationStrategy allocation_strategy{HNSWIndex::AllocationStrategy::Arena};
         size_t arena_initial_size{1024 * 1024};
-        VectorSegment::DurabilityMode durability{VectorSegment::DurabilityMode::Buffered};
         std::shared_ptr<const DistanceMetric> metric{std::make_shared<EuclideanDistance>()};
     };
 
