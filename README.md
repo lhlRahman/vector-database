@@ -1,287 +1,273 @@
-# Vector Database
+# vector-database
 
-A high-performance, in-memory vector database with SIMD optimizations, supporting exact, LSH, and HNSW nearest neighbor search. Built with C++20 and optimized for modern architectures including Apple Silicon (M1/M2) and x86-64.
+A from-scratch C++20 vector similarity-search engine. Exact (flat SIMD) and
+approximate (HNSW) nearest-neighbor search, write-ahead-logged segmented
+storage with crash-safe recovery, binary TCP protocol.
 
-## Features
+> **What this is:** a learning / portfolio project built to understand the
+> internals of a vector database end to end — index, storage, recovery,
+> protocol, concurrency, fuzzing.
+>
+> **What this is not:** a FAISS / hnswlib / Qdrant replacement. Use those
+> for production. Read this for the implementation.
 
-### Core Functionality
-- **High-dimensional vector storage** with efficient indexing
-- **Exact nearest neighbor search** using KD-trees
-- **Approximate nearest neighbor search** using Locality-Sensitive Hashing (LSH)
-- **HNSW (Hierarchical Navigable Small World)** for high-accuracy approximate search
-- **Batch operations** for efficient bulk insertions and searches
-- **Metadata support** for storing additional information with vectors
-- **Persistent storage** with save/load functionality
+`tests: 99 passing` · `sanitizers: ASan + UBSan + TSan clean` · `fuzzed: ~60M iterations`
 
-### Performance Optimizations
-- **GPU acceleration** with Apple Metal for massive parallel distance computation
-- **SIMD acceleration** with ARM NEON (Apple Silicon) and AVX2 (x86-64)
-- **Query caching** for frequently accessed results
-- **Parallel processing** support for multi-core systems
+## Quick start
 
-### API & Integration
-- **RESTful HTTP API** for easy integration
-- **C++ library** for direct embedding
-- **Python client** examples
-- **Real-time search** capabilities
-
-## Performance Metrics
-
-### SIMD Performance (Apple Silicon M1)
-- **Dot Product**: 3.7x - 4.9x speedup
-- **Vector Addition**: 5.8x - 6.8x speedup
-- **Vector Subtraction**: 2.8x - 6.6x speedup
-
-### Search Performance
-- **Exact Search**: O(log n) average case with KD-trees
-- **LSH Search**: O(1) average case with Locality-Sensitive Hashing
-- **HNSW Search**: O(log n) average case with high accuracy
-- **Batch Operations**: Optimized for bulk processing
-
-### GPU vs CPU Benchmark (Apple M1, 1000 vectors, 10240 dimensions)
-
-| Method | Total Time (50 queries) | Per Query | Speedup vs CPU |
-|--------|------------------------|-----------|----------------|
-| GPU Brute Force | 797ms | 15.95ms | 7.72x |
-| HNSW (approx) | 4930ms | 98.61ms | 1.25x |
-| CPU Brute Force | 6156ms | 123.12ms | baseline |
-
-Key findings:
-- GPU is 6.18x faster than HNSW for high-dimensional vectors
-- GPU provides exact results (100% recall) unlike approximate methods
-- GPU advantage increases with vector dimensionality
-- For 128-dim vectors: GPU is 5.37x faster than CPU brute force
-
-Run the benchmark yourself:
-```bash
-make benchmark-gpu
-./build/benchmark_gpu 1000 10240 50 10
+```sh
+git clone https://github.com/lhlrahman/vector-database
+cd vector-database
+make tcp-server          # binary at build/tcp_server
+./build/tcp_server --dims 128 --host 127.0.0.1 --port 9090 --threads 4
 ```
 
-## Use Cases
+Embed in C++:
 
-### Machine Learning & AI
-- **Embedding storage** for NLP models
-- **Similarity search** for recommendation systems
-- **Feature vector databases** for computer vision
-- **Neural network embeddings** storage and retrieval
-
-### Data Science
-- **High-dimensional data analysis**
-- **Clustering and classification**
-- **Anomaly detection**
-- **Pattern matching**
-
-### Real-time Applications
-- **Content recommendation engines**
-- **Image similarity search**
-- **Document similarity matching**
-- **Audio fingerprinting**
-
-## Installation & Setup
-
-### Prerequisites
-- **C++20 compatible compiler** (GCC 10+, Clang 12+, or MSVC 2019+)
-- **CMake 3.10+** (for CMake build)
-- **Make** (for Makefile build)
-- **Python 3.7+** (for Python examples and benchmarks)
-
-### Quick Start
-
-#### Using Makefile (Recommended)
-```bash
-# Clone the repository
-git clone <repository-url>
-cd vector_database
-
-# Build everything
-make all
-
-# Run basic example
-./build/basic_usage
-
-# Start the API server
-make run-server
-
-# Test with Python client
-python examples/api_client_demo.py
-```
-
-#### Using CMake
-```bash
-# Create build directory
-mkdir build && cd build
-
-# Configure and build
-cmake ..
-make
-
-# Run examples
-./basic_usage
-./advanced_features
-./simd_benchmark
-```
-
-### Build Options
-
-The build system automatically detects your architecture and applies appropriate optimizations:
-
-- **Apple Silicon (M1/M2)**: ARM NEON SIMD instructions
-- **x86-64**: AVX2 SIMD instructions
-- **Other architectures**: Scalar fallback with compiler optimizations
-
-## Usage Examples
-
-### Basic C++ Usage
 ```cpp
-#include "vector_database.hpp"
-#include "random_generator.hpp"
+#include "core/vector_database.hpp"
 
 int main() {
-    // Create a 128-dimensional vector database
-    VectorDatabase db(128);
-    
-    // Insert vectors
-    RandomGenerator rng;
-    for (int i = 0; i < 1000; ++i) {
-        Vector v = rng.generateUniformVector(128);
-        db.insert(v, "vector_" + std::to_string(i));
+    VectorDatabase db(/*dimensions=*/128);
+    db.initialize();
+
+    std::vector<float> v(128, 0.5f);
+    [[maybe_unused]] bool ok = db.insert(Vector(std::move(v)), "key-0", "metadata");
+
+    Vector query(std::vector<float>(128, 0.5f));
+    for (const auto& [key, distance] : db.similaritySearch(query, /*k=*/10)) {
+        std::cout << key << "  " << distance << "\n";
     }
-    
-    // Search for similar vectors
-    Vector query = rng.generateUniformVector(128);
-    auto results = db.similaritySearch(query, 5);
-    
-    for (const auto& [key, distance] : results) {
-        std::cout << key << ": " << distance << std::endl;
-    }
-    
-    return 0;
+    db.shutdown();
 }
 ```
 
-### Advanced Features
+State location: by default the in-process database creates a temp file
+`/tmp/vdb_<pid>_<time>.vdb`. The segmented engine writes under `data/` (and
+WAL under `logs/`) relative to the working directory unless overridden.
+
+## Features
+
+- **HNSW** approximate NN with arena-allocated graph nodes; configurable
+  `M` / `ef_construction` / `ef_search`.
+- **FlatIndex** — exact brute force, templated on a `RawDistanceMetric`
+  policy (Euclidean / Manhattan / cosine).
+- **SegmentedVectorStore** — WAL-backed mutable segments + sealed HNSW
+  snapshots, online compaction, recovery via snapshot rather than WAL
+  replay. Every rename is followed by `fsync` on file *and* parent dir.
+- **MMapStorage** — slot-based memory-mapped store, zero-copy reads via
+  `std::span<const float>`.
+- **SIMD** distance kernels — ARM NEON and x86 AVX2 (squared L2,
+  Manhattan, dot product), scalar fallback.
+- **Scalar quantization** (float32 → uint8) for fast candidate filtering
+  before exact re-rank.
+- **Binary TCP protocol** — fixed 7-byte header, little-endian
+  length-prefixed frames, capped at 64 MiB. No HTTP/JSON.
+- **Concurrency** — single `RWLock` (std::shared_mutex), shared reads
+  and exclusive writes.
+- **Query cache** — LRU on query hash, generation-counter invalidated
+  on every mutation.
+
+## How it works
+
+A `VectorDatabase` composes:
+
+| Layer    | Implementation                                                                         |
+| -------- | -------------------------------------------------------------------------------------- |
+| Storage  | `MMapStorage` (slot-based mmap) **or** `SegmentedVectorStore` (WAL + sealed snapshots) |
+| Index    | `FlatIndex<MetricPolicy>` (exact) **or** `HNSWIndex` (approximate)                     |
+| Cache    | `QueryCache` (LRU, generation-invalidated)                                             |
+| Locking  | `RWLock` — `std::shared_mutex` for readers vs writer exclusion                         |
+| Metrics  | `EuclideanDistance`, `ManhattanDistance`, `CosineSimilarity`                           |
+
+Indexes never copy vector bytes — they read through a `VectorAccessor`
+callback that returns a pointer into the underlying storage.
+
+`SegmentedVectorStore` follows a Qdrant-style lifecycle: writes go into a
+mutable segment with WAL; once a size or tombstone-ratio threshold is
+crossed the segment is sealed (HNSW snapshot written), and sealed
+segments are compacted in the background. Cold opens load HNSW from the
+snapshot files instead of replaying the WAL — that's where the recovery
+speedup comes from.
+
+## Building
+
+Requires a C++20 compiler (gcc 10+, clang 12+; `make fuzz` needs clang
+17+ for libFuzzer). POSIX-y system. No external dependencies.
+
+```sh
+make tcp-server      # server binary
+make test            # unit + e2e + tcp tests (99 tests)
+make fuzz            # libFuzzer harnesses (uses clang if installed,
+                     # falls back to a gcc random-mutation driver)
+```
+
+With sanitizers:
+
+```sh
+CXX="g++ -fsanitize=address,undefined -fno-omit-frame-pointer -g" make test
+CXX="g++ -fsanitize=thread -O1 -g"                                make test
+```
+
+Status as of last full run on Linux/aarch64: 99/99 tests pass under
+release / ASan+UBSan / TSan; ~60 M fuzz iterations across three harnesses
+with zero crashes.
+
+The macOS Metal GPU code path exists in `src/optimizations/` but is not
+exercised by CI on this machine; the Linux build always links the no-op
+GPU stub.
+
+## Performance
+
+All numbers below are from a single host (gcc 15, `-O2`, release build,
+no sanitizers, Linux/aarch64 on Apple Silicon under virtualization).
+Point-in-time measurements, not promises. **`make perf-test` to reproduce.**
+
+**Single-thread CRUD** (n=1000, d=128 unless noted):
+
+| Operation                           | Throughput  |
+| ----------------------------------- | ----------- |
+| insert (d=32, single)               | 267 K ops/s |
+| insert (d=128, single)              | 293 K ops/s |
+| batch insert (d=32, batch of 5000)  | 6.0 M ops/s |
+| update                              | 577 K ops/s |
+| delete                              | 8.6 M ops/s |
+| exact search (d=32, k=10)           |  52 K qps   |
+| HNSW search (d=32, k=10)            |  39 K qps   |
+| HNSW search (n=5000, d=64, k=10)    |  18 K qps   |
+| query-cache hit                     | 3.1 M ops/s |
+
+**Concurrent search** (n=1000, d=32, exact mode):
+
+| Threads | Throughput |
+| ------- | ---------- |
+| 1       |  15 K qps  |
+| 4       |  52 K qps  |
+| 8       |  99 K qps  |
+
+Near-linear scaling up to 8 threads — the `RWLock` lets readers run in
+parallel.
+
+**HNSW latency vs dimensions** (n=1000):
+
+| Dimensions | Per query | qps   |
+| ---------- | --------- | ----- |
+|   8        | 14.6 µs   | 68 K  |
+|  32        | 18.3 µs   | 54 K  |
+|  64        | 25.6 µs   | 39 K  |
+| 128        | 41.7 µs   | 23 K  |
+| 256        | 76.7 µs   | 13 K  |
+
+(The single-thread d=32 number here differs from the concurrent table
+above because the two benchmarks use different query batches and warmup;
+each benchmark is self-consistent.)
+
+**TCP transport overhead** (`make bench-tcp`, d=128, loopback). Direct
+calls are sub-µs hashmap-style ops, so the over-TCP overhead is roughly a
+fixed **25–100 µs per call** dominated by the syscall pair, not parsing:
+
+| Op                          | Direct call    | TCP framed    | Per-call cost added |
+| --------------------------- | -------------- | ------------- | ------------------- |
+| Insert (1000)               | 22 K ops/s     | 10 K ops/s    | ~50 µs              |
+| Search top-10 (1000)        | 879 K ops/s    | 28 K ops/s    | ~35 µs              |
+| Get by key (2000)           | 8.4 M ops/s    | 32 K ops/s    | ~31 µs              |
+| Concurrent search (4×500)   | 317 K ops/s    | 67 K ops/s    | ~12 µs              |
+
+Wire-size: a 128-dim search request is 527 bytes binary vs ~1 352 bytes
+HTTP+JSON (61 % reduction).
+
+**Segmented vs legacy persistence** (`make bench-segmented-persistence`,
+n=5000, d=64, plus 250 deletes + 200 updates):
+
+|                           | mmap-monolith | segmented |
+| ------------------------- | ------------- | --------- |
+| Insert avg                | 235 µs        | 92 µs     |
+| Search avg (post-compact) | 309 µs        | 326 µs    |
+| **Recovery (cold open)**  | **877 ms**    | **11 ms** |
+| Disk usage                | 6.1 MiB       | 5.1 MiB   |
+
+The segmented engine is **~80× faster on cold recovery** because sealed
+segments load HNSW from a snapshot file instead of replaying inserts.
+Search performance during compaction degrades temporarily (~2× slower);
+post-compact it's within noise of the monolith.
+
+**Fuzzing.** Three libFuzzer harnesses (protocol parser, WAL recovery,
+LogEntry deserializer) ran for ~60 M iterations under ASan+UBSan with
+zero crashes. One real bug surfaced and fixed during fuzz development:
+`memcpy(out, nullptr, 0)` in `BufferReader::read_floats` on a frame with
+`dims=0`.
+
+**HNSW arena allocator.** `make bench-hnsw-allocator` validates that
+swapping `std::allocator` for a `std::pmr::monotonic_buffer_resource`
+arena reduces malloc calls **17 500×** with no measurable single-thread
+search regression (309 vs 306 µs). The arena win is real but only shows
+up under contended allocators or many coexisting indexes.
+
+## Project layout
+
+```
+src/
+  core/          VectorDatabase, Vector
+  algorithms/    HNSWIndex, FlatIndex
+  storage/       MMapStorage, VectorSegment, SegmentedVectorStore
+  api/           TCP server, client, binary protocol
+  features/      QueryCache, AtomicPersistence, CommitLog, batching
+  optimizations/ SIMD kernels, RWLock, scalar quantization, parallel ops
+  utils/         distance metrics, atomic_write helper, RNG
+test/
+  unit_tests.cpp / e2e_tests.cpp / test_tcp.cpp
+  fuzz_*.cpp                 (libFuzzer harnesses + corpus generator)
+  bench_*.cpp                (microbenchmarks)
+```
+
+## API reference
+
+Selected public methods on `VectorDatabase` (full surface in
+`src/core/vector_database.hpp`):
+
 ```cpp
-// Use different search algorithms
-VectorDatabase db(128, "exact");     // Exact search (KD-tree)
-VectorDatabase db(128, "lsh");       // LSH approximate search
-VectorDatabase db(128, "hnsw");      // HNSW approximate search
+// Lifecycle
+void initialize();
+void shutdown();
 
-// Add metadata
-db.insert(vector, "key", "metadata");
+// Mutations — all [[nodiscard]]
+bool insert(const Vector& v, const std::string& key,
+            const std::string& metadata = "");
+bool update(const Vector& v, const std::string& key,
+            const std::string& metadata = "");
+bool remove(const std::string& key);
 
-// Batch operations
-std::vector<Vector> vectors = {...};
-std::vector<std::string> keys = {...};
-db.batchInsert(vectors, keys);
+// Reads
+std::optional<Vector>                                   get(const std::string& key);
+std::vector<std::pair<std::string, float>>              similaritySearch(const Vector&, size_t k);
+std::vector<SearchResult>                               similaritySearchWithMetadata(const Vector&, size_t k);
 
-// Search with metadata
-auto results = db.similaritySearchWithMetadata(query, 5);
+// Batching
+BatchResult batchInsert(const std::vector<std::string>& keys,
+                        const std::vector<Vector>&      vectors,
+                        const std::vector<std::string>& metadata = {});
+BatchResult batchDelete(const std::vector<std::string>& keys);
+
+// Configuration
+void setSearchMode(SearchMode);                         // Exact | HNSW
+void setDistanceMetric(std::shared_ptr<DistanceMetric>);
+void configureHNSW(size_t M, size_t ef_construction, size_t ef_search);
+void configureSegmentedStorage(size_t max_mutable_records,
+                               size_t max_sealed_segments,
+                               double max_tombstone_ratio);
+
+// Persistence
+bool checkpoint();
+void sealMutableSegment();
+void compactSegments();
+
+// Stats
+Statistics getStatistics() const;
+size_t     vectorCount() const;
 ```
 
-### REST API Usage
-```bash
-# Start server
-./build/vector_db_server --port 8080 --dimensions 128
+Wire protocol: see comments at the top of `src/api/protocol.hpp`.
 
-# Insert vector
-curl -X POST http://localhost:8080/vectors \
-  -H "Content-Type: application/json" \
-  -d '{"key": "vec1", "vector": [0.1, 0.2, ...]}'
+## License
 
-# Search
-curl -X POST http://localhost:8080/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": [0.1, 0.2, ...], "k": 5}'
-```
-
-## Architecture
-
-### Core Components
-- **Vector**: High-dimensional vector representation with SIMD operations
-- **KDTree**: Exact nearest neighbor search implementation
-- **LSHIndex**: Approximate search using Locality-Sensitive Hashing
-- **HNSWIndex**: High-accuracy approximate search using HNSW
-- **VectorDatabase**: Main database interface with metadata support
-
-### Optimization Layers
-- **GPU Operations**: Apple Metal compute shaders for parallel distance computation
-- **SIMD Operations**: ARM NEON and AVX2 vectorized operations
-- **Query Cache**: LRU cache for frequently accessed results
-- **Parallel Processing**: Multi-threaded operations
-
-### API Layer
-- **HTTP Server**: RESTful API using cpp-httplib
-- **JSON Serialization**: nlohmann/json for data exchange
-- **Client Libraries**: C++ and Python examples
-
-## Benchmarks
-
-Run performance benchmarks to see optimizations in action:
-
-```bash
-# GPU vs CPU vs HNSW benchmark
-make benchmark-gpu
-./build/benchmark_gpu 10000 128 100 10    # 10K vectors, 128 dims
-./build/benchmark_gpu 1000 10240 50 10    # 1K vectors, 10240 dims (high-dim)
-
-# Comprehensive SIMD benchmark
-./build/simd_benchmark
-
-# Quick performance test
-./build/quick_simd_test
-
-# Search performance benchmark
-./build/search_benchmark
-
-# Insertion performance benchmark
-./build/insertion_benchmark
-
-# HNSW performance benchmark (Python)
-python benchmarks/hnsw_performance_benchmark.py
-```
-
-## API Reference
-
-### Core Methods
-- `insert(vector, key, metadata?)`: Insert a single vector
-- `batchInsert(vectors, keys)`: Insert multiple vectors
-- `similaritySearch(query, k)`: Find k nearest neighbors
-- `similaritySearchWithMetadata(query, k)`: Search with metadata
-- `setApproximateAlgorithm(algorithm, param1, param2)`: Set search algorithm ("exact", "lsh", "hnsw")
-- `saveToFile(filename)`: Persist database to disk
-- `loadFromFile(filename)`: Load database from disk
-
-### REST Endpoints
-- `POST /vectors`: Insert single vector
-- `POST /vectors/batch`: Batch insert
-- `GET /vectors`: List all vectors
-- `POST /search`: Similarity search
-- `GET /health`: Health check
-- `PUT /config/approximate`: Toggle search mode
-- `GET /info`: Get database information
-
-See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Run benchmarks to ensure performance
-6. Submit a pull request
-
-## Acknowledgments
-
-- **cpp-httplib** for the HTTP server implementation
-- **nlohmann/json** for JSON serialization
-- **ARM NEON** and **Intel AVX2** for SIMD optimizations
-
-## Support
-
-- **Issues**: Report bugs and feature requests on GitHub
-- **Documentation**: See [docs/](docs/) for detailed guides
-- **Examples**: Check [examples/](examples/) for usage patterns
-- **Benchmarks**: Review [benchmarks/](benchmarks/) for performance data
-- **API**: See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference
+[MIT](LICENSE).

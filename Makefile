@@ -208,7 +208,7 @@ bench-segmented-persistence: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/c
 	@./$(SEGMENTED_PERSISTENCE_BENCH)
 
 # Run all tests
-test: unit-test e2e-test
+test: unit-test e2e-test tcp-test
 
 # ── Fuzzers ──────────────────────────────────────────────
 # Harnesses use the standard `LLVMFuzzerTestOneInput` interface, so the same
