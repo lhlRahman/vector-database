@@ -7,8 +7,9 @@ BASE_CXXFLAGS = -std=c++20 -Iinclude -Isrc -Wno-psabi -I$(SRC_DIR)
 # Detect architecture and set appropriate flags
 UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_M),arm64)
-    # ARM64 (Apple Silicon) - use NEON
-    ARCH_FLAGS = -mcpu=apple-m1
+    # ARM64 (Apple Silicon): tune for the actual host CPU when the toolchain
+    # accepts -mcpu=native (e.g. targets M4 on an M4), else a safe baseline.
+    ARCH_FLAGS := $(shell $(CXX) -mcpu=native -E -x c++ /dev/null >/dev/null 2>&1 && echo -mcpu=native || echo -mcpu=apple-m1)
 else ifeq ($(UNAME_M),x86_64)
     # x86_64 - AVX2 + FMA (the distance kernels use _mm256_fmadd_ps under __FMA__)
     ARCH_FLAGS = -mavx -mavx2 -mfma
