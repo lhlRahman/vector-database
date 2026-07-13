@@ -1,83 +1,90 @@
 % Honest Durability for Graph ANN — arXiv-style preprint.
 % Compiles with a basic TeX install:  pdflatex honest-durability.tex  (x2 for refs)
 % Self-contained: standard `article` class, no external .cls or .bib.
-% NOTE: citation details (arXiv IDs / venues) are from memory and should be
-% verified before submission (web was unavailable while drafting).
+% TODO before submission: (1) fill the author block; (2) verify every citation's
+% venue/year/arXiv ID (drafted without web access); (3) add Linux/NVMe numbers.
 \documentclass[11pt]{article}
 
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath}
 \usepackage{booktabs}
-\usepackage{graphicx}
-\usepackage{xcolor}
-\usepackage{listings}
+\usepackage{textcomp}   % \textmu on pre-2020 TeX
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
 
-\lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible}
 \newcommand{\fullfsync}{\texttt{F\_FULLFSYNC}}
 \newcommand{\fsync}{\texttt{fsync}}
 
 \title{\textbf{Honest Durability for Graph-Based\\ Approximate Nearest Neighbor Indexes}}
-\author{Habib Rahman\\ \small \texttt{<affiliation / email>}}
-\date{\today\\[2pt]\small Preprint --- work in progress}
+\author{Habib Rahman\\ \small \texttt{[affiliation / email --- fill before submission]}}
+\date{\today\\[2pt]\small Preprint --- preliminary single-host study, work in progress}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Research on approximate nearest neighbor (ANN) search is evaluated almost
-entirely on two axes: recall and queries per second. Durability---whether an
-acknowledged write survives a crash or power loss---is largely absent from ANN
-systems and from every mainstream ANN benchmark. We argue this omission both
-hides a real cost and leaves an under-explored design space. Using a from-scratch
-C++20 vector database with a write-ahead-logged, segmented HNSW store, we make
-four contributions. (1) A \emph{durability-aware measurement protocol} for ANN
-indexes: a tmpfs guard, an \fsync{}-floor baseline, and mandatory
-\fsync{}-mode labeling, because the default \fsync{} on some platforms does not
-flush the drive cache and thus reports optimistic ``durable'' numbers. (2) The
-first ANN-isolated \emph{durability tax}: on our testbed, honest per-write
-durability (\fullfsync{}) reduces the device's durable-sync ceiling by
-$\sim$130$\times$ (41{,}101 to 316 syncs/s) and single-insert throughput from
-442 to 110 inserts/s. (3) \emph{Group commit} for a graph-ANN WAL---one \fsync{}
-per batch---recovers $4.4\times$ insert throughput under honest durability and
-collapses the p99 tail, while remaining crash-consistent (validated by a
-fork-plus-kill test). (4) A \emph{recovery} analysis showing snapshot-load
-(sealed segments) recovers a graph index $\sim$6$\times$ faster than WAL replay
-(35\,ms vs.\ 225\,ms for 1{,}500 vectors), with a locatable crossover. All code,
-harnesses, and results are open and reproducible.
+Approximate nearest neighbor (ANN) search is evaluated almost entirely on two
+axes: recall and queries per second. Durability---whether an acknowledged write
+survives a crash or power loss---is largely absent from the ANN research
+literature and from the mainstream ANN benchmarks, and is unquantified even in
+systems that provide it. We argue this omission both hides a real cost and leaves
+an under-explored design space. Using a from-scratch C++20 vector database with a
+segmented, write-ahead-logged (WAL) HNSW store, and in a preliminary single-host
+study (Apple M4 Pro, synthetic data), we make four contributions. (1) A
+\emph{durability-aware measurement protocol} for ANN indexes: a tmpfs
+(RAM-backed filesystem) guard, an \fsync{}-floor baseline, and mandatory
+\fsync{}-mode labeling, because on some platforms the default \fsync{} does not
+flush the drive cache and so reports optimistic ``durable'' numbers. (2) To our
+knowledge, the first ANN-isolated \emph{durability tax}: on macOS/APFS, where
+plain \fsync{} is a page-cache no-op, honest per-write durability (\fullfsync{})
+lowers the device's durable-sync ceiling by $\sim$130$\times$ (41{,}101 to 316
+syncs/s) and single-insert throughput from 442 to 110 inserts/s. (3)
+\emph{Group commit} for a graph-ANN WAL---one \fsync{} per batch---recovers
+$4.4\times$ insert throughput under honest durability by amortizing the flush
+over the batch, while remaining crash-consistent (validated by a fork-and-crash
+test in which the child exits without a clean shutdown). (4) A \emph{recovery}
+analysis: snapshot-load (sealed segments) restores a graph index in near-constant
+time while WAL replay grows linearly, so the gap widens from $\sim$7$\times$
+(1{,}000 vectors) to $\sim$70$\times$ (6{,}000). All code, harnesses, and results
+are open and reproducible.
 \end{abstract}
 
 \section{Introduction}
-Graph-based ANN indexes---HNSW~\cite{hnsw} and its descendants---dominate
-in-memory vector search, and vector databases built on them now back
-retrieval-augmented generation and semantic search at scale. The community
-evaluates them on \emph{recall@$k$} and \emph{throughput} (QPS), summarized by the
-recall-vs-QPS Pareto frontier popularized by ANN-Benchmarks~\cite{annbench} and
-the Big ANN challenges~\cite{bigann}. What these evaluations almost never measure
-is \emph{durability}: does a write the system acknowledged survive a crash?
+Graph-based ANN indexes---Hierarchical Navigable Small World (HNSW)
+graphs~\cite{hnsw} and their descendants---dominate in-memory vector search, and
+vector databases built on them now back retrieval-augmented generation and
+semantic search at scale. The community evaluates them on \emph{recall@$k$} (the
+fraction of a query's true $k$ nearest neighbors the index returns) and
+\emph{throughput} (queries/s, QPS), summarized by the recall-vs-QPS Pareto
+frontier popularized by ANN-Benchmarks~\cite{annbench} and the Big ANN
+challenges~\cite{bigann}. What these evaluations almost never measure is
+\emph{durability}: does an acknowledged write survive a crash?
 
-This is not a niche concern. Vector databases are increasingly operational
-stores that ingest and update continuously, and an operational store that loses
-acknowledged writes is not a database. Yet mainstream ANN libraries scope
-durable storage out entirely (Faiss offers manual serialization, no
-WAL~\cite{faiss}; hnswlib has soft-delete tombstones and no crash
-consistency~\cite{hnsw}), and no widely used ANN benchmark
+This is not a niche concern. Vector databases are increasingly operational stores
+that ingest and update continuously, and an operational store that loses
+acknowledged writes is not a database. Yet mainstream ANN libraries exclude
+durable storage entirely (Faiss offers manual serialization, no
+WAL~\cite{faiss}; hnswlib offers soft-delete tombstones and no crash
+consistency~\cite{hnswlib}), and none of the widely used ANN benchmarks
 (ANN-Benchmarks~\cite{annbench}, Big ANN~\cite{bigann},
-VectorDBBench~\cite{vectordbbench}) includes a crash-recovery, \fsync{}, or
-durability case. The closest systems either integrate ANN into an operational DB
-and \emph{inherit} durability from the host engine---delegating rather than
-analyzing it~\cite{cosmos}---or, like LSM-VEC~\cite{lsmvec}, build an LSM-tree
-graph index yet report no \fsync{} cost, crash consistency, or recovery time.
+VectorDBBench~\cite{vectordbbench}) include a crash-recovery, \fsync{}, or
+durability case. Production vector databases (Milvus~\cite{milvus},
+Qdrant, Weaviate) do implement WAL-based persistence, but publish no isolated
+\fsync{}-tax, crash-consistency, or recovery-time analysis. The closest research
+systems either integrate ANN into an operational DB and \emph{inherit} durability
+from the host engine---delegating rather than analyzing it~\cite{cosmos}---or,
+like LSM-VEC~\cite{lsmvec}, build an LSM-tree graph index yet report no \fsync{}
+cost, crash consistency, or recovery time.
 
 We take the opposite stance: build durability into a \emph{standalone} graph-ANN
-index, measure it honestly, and characterize the cost. Two facts make this
-worth a paper. First, durable writes are expensive in a way ANN work has never
+index, measure it honestly, and characterize the cost. Two observations motivate
+this. First, durable writes are expensive in a way that ANN work has never
 quantified, and the expense is easy to hide: on macOS (and any stack where
-\fsync{} does not force a drive-cache flush) the ``durable'' number is a page-cache
-number. Second, once you pay the cost, standard database techniques---group
-commit and snapshot-based recovery---apply, but their effect on an ANN index
-(where each insert also mutates a proximity graph) has not been reported.
+\fsync{} does not force a drive-cache flush) the ``durable'' number is a
+page-cache number. Second, once that cost is paid, standard database
+techniques---group commit and snapshot-based recovery---apply, but their effect
+on an ANN index (where each insert also mutates a proximity graph) has not been
+reported.
 
 \paragraph{Contributions.}
 \begin{itemize}
@@ -85,62 +92,72 @@ commit and snapshot-based recovery---apply, but their effect on an ANN index
 for ANN: tmpfs detection, an \fsync{}-floor baseline, and \fsync{}-mode labeling,
 so ANN write/durability numbers are comparable and honest.
 \item \textbf{C2 (\S\ref{sec:tax}).} The first ANN-isolated durability-tax
-characterization: throughput, latency percentiles, and build cost vs.\ the
-strength of the durability guarantee.
+characterization (to our knowledge): throughput, latency percentiles, and build
+cost vs.\ the strength of the durability guarantee.
 \item \textbf{C3 (\S\ref{sec:groupcommit}).} Group commit for a graph-ANN WAL and
-its measured throughput/tail-latency benefit, with a crash-consistency test.
+its measured throughput benefit, with a crash-consistency test.
 \item \textbf{C4 (\S\ref{sec:recovery}).} A recovery analysis---snapshot-load vs.\
-WAL-replay---for a standalone graph ANN, including the crossover between them.
+WAL-replay---for a standalone graph ANN, including how the gap grows with index
+size.
 \end{itemize}
 
 \section{Background and System}
 \label{sec:background}
 Our testbed is a from-scratch C++20 vector database. The default storage engine
-is a Qdrant/LSM-style \emph{segmented store}: a single mutable segment backed by
-a write-ahead log (WAL), plus $N$ immutable \emph{sealed} segments, each carrying
-an HNSW snapshot. Writes append to the WAL; when a size or tombstone-ratio
-threshold is crossed the mutable segment is sealed (its HNSW graph and vectors
-serialized), and sealed segments are compacted in the background. A cross-segment
-map resolves the current location of each key (MVCC by sequence number).
+is a Qdrant/LSM-style \emph{segmented store}: a single mutable segment backed by a
+write-ahead log (WAL), plus $N$ immutable \emph{sealed} segments, each carrying an
+HNSW snapshot. Writes append to the WAL; when a size or tombstone-ratio threshold
+is crossed, the mutable segment is sealed (its HNSW graph and vectors serialized),
+and sealed segments are compacted in the background. A cross-segment map resolves
+the current location of each key, versioned by sequence number
+(multi-version concurrency control, MVCC).
 
 \paragraph{Durability model.} Every WAL record is framed with a header (magic,
-version, op, sequence, field lengths, dimensions) and a CRC-32 covering the
-header and payload, and---by default---is \fsync{}'d before the call returns.
-Snapshot and manifest writes are published atomically (temp file $\to$ \fsync{}
-$\to$ rename $\to$ directory \fsync{}). Recovery of a sealed segment loads its
-HNSW snapshot directly (memcpy of neighbor lists and precomputed distances) rather
-than replaying the WAL through the graph builder; the mutable segment replays its
+version, op, sequence, field lengths, dimensions) and a CRC-32 covering the header
+and payload, and---by default---is \fsync{}'d before the call returns. Snapshot
+and manifest writes are published atomically (temp file $\to$ \fsync{} $\to$
+rename $\to$ directory \fsync{}). Recovery of a sealed segment loads its HNSW
+snapshot directly (memcpy of neighbor lists and precomputed distances) rather than
+replaying the WAL through the graph builder; the mutable segment replays its
 (small) WAL. WAL replay stops at the first record failing the magic/version/CRC
 check, tolerating a torn tail.
 
 \paragraph{Index.} Search uses HNSW with the Malkov--Yashunin diversifying
-neighbor-selection heuristic~\cite{hnsw}; distance kernels are SIMD (NEON/AVX+FMA)
-with a devirtualized hot path. After fixing an initially na\"ive
-neighbor-selection rule, recall@10 on 30k clustered 128-d vectors rises from a
-capped $0.36$ to $0.97$ at $\mathrm{ef}=10$ and $1.0$ by $\mathrm{ef}=100$
-(Table~\ref{tab:recall}), i.e.\ the index is competitive before we layer
-durability on top.
+neighbor-selection heuristic~\cite{hnsw}. The search-time candidate-list width
+$\mathrm{ef}$ (and its build-time analogue $\mathrm{ef}_{\mathrm{construction}}$)
+trade recall for speed. Distance kernels are SIMD-vectorized (NEON on our host;
+an AVX+FMA path is implemented but untested here) with a devirtualized hot path.
+After we fixed an initially na\"ive neighbor-selection rule---under which recall
+plateaued regardless of $\mathrm{ef}$---recall@10 on 30k clustered 128-d vectors
+rises from a capped $0.36$ to $0.97$ at $\mathrm{ef}{=}10$ and reaches $1.0$ by
+$\mathrm{ef}{\approx}48$ (Table~\ref{tab:recall}); i.e.\ the index is competitive
+before we layer durability on top.
 
 \section{Measuring Durability Honestly}
 \label{sec:honest}
-Durability numbers are worthless without stating \emph{what} was made durable.
-Two traps recur.
+Durability numbers are worthless without a statement of \emph{what} was made
+durable. Two traps recur.
 
 \paragraph{The tmpfs trap.} Benchmarks frequently run under \texttt{/tmp}, which
-on many Linux distributions is a RAM-backed \texttt{tmpfs} where \fsync{} is a
+on some Linux distributions is a RAM-backed \texttt{tmpfs} where \fsync{} is a
 no-op. A ``durable'' insert benchmark on tmpfs measures the CPU path only. Our
 harness \texttt{statfs}-checks the target and \emph{refuses} to report write
 numbers on tmpfs.
 
-\paragraph{The \fsync{}-mode trap.} On macOS, \fsync(2) does not flush the drive's
-write cache; true power-loss durability requires \texttt{fcntl(F\_FULLFSYNC)},
-which is far slower. A number labeled ``durable'' under plain \fsync{} on macOS
-overstates durability. We therefore (a) expose an \fullfsync{} toggle and (b)
-report an \emph{\fsync{} floor}: a tight \texttt{write()+sync} loop giving the
-device's durable-sync ceiling, so index overhead can be separated from the
-device's flush cost. Table~\ref{tab:floor} shows the floor differs by
-$\sim$130$\times$ between the two modes on our testbed---the single most important
-number to disclose.
+\paragraph{The \fsync{}-mode trap.} On macOS, \texttt{fsync}(2) does not flush the
+drive's write cache; true power-loss durability requires
+\texttt{fcntl(F\_FULLFSYNC)}, which is far slower. A number labeled ``durable''
+under plain \fsync{} on macOS overstates durability. We therefore (a) expose an
+\fullfsync{} toggle and (b) report an \emph{\fsync{} floor}: a tight
+\texttt{write()+sync} loop giving the device's durable-sync ceiling, so index
+overhead can be separated from the device's flush cost. Table~\ref{tab:floor}
+shows the floor differs by $\sim$130$\times$ between the two modes on our
+testbed---the single most important number to disclose.
+
+\paragraph{Methodology.} All numbers below are preliminary single-run point
+estimates on one host, after a warm-up pass; a full study would report
+median-of-$k$ with confidence intervals across trials and hosts
+(\S\ref{sec:threats}).
 
 \begin{table}[t]
 \centering
@@ -160,19 +177,21 @@ Plain \fsync{} (page cache) & 41{,}101 \\
 
 \section{The Durability Tax}
 \label{sec:tax}
-We define the \emph{durability tax} as the throughput and latency an index gives
-up to guarantee that acknowledged writes survive. We measure it by inserting one
-record at a time (each \fsync{}'d before returning) into the segmented store and
-varying only the \fsync{} mode. Table~\ref{tab:tax} reports the result on
-synthetic data ($d{=}64$); the index work per insert (a real HNSW insertion with
-$\mathrm{ef}_{\mathrm{construction}}{=}200$) is held constant, so the delta isolates the
-durability cost.
+We define the \emph{durability tax} as the throughput an index loses and the
+latency it adds to guarantee that acknowledged writes survive. We measure it by
+inserting one record at a time (each \fsync{}'d before returning) into the
+segmented store and varying only the \fsync{} mode. Table~\ref{tab:tax} reports
+the result on synthetic data ($d{=}64$); the index work per insert (a real HNSW
+insertion with $\mathrm{ef}_{\mathrm{construction}}{=}200$) is held constant, so
+the delta isolates the durability cost. Each insert issues one WAL \fsync{}; the
+$\sim$6\,ms per-insert cost above the \fsync{} floor is the HNSW insertion plus
+per-append file open/close, not a second flush.
 
 \begin{table}[t]
 \centering
 \caption{Durability tax: single-insert throughput and latency vs.\ \fsync{} mode
 (Apple M4 Pro, $d{=}64$, per-write durability). Honest durability cuts throughput
-$4\times$ and inflates the p99 tail $3\times$.}
+to about one quarter and roughly triples the p99 (99th-percentile) tail.}
 \label{tab:tax}
 \begin{tabular}{lrrr}
 \toprule
@@ -184,12 +203,13 @@ Plain \fsync{} & 442 & 1{,}753 & 14{,}351 \\
 \end{tabular}
 \end{table}
 
-Two readouts. First, honest durability is not free: throughput falls $4\times$
-and the p99 tail triples, because each insert now waits on a real drive flush.
-Second---and this is why the \fsync{} floor matters---under plain \fsync{} the
-bottleneck is the graph insertion, not the sync, so a system that stops at plain
-\fsync{} both understates its true durability cost \emph{and} understates how much
-a batching optimization can help. That is the subject of \S\ref{sec:groupcommit}.
+Two readouts. First, honest durability is not free: throughput falls to roughly a
+quarter and the p99 tail triples, because each insert now waits on a real drive
+flush. Second---and this is why the \fsync{} floor matters---under plain \fsync{}
+the bottleneck is the graph insertion, not the sync, so a system that stops at
+plain \fsync{} both understates its true durability cost \emph{and} understates
+how much a batching optimization can help. That is the subject of
+\S\ref{sec:groupcommit}.
 
 \section{Group Commit for a Graph-ANN WAL}
 \label{sec:groupcommit}
@@ -202,9 +222,9 @@ public batch-insert path uses it; single inserts keep per-write durability.
 
 \begin{table}[t]
 \centering
-\caption{Group commit vs.\ per-write \fsync{}, honest durability
-(\fullfsync{}, Apple M4 Pro, $d{=}64$). One \fsync{} per batch recovers
-$4.4\times$ throughput.}
+\caption{Group commit vs.\ per-write \fsync{}, honest durability (\fullfsync{},
+Apple M4 Pro, $d{=}64$, one batch of 1{,}500 inserts = one \fsync{}). Batching
+recovers $4.4\times$ throughput.}
 \label{tab:gc}
 \begin{tabular}{lrr}
 \toprule
@@ -217,26 +237,31 @@ Group commit (\fullfsync{}) & 483 & 4.4$\times$ \\
 \end{table}
 
 Under honest durability, group commit lifts insert throughput from 110 to 483
-inserts/s ($4.4\times$; Table~\ref{tab:gc}) and collapses the p99 tail (43\,ms
-per-write $\to$ amortized across the batch), because the batch pays for one flush
-rather than $N$.
+inserts/s ($4.4\times$; Table~\ref{tab:gc}) by paying for one flush rather than
+$N$ flushes. (The group-committed \fullfsync{} rate, 483/s, even exceeds the
+per-write \emph{plain}-\fsync{} rate of 442/s from Table~\ref{tab:tax}: once the
+flush leaves the per-insert critical path, HNSW graph insertion is again the
+bound.)
 
 \paragraph{Crash consistency.} Group commit is only correct if the batch's single
 \fsync{} makes the \emph{whole} batch durable before the call returns. We validate
 this with a fault-injection test: a child process performs a group-committed batch
-of $N$ inserts and then \texttt{\_exit(0)} \emph{without} a clean shutdown
+of $N$ inserts and then calls \texttt{\_exit(0)} \emph{without} a clean shutdown
 (simulating a crash immediately after commit); the parent reopens the store and
 asserts all $N$ rows recover. It passes. The WAL is protected by a CRC-32 over the
 header and payload (an earlier version used a payload-only FNV-1a mislabeled as
-``crc32''---replaced here), and replay truncates at the first bad record.
+``crc32''---replaced here), and replay truncates at the first bad record. Because
+the child exits on a live OS, this validates crash-consistency (no acknowledged
+write lost, no torn record) but not power loss, which requires block-level
+injection (\S\ref{sec:threats}).
 
-\paragraph{Recall staleness (a note toward a stronger guarantee).} Group commit
-opens a window in which recently inserted-but-not-yet-\fsync{}'d vectors are
-visible to queries but not yet durable. In an ANN setting this window can be
-expressed in \emph{recall} units: bounding the number of un-synced records bounds
-the recall a query can lose if a crash discards them. Making this a provable
-``a crash never costs more than $\varepsilon$ recall@$k$'' guarantee---a
-recall-aware commit scheduler---is a promising direction we leave to future work.
+\paragraph{Recall staleness (toward a stronger guarantee).} Group commit opens a
+window in which recently inserted-but-not-yet-\fsync{}'d vectors are visible to
+queries but not yet durable. In an ANN setting this window can be expressed in
+\emph{recall} units: bounding the number of un-synced records bounds the recall a
+query can lose if a crash discards them. Making this a provable ``a crash never
+costs more than $\varepsilon$ recall@$k$'' guarantee---a recall-aware commit
+scheduler---is a promising direction we leave to future work.
 
 \section{Fast, Crash-Consistent Recovery}
 \label{sec:recovery}
@@ -244,45 +269,50 @@ Recovery time is a first-class operational metric that ANN work has not reported
 for a standalone index. Our store has two recovery paths: a \emph{sealed} segment
 loads its HNSW snapshot directly (no graph rebuild), while a \emph{mutable}
 segment replays its WAL, re-inserting each record through the graph builder.
-Table~\ref{tab:recovery} shows the sealed path is $\sim$6$\times$ faster at
-$N{=}1{,}500$ and the gap widens with $N$ (WAL replay is $O(N)$ graph insertions;
-snapshot load is a linear read plus memcpy).
+Table~\ref{tab:recovery} shows snapshot load is near-constant ($\sim$15--20\,ms)
+while WAL replay grows roughly linearly ($O(N)$ graph insertions), so the gap
+widens from $\sim$7$\times$ at $N{=}1{,}000$ to $\sim$70$\times$ at $N{=}6{,}000$.
 
 \begin{table}[t]
 \centering
-\caption{Cold-open recovery time, sealed (snapshot load) vs.\ mutable (WAL replay),
-Apple M4 Pro, $d{=}64$.}
+\caption{Cold-open recovery time, sealed (snapshot load) vs.\ mutable (WAL
+replay), Apple M4 Pro, $d{=}64$.}
 \label{tab:recovery}
-\begin{tabular}{lrr}
+\begin{tabular}{rrrr}
 \toprule
-$N$ & Sealed (ms) & WAL replay (ms) \\
+$N$ & Sealed (ms) & WAL replay (ms) & Gap \\
 \midrule
-1{,}500 & 35 & 225 \\
+1{,}000 & 18.6 & 135.9 & 7.3$\times$ \\
+3{,}000 & 19.8 & 478.4 & 24$\times$ \\
+6{,}000 & 15.3 & 1{,}072.0 & 70$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The practical consequence is a \emph{crossover}: an unsealed WAL that grows too
-large blows the recovery SLA, which is the operational justification for periodic
-sealing. Fully charting recovery-time-vs-$N$ and this crossover---and validating
-consistency under true power loss (Linux \texttt{dm-log-writes})---is the main
-remaining measurement (\S\ref{sec:threats}).
+The practical consequence: because WAL replay is $O(N)$ while snapshot load is
+near-constant, an unsealed WAL that grows large eventually exceeds any
+recovery-time budget---the operational justification for periodic sealing.
+Charting this budget crossover on real media, and validating consistency under
+true power loss (Linux \texttt{dm-log-writes}), is the main remaining measurement
+(\S\ref{sec:threats}).
 
 \section{Index Competitiveness}
 \label{sec:index}
 So that the durability results are not measured on a broken index, we confirm the
-HNSW is competitive. Table~\ref{tab:recall} traces recall@10 vs.\ QPS on 30k
-clustered 128-d vectors; recall is measured against exact ground truth from a flat
-index using the identical distance kernel (tie-aware). Recall climbs
-monotonically with $\mathrm{ef}$ to $1.0$; after hot-path optimization (a
+HNSW index is competitive. Table~\ref{tab:recall} traces recall@10 vs.\ QPS on 30k
+clustered 128-d vectors (a workload distinct from the $d{=}64$ durability runs,
+which does not affect the tax delta); recall is measured against exact ground
+truth from a flat index using the identical distance kernel (tie-aware). Recall
+climbs monotonically with $\mathrm{ef}$ to $1.0$; after hot-path optimization (a
 versioned visited set, FMA distance kernels, devirtualized dispatch, and a pooled
-graph arena that cut peak index memory from 2\,GB to 38\,MiB) single-thread QPS
-reaches $\sim$97k at $\mathrm{ef}{=}10$.
+graph arena that cut peak index memory from 2\,GiB to 38\,MiB, $\sim$54$\times$)
+single-thread QPS reaches $\sim$97k at $\mathrm{ef}{=}10$.
 
 \begin{table}[t]
 \centering
 \caption{Recall@10 vs.\ single-thread QPS (Apple M4 Pro, $d{=}128$, $n{=}30$k,
-$M{=}16$, $\mathrm{ef}_{c}{=}200$), vs.\ exact ground truth.}
+$M{=}16$, $\mathrm{ef}_{\mathrm{construction}}{=}200$), measured against exact
+ground truth.}
 \label{tab:recall}
 \begin{tabular}{rrr}
 \toprule
@@ -299,7 +329,7 @@ $\mathrm{ef}$ & recall@10 & QPS \\
 \label{sec:related}
 \textbf{Graph ANN and updates.} HNSW~\cite{hnsw} and DiskANN~\cite{diskann} are the
 dominant graph indexes; FreshDiskANN~\cite{freshdiskann} and SPFresh~\cite{spfresh}
-add streaming updates (out-of-place merge and in-place rebalancing respectively),
+add streaming updates (out-of-place merge and in-place rebalancing, respectively),
 and LSM-VEC~\cite{lsmvec} distributes a proximity graph across LSM levels. None
 report an \fsync{}-tax, crash-consistency, or recovery-time analysis; LSM-VEC in
 particular is silent on \fsync{}/recovery despite an LSM design.
@@ -307,29 +337,33 @@ particular is silent on \fsync{}/recovery despite an LSM design.
 layout \emph{statically}; SPANN~\cite{spann} splits centroids/posting lists across
 RAM/SSD. \textbf{Durability inherited, not analyzed.} Azure Cosmos DB embeds
 DiskANN and inherits durability/recovery from the host engine~\cite{cosmos}, so it
-does not isolate an ANN-specific recovery cost. \textbf{Benchmarks.}
-ANN-Benchmarks~\cite{annbench}, Big ANN~\cite{bigann} (including its in-memory
-streaming track), and VectorDBBench~\cite{vectordbbench} measure recall/QPS/cost
-but have no crash-recovery or \fsync{} case. \textbf{Durability techniques.} Group
-commit dates to early transaction systems and was refined in Aether~\cite{aether};
-we apply it to a graph-ANN WAL and characterize its ANN-specific effect.
+does not isolate an ANN-specific recovery cost; production vector DBs
+(Milvus~\cite{milvus}, Qdrant, Weaviate) ship WAL persistence but publish no such
+analysis. \textbf{Benchmarks.} ANN-Benchmarks~\cite{annbench}, Big
+ANN~\cite{bigann} (including its in-memory streaming track), and
+VectorDBBench~\cite{vectordbbench} measure recall/QPS/cost but have no
+crash-recovery or \fsync{} case. \textbf{Durability techniques.} Group commit
+dates to early transaction systems and was refined in Aether~\cite{aether}; we
+apply it to a graph-ANN WAL and characterize its ANN-specific effect.
 
 \section{Threats to Validity and Remaining Work}
 \label{sec:threats}
-Numbers here are preliminary and measured on a single host (Apple M4 Pro,
-APFS/NVMe) using synthetic clustered data; every durability number is labeled by
-\fsync{} mode. Because macOS \fsync{} does not flush the drive cache, the honest
-figures use \fullfsync{}; a Linux host with \texttt{ext4/btrfs} on NVMe (and
-\texttt{dm-log-writes} for true power-loss injection) is needed to generalize.
-Remaining work before camera-ready: (i) SIFT1M/GIST1M runs with an hnswlib
-recall/QPS parity check; (ii) recovery-time-vs-$N$ curves and the sealed/mutable
-crossover on real media; (iii) a concurrent (leader/follower) group committer;
-(iv) elevating the recall-staleness note into a proven bound.
+Numbers here are preliminary single-run point estimates on a single host (Apple M4
+Pro, APFS/NVMe) using synthetic clustered data; every durability number is labeled
+by \fsync{} mode. Because macOS \fsync{} does not flush the drive cache, the honest
+figures use \fullfsync{}, and the $\sim$130$\times$ floor gap is a macOS/APFS
+artifact that will be smaller on Linux/NVMe. A Linux host with \texttt{ext4}/\texttt{btrfs}
+on NVMe (and \texttt{dm-log-writes} for true power-loss injection) is needed to
+generalize. Remaining work before a full version: (i) SIFT1M/GIST1M runs with an
+hnswlib recall/QPS parity check; (ii) recovery on real media and the budget
+crossover; (iii) a concurrent (leader/follower) group committer; (iv) a proven
+bound for the recall-staleness note; (v) median-of-$k$ trials with confidence
+intervals.
 
 \section{Conclusion}
-Durability is the axis ANN evaluation forgot. We showed it is measurable, that it
-carries a large and previously unreported tax on a graph index, that group commit
-recovers most of the throughput while staying crash-consistent, and that
+Durability is the axis ANN evaluation forgot. We showed that it is measurable,
+that it carries a large and previously unreported tax on a graph index, that group
+commit recovers most of the throughput while staying crash-consistent, and that
 snapshot-based recovery restores a graph index far faster than WAL replay. We hope
 the honest-measurement protocol (tmpfs guard, \fsync{}-floor, \fsync{}-mode
 labeling) becomes a default for durable ANN systems.
@@ -337,20 +371,26 @@ labeling) becomes a default for durable ANN systems.
 \section*{Reproducibility}
 All code, benchmarks, and tests are open. Key entry points:
 \texttt{make bench-durability [DURABILITY\_ARGS="--full-fsync --dir /nvme"]}
-(Tables~\ref{tab:floor}--\ref{tab:gc},~\ref{tab:recovery}),
-\texttt{make bench-ann ANN\_ARGS="--data datasets/sift"} (Table~\ref{tab:recall}),
+(Tables~\ref{tab:floor}--\ref{tab:recovery}),
+\texttt{make bench-ann} (synthetic workload, Table~\ref{tab:recall};
+\texttt{ANN\_ARGS="--data datasets/sift"} for SIFT1M once fetched),
 \texttt{make bench-hnswlib} (baseline), and \texttt{make test} (111 tests, clean
 under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer).
 
 \begin{thebibliography}{99}
 \small
-% NOTE: verify arXiv IDs / venues before submission (web unavailable at drafting).
+% TODO: verify every arXiv ID / venue / author list before submission.
 \bibitem{hnsw} Y.~Malkov and D.~Yashunin. Efficient and robust approximate nearest
-neighbor search using Hierarchical Navigable Small World graphs. \emph{IEEE TPAMI}, 2020.
-\bibitem{diskann} S.~Subramanya et al. DiskANN: Fast accurate billion-point nearest
-neighbor search on a single node. \emph{NeurIPS}, 2019.
-\bibitem{freshdiskann} A.~Singh et al. FreshDiskANN: A fast and accurate graph-based
-ANN index for streaming similarity search. arXiv:2105.09613, 2021.
+neighbor search using Hierarchical Navigable Small World graphs. \emph{IEEE TPAMI}
+42(4), 2020.
+\bibitem{hnswlib} Y.~Malkov et al. hnswlib: header-only C++/Python HNSW library.
+\url{https://github.com/nmslib/hnswlib}.
+\bibitem{diskann} S.~Subramanya, D.~Devvrit, R.~Kadekodi, R.~Krishnaswamy, H.~Simhadri.
+DiskANN: Fast accurate billion-point nearest neighbor search on a single node.
+\emph{NeurIPS}, 2019.
+\bibitem{freshdiskann} A.~Singh, S.~Subramanya, R.~Krishnaswamy, H.~Simhadri.
+FreshDiskANN: A fast and accurate graph-based ANN index for streaming similarity
+search. arXiv:2105.09613, 2021.
 \bibitem{spfresh} Y.~Xu et al. SPFresh: Incremental in-place update for
 billion-scale vector search. \emph{SOSP}, 2023.
 \bibitem{starling} M.~Wang et al. Starling: An I/O-efficient disk-resident graph
@@ -362,14 +402,17 @@ arXiv:2505.17152, 2025.
 \bibitem{cosmos} Cost-effective, low-latency vector search with Azure Cosmos DB.
 arXiv:2505.05885, 2025.
 \bibitem{faiss} M.~Douze et al. The Faiss library. arXiv:2401.08281, 2024.
-\bibitem{annbench} M.~Aum\"uller, E.~Bernhardsson, A.~Faithfull. ANN-Benchmarks: A
-benchmarking tool for approximate nearest neighbor algorithms. \emph{Information
-Systems}, 2020.
-\bibitem{bigann} H.~Simhadri et al. Results of the NeurIPS'21/'23 Big ANN
-(Practical Vector Search) challenges.
-\bibitem{vectordbbench} Zilliz. VectorDBBench: A benchmark for vector databases.
-\bibitem{aether} R.~Johnson et al. Aether: A scalable approach to logging.
-\emph{PVLDB}, 2010.
+\bibitem{milvus} J.~Wang et al. Milvus: A purpose-built vector data management
+system. \emph{SIGMOD}, 2021.
+\bibitem{annbench} M.~Aum\"uller, E.~Bernhardsson, and A.~Faithfull. ANN-Benchmarks:
+A benchmarking tool for approximate nearest neighbor algorithms. \emph{Information
+Systems} 87, 2020.
+\bibitem{bigann} H.~Simhadri et al. Results of the NeurIPS'21 and '23 Big ANN
+(Practical Vector Search) challenges. NeurIPS Competition Track, 2021/2023.
+\bibitem{vectordbbench} Zilliz. VectorDBBench: An open-source vector database
+benchmark. \url{https://github.com/zilliztech/VectorDBBench}.
+\bibitem{aether} R.~Johnson, I.~Pandis, R.~Stoica, M.~Athanassoulis, A.~Ailamaki.
+Aether: A scalable approach to logging. \emph{PVLDB} 3(1), 2010.
 \end{thebibliography}
 
 \end{document}
