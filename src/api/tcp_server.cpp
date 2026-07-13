@@ -1,9 +1,12 @@
 #include "tcp_server.hpp"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iostream>
+#include <netdb.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -37,7 +40,22 @@ void TCPServer::start() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port_));
-    inet_pton(AF_INET, host_.c_str(), &addr.sin_addr);
+    {
+        // Resolve host (numeric IP or hostname such as "localhost"). Previously
+        // inet_pton's return value was ignored, so a non-numeric host silently
+        // left sin_addr = 0.0.0.0 and bound ALL interfaces.
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* res = nullptr;
+        int gai = ::getaddrinfo(host_.c_str(), nullptr, &hints, &res);
+        if (gai != 0 || res == nullptr) {
+            close(listen_fd_);
+            throw std::runtime_error("cannot resolve host '" + host_ + "': " + gai_strerror(gai));
+        }
+        addr.sin_addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr;
+        freeaddrinfo(res);
+    }
 
     if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         close(listen_fd_);
@@ -119,9 +137,12 @@ void TCPServer::accept_loop() {
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-        // Set recv timeout (30s) so stalled clients don't block workers forever
+        // Set recv AND send timeouts (30s). SO_RCVTIMEO bounds each blocking
+        // recv; SO_SNDTIMEO bounds send_all so a client that stops reading can't
+        // wedge a worker forever (send-side slowloris).
         struct timeval tv{30, 0};
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         // Pass fd to a worker via pipe
         ssize_t w = write(pipe_fd_[1], &client_fd, sizeof(client_fd));
@@ -155,9 +176,14 @@ void TCPServer::worker_loop() {
 void TCPServer::handle_connection(int client_fd) {
     // Keep-alive: handle multiple requests on same connection
     while (running_.load(std::memory_order_relaxed)) {
+        // A full frame (header + payload) must arrive within this deadline. This
+        // bounds slow-trickle (slowloris) clients that send one byte at a time,
+        // which SO_RCVTIMEO alone (a per-recv timer) does not catch.
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
         // Read header
         uint8_t header[proto::HEADER_SIZE];
-        if (!recv_exact(client_fd, header, proto::HEADER_SIZE)) break;
+        if (!recv_exact(client_fd, header, proto::HEADER_SIZE, deadline)) break;
 
         // Parse header
         uint16_t magic;
@@ -178,7 +204,7 @@ void TCPServer::handle_connection(int client_fd) {
 
         // Read payload
         std::vector<uint8_t> payload(payload_len);
-        if (payload_len > 0 && !recv_exact(client_fd, payload.data(), payload_len)) {
+        if (payload_len > 0 && !recv_exact(client_fd, payload.data(), payload_len, deadline)) {
             break;
         }
 
@@ -188,10 +214,12 @@ void TCPServer::handle_connection(int client_fd) {
     close(client_fd);
 }
 
-bool TCPServer::recv_exact(int fd, void* buf, size_t n) {
+bool TCPServer::recv_exact(int fd, void* buf, size_t n,
+                           std::chrono::steady_clock::time_point deadline) {
     auto* p = static_cast<uint8_t*>(buf);
     size_t remaining = n;
     while (remaining > 0) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;  // frame deadline
         ssize_t r = recv(fd, p, remaining, 0);
         if (r > 0) {
             p += r;
@@ -277,6 +305,10 @@ void TCPServer::handle_insert(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     std::string key = r.read_string();
     uint32_t dims = r.read_u32();
+    // Bound the allocation by the frame: the payload is capped at 64 MiB, so a
+    // huge attacker-supplied `dims` can no longer force a multi-GiB allocation.
+    if (static_cast<size_t>(dims) * sizeof(float) > r.remaining())
+        throw std::runtime_error("declared dims exceed frame");
     std::vector<float> data(dims);
     r.read_floats(data.data(), dims);
     std::string metadata = r.read_string();
@@ -293,6 +325,10 @@ void TCPServer::handle_insert(int fd, const uint8_t* payload, size_t len) {
 void TCPServer::handle_search(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     uint32_t dims = r.read_u32();
+    // Bound the allocation by the frame: the payload is capped at 64 MiB, so a
+    // huge attacker-supplied `dims` can no longer force a multi-GiB allocation.
+    if (static_cast<size_t>(dims) * sizeof(float) > r.remaining())
+        throw std::runtime_error("declared dims exceed frame");
     std::vector<float> data(dims);
     r.read_floats(data.data(), dims);
     uint32_t k = r.read_u32();
@@ -326,6 +362,10 @@ void TCPServer::handle_update(int fd, const uint8_t* payload, size_t len) {
     proto::BufferReader r(payload, len);
     std::string key = r.read_string();
     uint32_t dims = r.read_u32();
+    // Bound the allocation by the frame: the payload is capped at 64 MiB, so a
+    // huge attacker-supplied `dims` can no longer force a multi-GiB allocation.
+    if (static_cast<size_t>(dims) * sizeof(float) > r.remaining())
+        throw std::runtime_error("declared dims exceed frame");
     std::vector<float> data(dims);
     r.read_floats(data.data(), dims);
     std::string metadata = r.read_string();
@@ -366,13 +406,18 @@ void TCPServer::handle_batch_insert(int fd, const uint8_t* payload, size_t len) 
     std::vector<std::string> keys;
     std::vector<Vector> vectors;
     std::vector<std::string> metadata;
-    keys.reserve(count);
-    vectors.reserve(count);
-    metadata.reserve(count);
+    // Bound the reservation by the frame size (each entry is >= 8 bytes on the
+    // wire), so a huge attacker-supplied `count` can't force a giant allocation.
+    size_t safe_reserve = std::min<size_t>(count, len / 8 + 1);
+    keys.reserve(safe_reserve);
+    vectors.reserve(safe_reserve);
+    metadata.reserve(safe_reserve);
 
     for (uint32_t i = 0; i < count; ++i) {
         keys.push_back(r.read_string());
         uint32_t dims = r.read_u32();
+        if (static_cast<size_t>(dims) * sizeof(float) > r.remaining())
+            throw std::runtime_error("declared dims exceed frame");
         std::vector<float> data(dims);
         r.read_floats(data.data(), dims);
         vectors.emplace_back(std::move(data));
@@ -393,7 +438,7 @@ void TCPServer::handle_batch_delete(int fd, const uint8_t* payload, size_t len) 
     uint32_t count = r.read_u32();
 
     std::vector<std::string> keys;
-    keys.reserve(count);
+    keys.reserve(std::min<size_t>(count, len / 2 + 1));  // each key >= 2 bytes on the wire
     for (uint32_t i = 0; i < count; ++i) {
         keys.push_back(r.read_string());
     }
@@ -444,9 +489,14 @@ void TCPServer::handle_stats(int fd) {
 
     std::vector<uint8_t> resp;
     proto::BufferWriter w(resp);
-    w.write_u32(static_cast<uint32_t>(stats.total_vectors));
-    w.write_u32(static_cast<uint32_t>(stats.total_searches));
-    w.write_u32(static_cast<uint32_t>(stats.total_inserts));
-    w.write_u32(static_cast<uint32_t>(stats.total_deletes));
+    // STATS is a u32 wire field; saturate instead of silently wrapping mod 2^32
+    // once a counter exceeds ~4.29e9.
+    auto sat32 = [](uint64_t v) -> uint32_t {
+        return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(v);
+    };
+    w.write_u32(sat32(stats.total_vectors));
+    w.write_u32(sat32(stats.total_searches));
+    w.write_u32(sat32(stats.total_inserts));
+    w.write_u32(sat32(stats.total_deletes));
     send_ok(fd, resp);
 }

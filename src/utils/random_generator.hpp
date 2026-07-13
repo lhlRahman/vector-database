@@ -6,9 +6,10 @@
 
 class RandomGenerator {
 private:
+    // Only the engine is retained. generate*Vector() build a fresh distribution
+    // per call (they take min/max/mean/stddev), so member distributions would be
+    // dead state whose parameters silently had no effect.
     std::mt19937 gen;
-    std::uniform_real_distribution<float> uniform_dist;
-    std::normal_distribution<float> normal_dist;
 
 public:
     explicit RandomGenerator(unsigned int seed = std::random_device{}()); // Marked explicit

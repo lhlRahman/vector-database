@@ -110,6 +110,11 @@ bool AtomicPersistence::checkpoint() {
 void AtomicPersistence::updateConfig(const PersistenceConfig& cfg) {
     std::lock_guard<std::mutex> lk(mtx_);
     config_ = cfg;
+    // Re-derive the checkpoint path so save (config_.data_directory/main.db) and
+    // load (main_data_file_) don't diverge after a data_directory change.
+    // NOTE: the WAL (log_) is bound to its directory at initialize(); changing
+    // log_directory at runtime is not supported and requires re-initialization.
+    main_data_file_ = config_.data_directory + "/main.db";
 }
 
 // recovery
@@ -213,6 +218,9 @@ void AtomicPersistence::cleanupOldWALFiles() {
 }
 
 bool AtomicPersistence::shouldCheckpoint() const {
+    // Honor the class's locking discipline: stats_ and log_ are shared mutable
+    // state that insert()/update()/remove() mutate under mtx_.
+    std::lock_guard<std::mutex> lk(mtx_);
     // either (a) too many ops since last checkpoint OR (b) WAL too large
     const bool ops_due = stats_.ops_since_last_checkpoint >= config_.checkpoint_trigger_ops;
 
@@ -313,9 +321,21 @@ void AtomicPersistence::replayAll(uint64_t since_seq,
               << " operations. Last sequence: " << max_seq << '\n';
 }
 
+// FNV-1a byte hash — covers actual payload bytes, not just length fields (the
+// previous XOR-of-lengths let corrupt key/vector/metadata bytes pass unnoticed).
+namespace {
+inline uint32_t ckpt_hash(uint32_t h, const void* p, size_t n) {
+    const uint8_t* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+constexpr uint32_t kCkptHashInit = 2166136261u;
+}  // namespace
+
 bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& vectors,
                                        std::unordered_map<std::string, std::string>& metadata,
                                        uint64_t& out_seq) {
+  try {
     const std::string& path = main_data_file_;
 
     std::ifstream in(path, std::ios::binary);
@@ -342,7 +362,20 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     uint64_t seq=0, ts_us=0, count=0;
     if (!read_u64(in, seq) || !read_u64(in, ts_us) || !read_u64(in, count)) return false;
 
-    std::cout << "[recovery] Loading checkpoint with " << count 
+    // Bound count by the remaining file size (each record is >= 12 bytes on
+    // disk) so a corrupt/huge count can't drive an enormous reserve/allocation.
+    const auto after_header = in.tellg();
+    in.seekg(0, std::ios::end);
+    const auto file_end = in.tellg();
+    in.seekg(after_header);
+    const uint64_t remaining_bytes =
+        (file_end > after_header) ? static_cast<uint64_t>(file_end - after_header) : 0;
+    if (count > remaining_bytes / 12) {
+        std::cerr << "[recovery] checkpoint count " << count << " exceeds file size; corrupt\n";
+        return false;
+    }
+
+    std::cout << "[recovery] Loading checkpoint with " << count
               << " vectors at seq " << seq << '\n';
 
     std::unordered_map<std::string, Vector> tmp_vectors;
@@ -350,7 +383,7 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     tmp_vectors.reserve(static_cast<size_t>(count));
     tmp_meta.reserve(static_cast<size_t>(count));
 
-    uint32_t footer_crc = 0;
+    uint32_t footer_crc = kCkptHashInit;
 
     for (uint64_t i = 0; i < count; ++i) {
         // key
@@ -358,14 +391,16 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
         if (!read_u32(in, key_len)) return false;
         std::string key(key_len, '\0');
         if (key_len && !read_exact(in, key.data(), key_len)) return false;
-        footer_crc ^= key_len;
+        footer_crc = ckpt_hash(footer_crc, &key_len, sizeof(key_len));
+        footer_crc = ckpt_hash(footer_crc, key.data(), key_len);
 
         // vector
         uint32_t dims = 0;
         if (!read_u32(in, dims)) return false;
         std::vector<float> buf(dims);
         if (dims && !read_exact(in, buf.data(), sizeof(float) * dims)) return false;
-        footer_crc ^= dims;
+        footer_crc = ckpt_hash(footer_crc, &dims, sizeof(dims));
+        footer_crc = ckpt_hash(footer_crc, buf.data(), sizeof(float) * dims);
         Vector vec(std::move(buf));
 
         // metadata
@@ -373,7 +408,8 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
         if (!read_u32(in, meta_len)) return false;
         std::string meta(meta_len, '\0');
         if (meta_len && !read_exact(in, meta.data(), meta_len)) return false;
-        footer_crc ^= meta_len;
+        footer_crc = ckpt_hash(footer_crc, &meta_len, sizeof(meta_len));
+        footer_crc = ckpt_hash(footer_crc, meta.data(), meta_len);
 
         tmp_vectors.emplace(key, std::move(vec));
         if (meta_len) tmp_meta[key] = std::move(meta);
@@ -388,9 +424,13 @@ bool AtomicPersistence::loadCheckpoint(std::unordered_map<std::string, Vector>& 
     vectors.swap(tmp_vectors);
     metadata.swap(tmp_meta);
     out_seq = seq;
-    
+
     std::cout << "[recovery] Checkpoint loaded successfully. Sequence: " << seq << '\n';
     return true;
+  } catch (const std::exception& e) {
+    std::cerr << "[recovery] checkpoint load failed: " << e.what() << '\n';
+    return false;
+  }
 }
 
 bool AtomicPersistence::saveCheckpointFile(
@@ -426,24 +466,27 @@ bool AtomicPersistence::saveCheckpointFile(
             // ---------- Payload ----------
             put_u64(static_cast<uint64_t>(vectors.size()));
 
-            uint32_t footer_crc = 0;
+            uint32_t footer_crc = kCkptHashInit;
             for (const auto& [key, vec] : vectors) {
                 const uint32_t key_len = static_cast<uint32_t>(key.size());
                 put_u32(key_len);
                 if (key_len) put(key.data(), key_len);
-                footer_crc ^= key_len;
+                footer_crc = ckpt_hash(footer_crc, &key_len, sizeof(key_len));
+                footer_crc = ckpt_hash(footer_crc, key.data(), key_len);
 
                 const uint32_t dims = static_cast<uint32_t>(vec.size());
                 put_u32(dims);
                 if (dims) put(vec.data_ptr(), dims * sizeof(float));
-                footer_crc ^= dims;
+                footer_crc = ckpt_hash(footer_crc, &dims, sizeof(dims));
+                footer_crc = ckpt_hash(footer_crc, vec.data_ptr(), dims * sizeof(float));
 
                 auto it = metadata.find(key);
                 const std::string meta = (it != metadata.end()) ? it->second : std::string{};
                 const uint32_t meta_len = static_cast<uint32_t>(meta.size());
                 put_u32(meta_len);
                 if (meta_len) put(meta.data(), meta_len);
-                footer_crc ^= meta_len;
+                footer_crc = ckpt_hash(footer_crc, &meta_len, sizeof(meta_len));
+                footer_crc = ckpt_hash(footer_crc, meta.data(), meta_len);
             }
 
             // ---------- Footer ----------

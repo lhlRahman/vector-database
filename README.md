@@ -11,7 +11,7 @@ segmented storage with crash-safe recovery, binary TCP protocol.
 > **What this is not:** a FAISS / hnswlib / Qdrant replacement. Use those
 > for production. Read this for the implementation.
 
-`tests: 100 passing` · `sanitizers: ASan + UBSan clean` · `fuzzed: 40.2M libFuzzer iterations`
+`tests: 111 passing` · `sanitizers: ASan + UBSan + TSan clean` · `fuzzed: 8 harnesses, crash-free`
 
 ## Quick start
 

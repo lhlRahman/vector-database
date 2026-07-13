@@ -236,6 +236,12 @@ void VectorSegment::seal() {
     writeHNSWSnapshot();
     state_ = State::Sealed;
     writeMetadata();
+    // The WAL is now redundant: a sealed segment loads from vectors.bin/hnsw
+    // snapshot, never the WAL. Remove it so it doesn't linger and accumulate
+    // disk across seal cycles. Done last so a crash beforehand leaves only
+    // harmless leftover bytes (segment.meta already records State::Sealed).
+    std::error_code ec;
+    std::filesystem::remove(walPath(), ec);
 }
 
 void VectorSegment::flush() {
@@ -246,6 +252,16 @@ void VectorSegment::flush() {
     }
     fsync_file(walPath());
     writeMetadata();
+}
+
+void VectorSegment::beginDeferredSync() { defer_sync_ = true; }
+
+void VectorSegment::commitDeferredSync() {
+    defer_sync_ = false;
+    // One fsync for the whole batch (group commit). fsync both the WAL and, if a
+    // tombstone file exists, the tombstone file.
+    if (std::filesystem::exists(walPath())) fsync_file(walPath());
+    if (std::filesystem::exists(tombstonesPath())) fsync_file(tombstonesPath());
 }
 
 double VectorSegment::tombstoneRatio() const {
@@ -377,9 +393,10 @@ void VectorSegment::appendWalInsert(const Vector& vector,
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL insert");
-    // Unconditional fsync — the durability contract is "the call doesn't
-    // return until the WAL record is on disk."
-    fsync_file(walPath());
+    // Per-record durability by default ("the call doesn't return until the WAL
+    // record is on disk"); a group-commit batch defers this to one fsync in
+    // commitDeferredSync().
+    if (!defer_sync_) fsync_file(walPath());
 }
 
 void VectorSegment::appendWalUpdate(const Vector& vector,
@@ -415,7 +432,7 @@ void VectorSegment::appendWalUpdate(const Vector& vector,
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL update");
-    fsync_file(walPath());
+    if (!defer_sync_) fsync_file(walPath());
 }
 
 void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
@@ -440,7 +457,7 @@ void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL delete");
-    fsync_file(walPath());
+    if (!defer_sync_) fsync_file(walPath());
 }
 
 void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t sequence) {
@@ -457,7 +474,7 @@ void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t seque
     write_string(os, key);
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing tombstone");
-    fsync_file(tombstonesPath());
+    if (!defer_sync_) fsync_file(tombstonesPath());
     if (new_file) {
         // First-time create: also persist the directory entry so the
         // tombstone file isn't lost on power failure.

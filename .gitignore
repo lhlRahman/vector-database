@@ -49,4 +49,11 @@ leak-*
 oom-*
 timeout-*
 
+# Benchmark datasets (multi-GB, fetched via datasets/fetch_sift.sh) and vendored deps
+datasets/sift/
+datasets/gist/
+datasets/*.tar.gz
+datasets/gt/
+third_party/
+
 

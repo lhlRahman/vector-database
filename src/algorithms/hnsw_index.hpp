@@ -41,9 +41,11 @@ private:
         std::pmr::vector<std::pmr::vector<size_t>> neighbors;
         std::pmr::vector<std::pmr::vector<float>> neighbor_dists;
 
-        HNSWNode(uint64_t sid, const std::string& k, size_t lvl, std::pmr::memory_resource* resource);
+        HNSWNode(uint64_t sid, const std::string& k, size_t lvl,
+                 size_t max_conn, size_t max_conn_zero, std::pmr::memory_resource* resource);
         void addNeighbor(size_t neighbor_id, float distance, size_t at_level);
         void removeNeighbor(size_t neighbor_id, size_t at_level);
+        void assignNeighbors(size_t at_level, const std::vector<size_t>& ids, const std::vector<float>& dists);
         const std::pmr::vector<size_t>& getNeighbors(size_t at_level) const;
         const std::pmr::vector<float>& getNeighborDists(size_t at_level) const;
     };
@@ -63,7 +65,11 @@ private:
 
     AllocationStrategy allocation_strategy;
     TrackingMemoryResource tracking_resource_;
-    std::pmr::monotonic_buffer_resource arena_resource_;
+    // A pool resource RECYCLES freed blocks, unlike monotonic_buffer_resource
+    // which never released memory — so every vector reallocation during graph
+    // build accumulated (observed ~2 GB peak for 30k nodes). The pool keeps
+    // outstanding memory near the live footprint.
+    std::pmr::unsynchronized_pool_resource arena_resource_;
     std::pmr::memory_resource* index_resource_;
 
     std::pmr::vector<HNSWNode> nodes;
@@ -71,19 +77,36 @@ private:
     size_t max_level;
     size_t dimensions;
     std::shared_ptr<const DistanceMetric> distance_metric;
+    // The concrete metric resolved once at construction, so getDistance() on the
+    // hot graph-walk avoids a virtual call and can inline the SIMD kernel.
+    enum class MetricKind { Euclidean, Manhattan, Cosine, Virtual };
+    MetricKind metric_kind_{MetricKind::Virtual};
     VectorAccessor accessor_;
 
     std::unordered_set<std::string> deleted_keys_;
     std::unordered_set<uint64_t> deleted_slots_;
+    // key -> node index of the current live node for that key, and nodes
+    // tombstoned by a re-insert of the same key (MMap in-place update reuses the
+    // slot, so slot-based filtering alone can't distinguish old from new).
+    // Runtime-only; the segmented path also records deleted_slots_ (serialized).
+    std::unordered_map<std::string, size_t> key_to_node_;
+    std::unordered_set<size_t> deleted_node_ids_;
 
     mutable std::mt19937 rng;
     mutable std::uniform_real_distribution<float> uniform_dist;
 
     size_t getRandomLevel() const;
-    std::vector<SearchCandidate> searchLayer(const float* query, size_t ef, size_t level) const;
-    std::vector<SearchCandidate> searchLayerBase(const float* query, size_t ef) const;
+    // Greedy best-first search of a single layer starting from an explicit entry
+    // point (the closest node found while descending the layer above).
+    std::vector<SearchCandidate> searchLayer(const float* query, size_t ef, size_t level, size_t entry_point) const;
     void addConnections(size_t node_id, const std::vector<SearchCandidate>& candidates, size_t level);
+    // Malkov-Yashunin heuristic neighbor selection (Alg. 4): keeps diverse /
+    // long-range edges instead of just the M closest. `candidates[i].distance`
+    // is the distance to the reference point (query on insert, the node itself
+    // when re-pruning a neighbor list).
     std::vector<SearchCandidate> selectNeighbors(const std::vector<SearchCandidate>& candidates, size_t M) const;
+    // Re-select a node's level-`level` neighbor list down to M using the heuristic.
+    void pruneNeighbors(size_t node_id, size_t level, size_t M);
 
     float getDistance(const float* a, const float* b) const;
 
