@@ -57,3 +57,6 @@ datasets/gt/
 third_party/
 
 
+
+# Per-thesis worktree copies
+worktrees/

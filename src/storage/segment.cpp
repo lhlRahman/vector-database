@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -33,13 +34,26 @@ struct WalRecordHeader {
     uint32_t crc32;
 };
 
-uint32_t checksum_bytes(const uint8_t* data, size_t size) {
-    uint32_t hash = 2166136261u;
+// Standard CRC-32 (IEEE 802.3, reflected poly 0xEDB88320). The old checksum was
+// named crc32 but was actually FNV-1a and covered ONLY the payload — a corrupt
+// header (op/len/dims) could pass. This is a real CRC over header + payload.
+uint32_t crc32_update(uint32_t crc, const uint8_t* data, size_t size) {
     for (size_t i = 0; i < size; ++i) {
-        hash ^= data[i];
-        hash *= 16777619u;
+        crc ^= data[i];
+        for (int k = 0; k < 8; ++k) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
     }
-    return hash;
+    return crc;
+}
+
+// CRC-32 over the record: every header field EXCEPT the trailing crc32, then the
+// payload. (crc32 is the last real field, so offsetof gives the covered prefix.)
+uint32_t wal_record_crc(const WalRecordHeader& h, const uint8_t* payload, size_t payload_len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    crc = crc32_update(crc, reinterpret_cast<const uint8_t*>(&h), offsetof(WalRecordHeader, crc32));
+    crc = crc32_update(crc, payload, payload_len);
+    return ~crc;
 }
 
 template <typename T>
@@ -382,8 +396,9 @@ void VectorSegment::appendWalInsert(const Vector& vector,
         static_cast<uint32_t>(metadata.size()),
         static_cast<uint32_t>(config_.dimensions),
         static_cast<uint32_t>(vector.size() * sizeof(float)),
-        checksum_bytes(payload.data(), payload.size()),
+        0u,  // crc32 filled in below (covers header + payload)
     };
+    header.crc32 = wal_record_crc(header, payload.data(), payload.size());
 
     std::ofstream os(walPath(), std::ios::binary | std::ios::app);
     if (!os.is_open()) throw std::runtime_error("cannot append WAL: " + walPath().string());
@@ -421,8 +436,9 @@ void VectorSegment::appendWalUpdate(const Vector& vector,
         static_cast<uint32_t>(metadata.size()),
         static_cast<uint32_t>(config_.dimensions),
         static_cast<uint32_t>(vector.size() * sizeof(float)),
-        checksum_bytes(payload.data(), payload.size()),
+        0u,  // crc32 filled in below (covers header + payload)
     };
+    header.crc32 = wal_record_crc(header, payload.data(), payload.size());
 
     std::ofstream os(walPath(), std::ios::binary | std::ios::app);
     if (!os.is_open()) throw std::runtime_error("cannot append WAL: " + walPath().string());
@@ -446,8 +462,9 @@ void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
         0,
         static_cast<uint32_t>(config_.dimensions),
         0,
-        checksum_bytes(payload.data(), payload.size()),
+        0u,  // crc32 filled in below (covers header + payload)
     };
+    header.crc32 = wal_record_crc(header, payload.data(), payload.size());
 
     std::ofstream os(walPath(), std::ios::binary | std::ios::app);
     if (!os.is_open()) throw std::runtime_error("cannot append WAL: " + walPath().string());
@@ -503,7 +520,7 @@ std::vector<VectorSegment::WalEntry> VectorSegment::readWal() const {
             is.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload_size));
             if (!is.good()) break;
         }
-        if (checksum_bytes(payload.data(), payload.size()) != header.crc32) break;
+        if (wal_record_crc(header, payload.data(), payload.size()) != header.crc32) break;
 
         WalEntry entry;
         entry.op = static_cast<WalEntry::Op>(header.op);
