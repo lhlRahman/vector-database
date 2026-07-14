@@ -65,14 +65,41 @@ of it down with group commit, and recover fast via sealed HNSW snapshots.
   - F3 recall-vs-QPS Pareto (ours vs hnswlib) — establishes the index is competitive.
   - F4 recovery time vs N: sealed (snapshot) vs mutable (WAL-replay); the crossover.
 
+## STATUS (2026-07-13): upgraded to median-of-7, d=128, batch sweep, verified cites, novelty-checked
+- Durability now measured at **d=128** (SIFT dimensionality), **median of 7 trials + min–max ranges**.
+- fsync floor **49,199/s plain vs 317/s full = 155×**; per-write tax **442→98/s (4.5×)**, p99 14.4ms→48.4ms.
+- Group-commit **batch-size sweep**: full-fsync **1×→4.3×** (b=1→2000); plain-fsync flat ~1× (mode-dependent, kills "one operating point").
+- Recovery d=128 full: sealed 39–47ms vs WAL-replay 195–1484ms = **5×→32×**, now monotonic.
+- All 15 citations web-verified + corrected (bigann was broken; lsmvec/cosmos/faiss/etc fixed); **P-HNSW (2025) added** as nearest prior art for C4 (PMEM); related-work "none report crash-consistency" softened (FreshDiskANN/SPFresh do).
+- Paper compiles clean (tectonic), 12 pages, 5 tables + 4 figures.
+- **Review: UNANIMOUS 10/10 accept** (workshop measurement/methodology bar) over two
+  fresh no-context rounds (round 2: 8×7+2×6 borderline on a stale-number nit; round 3
+  after fixes: nine 7s + one 8, ZERO blocking issues). All chair polish nits applied
+  (P-HNSW positioning, recovery asymptotics honesty, hnswlib parity framing, crash-
+  consistency lineage cites, speedup rounding note, dimension robustness caveat).
+- Verified this session: `make test` 50/50; e2e clean under ThreadSanitizer (0 races);
+  WAL + sealed-segment fuzz clean under ASan+UBSan. Committed (dcf6028).
+- REMAINING (needs hardware/experiments, honest future work): Linux/NVMe + power-loss
+  (dm-log-writes); durability tax/recovery on real SIFT/GIST embeddings; N-sweep to
+  competitiveness scale; GIST1M (960-d) run.
+
 ## Preliminary results already measured in this repo (M4 Pro, `-mcpu=native`)
 - **Durability tax / group commit** (`make bench-durability`; synthetic, d=64):
   - fsync floor **41,101/s (plain)** vs **316/s (`F_FULLFSYNC`, ~130×)** — the honest cost.
   - insert throughput: per-write **442/s plain**, **110/s honest**; group commit **483/s**.
   - **group commit speedup 4.4×** under honest durability (110→483/s); p99 43 ms → collapsed.
 - **Recovery** (`make bench-durability`, N=1500): sealed **35 ms** vs WAL-replay **225 ms**.
-- **Index competitiveness** (`make bench-ann`; d=128, n=30k, M=16, efc=200):
-  recall@10 **0.97 @ef=10 → 1.0 @ef=100**, monotonic; ~**97k QPS @ef=10** after
+- **Index competitiveness — REAL SIFT1M** (`make bench-ann ANN_ARGS="--data datasets/sift"`;
+  1M×128d, M=16, efc=200, shipped exact GT, ID recall@10):
+  recall **0.77 @ef=10 → 0.999 @ef=500**, monotonic; ef=64 **0.977 @ 5.9k QPS**,
+  ef=100 **0.990 @ 4.0k QPS**, ef=200 **0.997 @ 2.2k QPS**; build **504 s**
+  single-thread, peak arena **999 MiB**.
+- **hnswlib head-to-head — REAL SIFT1M** (`make bench-hnswlib HNSWLIB_ARGS="--data datasets/sift"`;
+  identical dataset/params/host): at every ef our recall is marginally **higher**
+  at equal QPS (ef=100 ours 0.990/4.0k vs hnswlib 0.983/3.9k; ef=200 ours 0.997/2.2k
+  vs 0.996/2.2k) — **on-Pareto parity**. Build: ours 504 s vs hnswlib 394 s (~1.3× slower).
+- **Index competitiveness — synthetic** (d=128, n=30k, M=16, efc=200):
+  recall@10 **0.97 @ef=10 → 1.0 @ef=100**, ~**97k QPS @ef=10** after
   hot-path optimizations (visited-list, FMA kernels, devirtualized distance);
   arena memory **2 GB → 38 MiB** (pool_resource).
 - **Crash-consistency:** `group commit crash recovery` unit test (fork + kill,
@@ -81,7 +108,7 @@ of it down with group commit, and recover fast via sealed HNSW snapshots.
 
 ## Remaining work (to camera-ready)
 - [ ] Real-NVMe + Linux runs (ext4/btrfs); label every number by fsync mode.
-- [ ] SIFT1M/GIST1M runs (`fetch_sift.sh`) + hnswlib parity (`bench-hnswlib`).
+- [x] SIFT1M run + hnswlib parity (real, on-Pareto). [ ] GIST1M run (960-d).
 - [ ] Concurrent group committer (leader/follower) — currently batch-API group commit.
 - [ ] Fault injection at scale: torn-tail (promote fuzz_wal to a prefix assertion),
       kill -9 sweep, Linux `dm-log-writes` for true power-loss.

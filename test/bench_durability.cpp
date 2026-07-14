@@ -1,15 +1,20 @@
 // Durability benchmark — the "durability tax on ANN" measurement.
 //
-//   make bench-durability                         # plain fsync
-//   make bench-durability DURABILITY_ARGS=--full-fsync   # honest macOS durability
-//   make bench-durability DURABILITY_ARGS="--dir /path/on/nvme"
+//   make bench-durability                                  # plain fsync, d=128
+//   make bench-durability DURABILITY_ARGS=--full-fsync     # honest macOS durability
+//   make bench-durability DURABILITY_ARGS="--dir /path/on/nvme --trials 7 --d 128"
 //
-// Reports, on a REAL (non-tmpfs) filesystem: the fsync floor, per-write-fsync
-// insert throughput/latency, group-commit (batched fsync) throughput, and cold-
-// open recovery time for the sealed (snapshot) vs mutable (WAL-replay) paths.
+// Reports, on a REAL (non-tmpfs) filesystem and as MEDIAN (min-max) over K trials:
+//   * the fsync floor (durable syncs/s),
+//   * per-write-fsync insert throughput/latency (the durability tax),
+//   * a group-commit BATCH-SIZE SWEEP (throughput/speedup vs. batch size), so the
+//     speedup is reported as a curve, not a single operating point, and
+//   * cold-open recovery time for the sealed (snapshot) vs mutable (WAL-replay)
+//     paths across a sweep of N.
 // Refuses to report write numbers on tmpfs, where fsync is a no-op (the trap our
 // own docs flag).
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +22,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -56,10 +62,28 @@ std::vector<float> rand_vec(size_t d, std::mt19937& rng) {
     return v;
 }
 
-double pct(std::vector<double>& s, double p) {
+double pct(std::vector<double> s, double p) {
     if (s.empty()) return 0.0;
     std::sort(s.begin(), s.end());
     return s[static_cast<size_t>((p / 100.0) * static_cast<double>(s.size() - 1))];
+}
+
+// Median and range across trials — the honest summary for a small K.
+struct Stat { double med = 0, lo = 0, hi = 0; };
+Stat summarize(std::vector<double> v) {
+    Stat s;
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    size_t n = v.size();
+    s.med = (n % 2) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+    s.lo = v.front();
+    s.hi = v.back();
+    return s;
+}
+std::string fmt(const Stat& s, int prec = 0) {
+    std::ostringstream o;
+    o << std::fixed << std::setprecision(prec) << s.med << " (" << s.lo << "-" << s.hi << ")";
+    return o.str();
 }
 
 // Tight write()+fsync loop: how many durable syncs/sec the device sustains.
@@ -89,12 +113,14 @@ double fsync_floor(const std::filesystem::path& dir, int n, bool full) {
 int main(int argc, char** argv) {
     std::string dir_arg;
     bool full = false;
-    size_t N = 2000, D = 64;
+    size_t N = 2000, D = 128, TRIALS = 7;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--full-fsync") full = true;
         else if (a == "--dir" && i + 1 < argc) dir_arg = argv[++i];
         else if (a == "--n" && i + 1 < argc) N = std::stoul(argv[++i]);
+        else if (a == "--d" && i + 1 < argc) D = std::stoul(argv[++i]);
+        else if (a == "--trials" && i + 1 < argc) TRIALS = std::stoul(argv[++i]);
     }
     if (full) vdb::io::set_full_fsync(true);
 
@@ -105,7 +131,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Durability benchmark\n  dir: " << root << "\n  fsync: "
               << (full ? "F_FULLFSYNC (honest, macOS drive-cache flush)" : "plain fsync")
-              << "\n  N=" << N << " D=" << D << "\n";
+              << "\n  N=" << N << " D=" << D << " trials=" << TRIALS << "\n";
     if (is_tmpfs(root)) {
         std::cout << "\n!! " << root << " is tmpfs (RAM-backed) — fsync is a no-op here.\n"
                   << "!! Write/durability numbers would be FICTION. Re-run with --dir on a real disk.\n";
@@ -116,6 +142,7 @@ int main(int argc, char** argv) {
     std::mt19937 rng(1234);
     auto make_db = [&](const std::string& sub) {
         auto p = root / sub;
+        std::filesystem::remove_all(p);
         auto db = std::make_unique<VectorDatabase>(
             D, VectorDatabase::SearchMode::HNSW, false, /*batch=*/true,
             PersistenceConfig{}, false, 0, p.string(), VectorDatabase::StorageEngine::Segmented);
@@ -123,79 +150,147 @@ int main(int argc, char** argv) {
         return db;
     };
 
-    std::cout << "\nfsync floor: " << std::fixed << std::setprecision(0)
-              << fsync_floor(root, static_cast<int>(std::min<size_t>(N, 500)), full) << " durable syncs/s\n";
+    const std::vector<size_t> batch_sizes = {1, 10, 50, 200, 1000, N};
+    const std::vector<size_t> rec_N = {1000, 3000, 6000};
 
-    // 1) Per-write fsync: N single inserts, each fsync'd before returning.
-    double perwrite_qps = 0;
-    {
-        auto db = make_db("perwrite");
-        std::vector<double> lat;
-        lat.reserve(N);
-        auto t0 = Clock::now();
-        for (size_t i = 0; i < N; ++i) {
-            auto v = rand_vec(D, rng);
-            auto s = Clock::now();
-            (void)db->insert(Vector(v), "k" + std::to_string(i));
-            lat.push_back(std::chrono::duration<double, std::micro>(Clock::now() - s).count());
-        }
-        double sec = std::chrono::duration<double>(Clock::now() - t0).count();
-        perwrite_qps = N / sec;
-        std::cout << "\n[per-write fsync]  " << std::setprecision(0) << perwrite_qps << " ins/s"
-                  << "   p50=" << std::setprecision(1) << pct(lat, 50) << "us"
-                  << " p99=" << pct(lat, 99) << "us max=" << pct(lat, 100) << "us\n";
-        db->shutdown();
-    }
+    std::vector<double> floor_s, pw_qps, pw_p50, pw_p99, pw_max;
+    std::map<size_t, std::vector<double>> gc_qps;                 // batch size -> qps/trial
+    std::map<size_t, std::vector<double>> sealed_ms, mutable_ms;  // N -> ms/trial
 
-    // 2) Group commit: one batchInsert of N -> a single fsync for the batch.
-    double batch_qps = 0;
-    {
-        auto db = make_db("groupcommit");
-        std::vector<std::string> keys;
-        std::vector<Vector> vecs;
-        keys.reserve(N); vecs.reserve(N);
-        for (size_t i = 0; i < N; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(rand_vec(D, rng)); }
-        auto t0 = Clock::now();
-        auto r = db->batchInsert(keys, vecs);
-        double sec = std::chrono::duration<double>(Clock::now() - t0).count();
-        batch_qps = r.operations_committed / sec;
-        std::cout << "[group commit  ]  " << std::setprecision(0) << batch_qps << " ins/s"
-                  << "   (" << r.operations_committed << " in " << std::setprecision(3) << sec << "s)\n";
-        db->shutdown();
-    }
-    std::cout << "  -> group commit speedup: " << std::setprecision(1)
-              << (perwrite_qps > 0 ? batch_qps / perwrite_qps : 0.0) << "x\n";
+    for (size_t t = 0; t < TRIALS; ++t) {
+        std::cout << "  trial " << (t + 1) << "/" << TRIALS << " ..." << std::flush;
 
-    // 3) Recovery time: sealed (snapshot load) vs mutable (WAL replay).
-    for (const char* mode : {"sealed", "mutable"}) {
-        auto p = root / (std::string("recover_") + mode);
+        floor_s.push_back(fsync_floor(root, static_cast<int>(std::min<size_t>(N, 500)), full));
+
+        // 1) Per-write fsync: N single inserts, each fsync'd before returning.
         {
-            auto db = std::make_unique<VectorDatabase>(
-                D, VectorDatabase::SearchMode::HNSW, false, true, PersistenceConfig{}, false, 0,
-                p.string(), VectorDatabase::StorageEngine::Segmented);
-            db->initialize();
-            std::vector<std::string> keys; std::vector<Vector> vecs;
-            for (size_t i = 0; i < N; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(rand_vec(D, rng)); }
-            (void)db->batchInsert(keys, vecs);
-            if (std::string(mode) == "sealed") db->sealMutableSegment();
-            (void)db->checkpoint();
+            auto db = make_db("perwrite");
+            std::vector<double> lat;
+            lat.reserve(N);
+            auto t0 = Clock::now();
+            for (size_t i = 0; i < N; ++i) {
+                auto v = rand_vec(D, rng);
+                auto s = Clock::now();
+                (void)db->insert(Vector(v), "k" + std::to_string(i));
+                lat.push_back(std::chrono::duration<double, std::micro>(Clock::now() - s).count());
+            }
+            double sec = std::chrono::duration<double>(Clock::now() - t0).count();
+            pw_qps.push_back(N / sec);
+            pw_p50.push_back(pct(lat, 50));
+            pw_p99.push_back(pct(lat, 99));
+            pw_max.push_back(pct(lat, 100));
             db->shutdown();
         }
-        auto t0 = Clock::now();
-        {
-            VectorDatabase db(D, VectorDatabase::SearchMode::HNSW, false, true, PersistenceConfig{}, false, 0,
-                              p.string(), VectorDatabase::StorageEngine::Segmented);
-            db.initialize();
-            volatile size_t c = db.vectorCount();
-            (void)c;
-            db.shutdown();
+
+        // 2) Group-commit batch-size sweep: insert N via batches of size b, one
+        // fsync per batch. b=1 approximates per-write; b=N is a single big batch.
+        for (size_t b : batch_sizes) {
+            auto db = make_db("gc");
+            auto t0 = Clock::now();
+            size_t committed = 0;
+            for (size_t start = 0; start < N; start += b) {
+                size_t end = std::min(N, start + b);
+                std::vector<std::string> keys;
+                std::vector<Vector> vecs;
+                keys.reserve(end - start);
+                vecs.reserve(end - start);
+                for (size_t i = start; i < end; ++i) {
+                    keys.push_back("k" + std::to_string(i));
+                    vecs.emplace_back(rand_vec(D, rng));
+                }
+                auto r = db->batchInsert(keys, vecs);
+                committed += r.operations_committed;
+            }
+            double sec = std::chrono::duration<double>(Clock::now() - t0).count();
+            gc_qps[b].push_back(sec > 0 ? committed / sec : 0.0);
+            db->shutdown();
         }
-        std::cout << "[recovery " << std::setw(7) << std::left << mode << "] "
-                  << std::setprecision(1) << std::chrono::duration<double, std::milli>(Clock::now() - t0).count()
-                  << " ms (cold open of " << N << " vectors)\n";
+
+        // 3) Recovery: sealed (snapshot load) vs mutable (WAL replay), swept over N.
+        for (size_t n : rec_N) {
+            for (const char* mode : {"sealed", "mutable"}) {
+                auto p = root / (std::string("recover_") + mode + "_" + std::to_string(n));
+                std::filesystem::remove_all(p);
+                {
+                    auto db = std::make_unique<VectorDatabase>(
+                        D, VectorDatabase::SearchMode::HNSW, false, true, PersistenceConfig{}, false, 0,
+                        p.string(), VectorDatabase::StorageEngine::Segmented);
+                    db->initialize();
+                    std::vector<std::string> keys;
+                    std::vector<Vector> vecs;
+                    for (size_t i = 0; i < n; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(rand_vec(D, rng)); }
+                    (void)db->batchInsert(keys, vecs);
+                    if (std::string(mode) == "sealed") db->sealMutableSegment();
+                    (void)db->checkpoint();
+                    db->shutdown();
+                }
+                auto t0 = Clock::now();
+                {
+                    VectorDatabase db(D, VectorDatabase::SearchMode::HNSW, false, true, PersistenceConfig{}, false, 0,
+                                      p.string(), VectorDatabase::StorageEngine::Segmented);
+                    db.initialize();
+                    volatile size_t c = db.vectorCount();
+                    (void)c;
+                    db.shutdown();
+                }
+                double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                (std::string(mode) == "sealed" ? sealed_ms : mutable_ms)[n].push_back(ms);
+                std::filesystem::remove_all(p);
+            }
+        }
+        std::cout << " done\n";
     }
 
+    // ---- Report: median (min-max) over trials ----------------------------------
+    auto floor = summarize(floor_s);
+    std::cout << "\n=== fsync floor ===\n"
+              << "  " << fmt(floor, 0) << " durable syncs/s  [" << (full ? "F_FULLFSYNC" : "plain fsync") << "]\n";
+
+    auto qps = summarize(pw_qps), p50 = summarize(pw_p50), p99 = summarize(pw_p99), mx = summarize(pw_max);
+    std::cout << "\n=== durability tax (per-write fsync) ===\n"
+              << "  throughput : " << fmt(qps, 0) << " ins/s\n"
+              << "  p50 latency: " << fmt(p50, 0) << " us\n"
+              << "  p99 latency: " << fmt(p99, 0) << " us\n"
+              << "  max latency: " << fmt(mx, 0) << " us\n";
+
+    auto gc1 = summarize(gc_qps[1]);
+    std::cout << "\n=== group commit batch-size sweep (one fsync per batch) ===\n"
+              << "  " << std::setw(8) << "batch" << std::setw(22) << "ins/s (med,min-max)" << std::setw(12) << "speedup\n";
+    for (size_t b : batch_sizes) {
+        auto s = summarize(gc_qps[b]);
+        double speedup = gc1.med > 0 ? s.med / gc1.med : 0.0;
+        std::cout << "  " << std::setw(8) << b << std::setw(22) << fmt(s, 0)
+                  << std::setw(10) << std::fixed << std::setprecision(1) << speedup << "x\n";
+    }
+
+    std::cout << "\n=== recovery: sealed (snapshot) vs mutable (WAL replay) ===\n"
+              << "  " << std::setw(8) << "N" << std::setw(22) << "sealed ms" << std::setw(22) << "mutable ms" << std::setw(8) << "gap\n";
+    for (size_t n : rec_N) {
+        auto se = summarize(sealed_ms[n]), mu = summarize(mutable_ms[n]);
+        double gap = se.med > 0 ? mu.med / se.med : 0.0;
+        std::cout << "  " << std::setw(8) << n << std::setw(22) << fmt(se, 1) << std::setw(22) << fmt(mu, 1)
+                  << std::setw(6) << std::fixed << std::setprecision(1) << gap << "x\n";
+    }
+
+    // Machine-readable summary (one block; easy to transcribe into paper tables).
+    std::filesystem::create_directories("build/durability_results");
+    std::string tag = full ? "full" : "plain";
+    std::ofstream csv("build/durability_results/durability_" + tag + "_d" + std::to_string(D) + ".csv");
+    csv << "metric,d,mode,median,min,max\n";
+    auto row = [&](const char* m, const Stat& s) {
+        csv << m << "," << D << "," << tag << "," << s.med << "," << s.lo << "," << s.hi << "\n";
+    };
+    row("fsync_floor", floor);
+    row("perwrite_qps", qps);
+    row("perwrite_p50", p50);
+    row("perwrite_p99", p99);
+    row("perwrite_max", mx);
+    for (size_t b : batch_sizes) { std::string m = "gc_qps_b" + std::to_string(b); row(m.c_str(), summarize(gc_qps[b])); }
+    for (size_t n : rec_N) { std::string m = "sealed_ms_n" + std::to_string(n); row(m.c_str(), summarize(sealed_ms[n])); }
+    for (size_t n : rec_N) { std::string m = "mutable_ms_n" + std::to_string(n); row(m.c_str(), summarize(mutable_ms[n])); }
+    csv.close();
+
     std::filesystem::remove_all(root);
-    std::cout << "\ndone.\n";
+    std::cout << "\nCSV -> build/durability_results/durability_" << tag << "_d" << D << ".csv\ndone.\n";
     return 0;
 }

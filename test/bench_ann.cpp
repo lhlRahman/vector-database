@@ -129,13 +129,34 @@ int main(int argc, char** argv) {
         return Vector(std::vector<float>(ds.query.begin() + q * d, ds.query.begin() + (q + 1) * d));
     };
 
-    // Exact ground truth via FlatIndex (identical metric kernel -> parity).
-    // Store (key, distance) sorted ascending so we can score BOTH the standard
-    // tie-aware (distance-threshold) recall and plain ID-set recall.
-    std::cout << "Computing exact ground truth (FlatIndex, k=" << k << ") ...\n";
-    FlatIndex<EuclideanMetricPolicy> flat(d, accessor);
+    // Ground truth. Two sources:
+    //   (a) shipped exact GT (.ivecs) — mandatory for real datasets (SIFT/GIST):
+    //       brute force over 1M base is ~1e12 ops, infeasible here. Only neighbor
+    //       IDs are shipped (no distances) -> ID-set recall is the primary metric.
+    //   (b) FlatIndex brute force — synthetic sets; gives distances too, so we can
+    //       also score the tie-aware (distance-threshold) recall.
+    // gt[q] holds (key, distance); distance is 0 for shipped GT (unknown).
     std::vector<std::vector<std::pair<std::string, float>>> gt(ds.nq);
-    {
+    bool shipped_gt = false;
+    if (!data_dir.empty()) {
+        std::filesystem::path gtp;
+        for (const char* n : {"sift_groundtruth.ivecs", "gist_groundtruth.ivecs", "groundtruth.ivecs"}) {
+            std::filesystem::path c = std::filesystem::path(data_dir) / n;
+            if (std::filesystem::exists(c)) { gtp = c; break; }
+        }
+        if (!gtp.empty()) {
+            auto g = vecs_io::load_ivecs(gtp.string());
+            std::cout << "Using shipped ground truth: " << gtp.string() << "  (" << g.n << " x " << g.d << ")\n";
+            for (size_t q = 0; q < ds.nq && q < g.n; ++q) {
+                const int32_t* r = g.row(q);
+                for (size_t j = 0; j < k && j < g.d; ++j) gt[q].emplace_back(std::to_string(r[j]), 0.0f);
+            }
+            shipped_gt = true;
+        }
+    }
+    if (!shipped_gt) {
+        std::cout << "Computing exact ground truth (FlatIndex, k=" << k << ") ...\n";
+        FlatIndex<EuclideanMetricPolicy> flat(d, accessor);
         auto t0 = Clock::now();
         for (size_t q = 0; q < ds.nq; ++q) gt[q] = flat.search(query_vec(q), k, key_to_slot);
         std::cout << "  GT in " << std::chrono::duration<double, std::milli>(Clock::now() - t0).count()
@@ -189,16 +210,21 @@ int main(int argc, char** argv) {
             if (kk == 0) continue;
             // Tie-aware (ann-benchmarks standard): a returned point counts if its
             // distance is within the true k-th distance (+eps) — near-tied points
-            // are all valid neighbors, so ID mismatch there is not a miss.
-            float threshold = g[kk - 1].second * (1.0f + 1e-4f) + 1e-6f;
-            for (auto& [key, dist] : res) if (dist <= threshold) ++tie_hits;
-            // Plain ID-set recall (stricter; shown for contrast).
+            // are all valid neighbors, so ID mismatch there is not a miss. Only
+            // valid when GT carries distances (FlatIndex); shipped GT has none.
+            if (!shipped_gt) {
+                float threshold = g[kk - 1].second * (1.0f + 1e-4f) + 1e-6f;
+                for (auto& [key, dist] : res) if (dist <= threshold) ++tie_hits;
+            }
+            // Plain ID-set recall (the standard metric vs shipped GT).
             for (auto& [key, dist] : res)
                 for (size_t gi = 0; gi < kk; ++gi) if (g[gi].first == key) { ++id_hits; break; }
         }
         double wall = std::chrono::duration<double>(Clock::now() - t0).count();
-        double recall = total ? static_cast<double>(tie_hits) / static_cast<double>(total) : 0.0;
         double recall_id = total ? static_cast<double>(id_hits) / static_cast<double>(total) : 0.0;
+        // Primary recall: tie-aware for FlatIndex GT, ID-set for shipped GT.
+        double recall = shipped_gt ? recall_id
+                                   : (total ? static_cast<double>(tie_hits) / static_cast<double>(total) : 0.0);
         double qps = wall > 0 ? static_cast<double>(ds.nq) / wall : 0.0;
         std::sort(lat.begin(), lat.end());
 
@@ -216,7 +242,8 @@ int main(int argc, char** argv) {
     }
     csv.close();
 
-    std::cout << "\n=== verdict (recall@" << k << ", vs exact FlatIndex GT) ===\n";
+    std::cout << "\n=== verdict (recall@" << k << ", vs "
+              << (shipped_gt ? "shipped exact GT [ID recall]" : "exact FlatIndex GT [tie-aware]") << ") ===\n";
     std::cout << "max recall=" << std::fixed << std::setprecision(4) << max_recall
               << "   monotonic-with-ef=" << (monotonic ? "yes" : "NO") << "\n";
     if (!monotonic || max_recall < 0.80)
