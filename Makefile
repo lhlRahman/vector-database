@@ -228,6 +228,13 @@ bench-recall-staleness: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/v
 	@echo "recall-staleness benchmark built: $(RECALL_STALENESS_BENCH)"
 	@./$(RECALL_STALENESS_BENCH) $(ANN_ARGS)
 
+# Crash-consistency verifier (used by the Linux dm-log-writes power-loss harness).
+VERIFY_OPEN = $(BUILD_DIR)/verify_open
+verify-open: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/verify_open.cpp -o $(BUILD_DIR)/verify_open.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/verify_open.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(VERIFY_OPEN)
+	@echo "verify-open built: $(VERIFY_OPEN)"
+
 # Durability benchmark — per-write fsync vs group commit, fsync floor, recovery.
 # make bench-durability DURABILITY_ARGS="--full-fsync --dir /path/on/nvme"
 DURABILITY_ARGS ?=

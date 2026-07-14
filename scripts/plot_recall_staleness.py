@@ -19,17 +19,23 @@ N = int(sys.argv[3]) if len(sys.argv) > 3 else 1_000_000
 OUT = os.path.join(ROOT, "docs", "paper", "figs")
 os.makedirs(OUT, exist_ok=True)
 
-W, emp, wc = [], [], []
+W, emp, adv, wc = [], [], [], []
 with open(CSV) as f:
     for r in _csv.DictReader(f):
         W.append(int(r["W"]))
         emp.append(float(r["recall_at_risk_empirical"]))
+        adv.append(float(r.get("recall_at_risk_adversarial", "0") or "0"))
         wc.append(float(r["worst_case_bound_min_Wk_over_k"]))
 
 RESOLUTION = 1e-4  # 1000 queries x k=10 -> smallest measurable nonzero recall-at-risk
 fig, ax = plt.subplots(figsize=(5.6, 3.8))
 # Worst-case bound (provable, distribution-free).
 ax.plot(W, wc, "s--", color="#d62728", lw=1.8, ms=4, label=r"worst case $\min(W,k)/k$ (provable)")
+# Adversarial: recent inserts are the query-hot vectors.
+mAW = [w for w, a in zip(W, adv) if a > 0]
+mA = [a for a in adv if a > 0]
+if mA:
+    ax.plot(mAW, mA, "^-", color="#ff7f0e", lw=1.6, ms=5, label="adversarial (query-hot inserts)")
 # W/N reference (benign expectation).
 ax.plot(W, [w / N for w in W], ":", color="gray", lw=1.4, label=r"$W/N$ (benign expectation)")
 # Empirical measured points (only where above measurement resolution).

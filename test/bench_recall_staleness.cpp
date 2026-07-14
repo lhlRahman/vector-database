@@ -27,6 +27,8 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../src/algorithms/hnsw_index.hpp"
@@ -113,27 +115,44 @@ int main(int argc, char** argv) {
         for (auto& [key, dist] : hnsw.search(qv, k)) res_ids[q].push_back(std::stoull(key));
     }
 
+    // Adversarial model: recent inserts ARE the query-relevant vectors. Rank ids by
+    // "hotness" (how many query top-k lists they appear in); the size-W adversarial
+    // window is the W hottest ids. This is the realistic worst case ("query the fresh
+    // data"), bridging the benign W/N and the distribution-free min(W,k)/k.
+    std::unordered_map<uint64_t, int> freq;
+    for (size_t q = 0; q < nq; ++q) for (uint64_t id : res_ids[q]) freq[id]++;
+    std::vector<std::pair<uint64_t, int>> hot(freq.begin(), freq.end());
+    std::sort(hot.begin(), hot.end(), [](auto& a, auto& b) { return a.second > b.second; });
+
     // Sweep W (size of the un-durable "recent inserts" window = last W ids).
     std::vector<size_t> Wsweep = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000};
     std::filesystem::create_directories("build/ann_results");
     std::ofstream csv("build/ann_results/recall_staleness.csv");
-    csv << "W,W_frac_of_N,recall_at_risk_empirical,worst_case_bound_min_Wk_over_k\n";
-    std::cout << "\n" << std::left << std::setw(10) << "W" << std::setw(16) << "recall@risk"
-              << std::setw(16) << "worst-case" << "W/N\n" << std::string(50, '-') << "\n";
+    csv << "W,W_frac_of_N,recall_at_risk_empirical,recall_at_risk_adversarial,worst_case_bound_min_Wk_over_k\n";
+    std::cout << "\n" << std::left << std::setw(9) << "W" << std::setw(14) << "benign"
+              << std::setw(14) << "adversarial" << std::setw(12) << "worst-case" << "W/N\n"
+              << std::string(56, '-') << "\n";
+    std::unordered_set<uint64_t> hotset; size_t hot_added = 0;
     for (size_t W : Wsweep) {
         if (W > ds.nb) break;
-        uint64_t threshold = ds.nb - W;  // ids >= threshold are in the un-durable window
-        double hits = 0; size_t total = 0;
+        uint64_t threshold = ds.nb - W;  // ids >= threshold are in the un-durable window (benign, by insert order)
+        while (hot_added < W && hot_added < hot.size()) hotset.insert(hot[hot_added++].first);  // adversarial window
+        double hits = 0, adv_hits = 0; size_t total = 0;
         for (size_t q = 0; q < nq; ++q) {
-            for (uint64_t id : res_ids[q]) if (id >= threshold) hits += 1.0;
+            for (uint64_t id : res_ids[q]) {
+                if (id >= threshold) hits += 1.0;
+                if (hotset.count(id)) adv_hits += 1.0;
+            }
             total += res_ids[q].size();
         }
         double rar = total ? hits / static_cast<double>(total) : 0.0;
+        double adv = total ? adv_hits / static_cast<double>(total) : 0.0;
         double wc = std::min<double>(W, k) / static_cast<double>(k);
         double frac = static_cast<double>(W) / static_cast<double>(ds.nb);
-        csv << W << "," << frac << "," << rar << "," << wc << "\n";
-        std::cout << std::setw(10) << W << std::setw(16) << std::scientific << std::setprecision(3) << rar
-                  << std::setw(16) << std::fixed << std::setprecision(3) << wc
+        csv << W << "," << frac << "," << rar << "," << adv << "," << wc << "\n";
+        std::cout << std::setw(9) << W << std::scientific << std::setprecision(2)
+                  << std::setw(14) << rar << std::setw(14) << adv
+                  << std::fixed << std::setprecision(3) << std::setw(12) << wc
                   << std::scientific << std::setprecision(2) << frac << "\n";
     }
     csv.close();
