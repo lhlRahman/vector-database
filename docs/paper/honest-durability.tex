@@ -18,9 +18,9 @@
 \newcommand{\fullfsync}{\texttt{F\_FULLFSYNC}}
 \newcommand{\fsync}{\texttt{fsync}}
 
-\title{\textbf{Toward Honest Durability Measurement for\\ Graph-Based Approximate Nearest Neighbor Indexes}}
+\title{\textbf{Recall-Bounded Durability for\\ Graph-Based Approximate Nearest Neighbor Indexes}}
 \author{Anonymous\\ \small \texttt{Under submission}}
-\date{\today\\[2pt]\small Measurement \& methodology paper --- preliminary single-host study, work in progress}
+\date{\today\\[2pt]\small Preliminary single-host study --- work in progress}
 
 \begin{document}
 \maketitle
@@ -30,11 +30,12 @@ Approximate nearest neighbor (ANN) search is evaluated almost entirely on two
 axes: recall and queries per second. Durability---whether an acknowledged write
 survives a crash or power loss---is largely absent from the ANN research
 literature and from the mainstream ANN benchmarks, and is unquantified even in
-systems that provide it. This is primarily a \emph{measurement and methodology}
-paper---the storage mechanisms we apply (group commit, snapshot recovery) are
-textbook---whose core is a reusable way to measure durability honestly for a graph
-ANN index, together with a characterization on one host; it also contributes one
-new ANN-specific primitive, a \emph{recall-bounded} durability guarantee. Using a
+systems that provide it. This paper makes durability a first-class axis for graph
+ANN. Its foundation is a reusable protocol for measuring durability honestly and a
+characterization of its cost on one host; its headline is \emph{recall-bounded
+durability}, a guarantee that expresses and bounds the damage a crash can do in
+recall units---the one primitive here that is new (the storage mechanisms we apply,
+group commit and snapshot recovery, are textbook). Using a
 from-scratch C++20 vector database with a segmented, write-ahead-logged (WAL)
 HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M (and $0.98$ on the
 harder $960$-d GIST1M) and sits on the hnswlib recall--QPS Pareto front, confirming
@@ -380,36 +381,40 @@ Benign expectation.} If insertion order is independent of the query distribution
 the $W$ un-durable inserts are a uniform random subset of the $N$ indexed vectors,
 so $\mathbb{E}[R(W)] = W/N$---linear in the window and independent of $k$.
 
-The gap between the two bounds is the opportunity, and it is large.
-Fig.~\ref{fig:recallrisk} measures $R(W)$ on SIFT1M ($N{=}10^6$, $k{=}10$, benign
-query set): the empirical curve tracks $W/N$ and sits about three orders of
-magnitude below the worst-case bound. At the batch size our group commit uses
-($W{=}2{,}000$), a crash risks only $0.13\%$ of recall@10---versus the $100\%$ the
-distribution-free bound admits---while delivering the $4.3\times$ throughput of
-Table~\ref{tab:gc}. On a workload whose inserts are not adversarially correlated
-with queries, group commit is thus almost free in recall terms.
+Between these two bounds lies what actually happens, and it depends on how
+correlated inserts are with queries. Fig.~\ref{fig:recallrisk} measures $R(W)$ on
+SIFT1M ($N{=}10^6$, $k{=}10$) in two regimes. \emph{Benign} (insertion order
+uncorrelated with queries): the empirical curve tracks $W/N$ and sits
+$\sim$$10^3\times$ below the worst case---at our group-commit batch ($W{=}2{,}000$)
+a crash risks only $0.13\%$ of recall@10, versus the $100\%$ the distribution-free
+bound admits, while delivering the $4.3\times$ throughput of Table~\ref{tab:gc}.
+\emph{Adversarial} (the un-durable window is exactly the query-hot vectors---i.e.\
+``query the freshly-inserted data''): $R$ rises steeply, $21\%$ at $W{=}2{,}000$ and
+$100\%$ by $W{=}10^4$, so here small windows are mandatory. A real deployment sits
+between these, set by its insert/query correlation.
 
-This yields a simple \emph{recall-aware commit} policy: given a target $\varepsilon$
-and a workload assumption, flush before $W$ exceeds the corresponding
-threshold---$W{=}\varepsilon k$ for the adversarial guarantee, or
-$W{=}\varepsilon N$ for the benign expectation---and otherwise use the largest safe
-batch. The measured margin makes the benign threshold enormous ($\varepsilon{=}1\%$
-allows $W{=}10^4$ on SIFT1M), so a recall-staleness SLA and full group-commit
-throughput are compatible for typical workloads. To our knowledge this is the first
-durability guarantee stated in recall units for an ANN index; a crash-time
-enforcement implementation and a proof under weaker-than-independence assumptions
-are future work. The construction is ANN-specific: it exploits that an approximate
-index already tolerates small recall perturbations, so a bounded loss of the newest
-vectors is a principled, quantifiable relaxation rather than a correctness bug.
+This yields a \emph{recall-aware commit} policy: pick the largest batch $W$ whose
+$R(W)\le\varepsilon$ for the deployment's regime---$W{=}\varepsilon N$ under the
+benign expectation (enormous: $\varepsilon{=}1\%$ allows $W{=}10^4$ on SIFT1M, i.e.\
+full group-commit throughput), tightening toward $W{=}\varepsilon k$ as inserts
+become query-correlated (the adversarial curve shows $\varepsilon{=}1\%$ then needs
+$W\!\approx\!10^2$). To our knowledge this is the first durability guarantee stated
+in recall units for an ANN index; a crash-time enforcement implementation and a
+proof under weaker-than-independence assumptions are future work. The construction
+is ANN-specific: it exploits that an approximate index already tolerates small
+recall perturbations, so a bounded loss of the newest vectors is a principled,
+quantifiable relaxation rather than a correctness bug.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.66\linewidth]{figs/recall_staleness_sift1m.pdf}
 \caption{Recall-bounded durability on SIFT1M ($N{=}10^6$). Recall@10 at risk from a
 crash, $R(W)$, vs.\ the un-durable window $W$: the distribution-free worst case
-$\min(W,k)/k$ (provable), the benign expectation $W/N$, and the measured empirical
-value (benign query set). The measured exposure sits $\sim$$10^3\times$ below the
-worst case; at $W{=}2{,}000$ (our group-commit batch) it is $0.13\%$. Shaded band =
+$\min(W,k)/k$ (provable), the benign expectation $W/N$, the measured benign value,
+and the measured \emph{adversarial} value (un-durable window = query-hot vectors).
+The benign exposure sits $\sim$$10^3\times$ below the worst case ($0.13\%$ at
+$W{=}2{,}000$, our group-commit batch); the adversarial curve rises to $100\%$ by
+$W{=}10^4$, so the safe window depends on insert/query correlation. Shaded band =
 measurement resolution ($10^{-4}$).}
 \label{fig:recallrisk}
 \end{figure}
@@ -470,10 +475,14 @@ min--max whiskers, log $y$). Snapshot load is near-flat; WAL replay grows $\sim$
 The practical consequence: because WAL replay pays a full graph rebuild while
 snapshot load pays a much smaller per-element cost, an unsealed WAL that grows large
 eventually exceeds any recovery-time budget---the operational justification for
-periodic sealing.
-Charting this budget crossover on real media, and validating consistency under
-true power loss (Linux \texttt{dm-log-writes}), is the main remaining measurement
-(\S\ref{sec:threats}).
+periodic sealing. Extending the sweep confirms the trend holds an order of magnitude
+further: the gap grows monotonically to $\sim$157$\times$ at $N{=}20$k (sealed
+$\sim$37\,ms vs.\ WAL replay $\sim$5.9\,s), replay staying $O(N)$ while snapshot load
+grows far more slowly. (Recovery is \fsync{}-mode-independent for the replay path, so
+this extension was run under plain \fsync{}; the sealed path differs only by a small
+constant.) Charting the budget crossover on real media, and validating consistency
+under true power loss (Linux \texttt{dm-log-writes}, harness in
+\S\ref{sec:threats}), remain the main hardware-gated measurements.
 
 \section{Index Competitiveness}
 \label{sec:index}
