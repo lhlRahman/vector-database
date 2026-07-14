@@ -34,10 +34,10 @@ do not claim novel storage mechanisms (group commit and snapshot recovery are
 textbook), but rather a reusable way to measure durability honestly for a graph
 ANN index, together with an illustrative characterization on one host. Using a
 from-scratch C++20 vector database with a segmented, write-ahead-logged (WAL)
-HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M and sits on the
-hnswlib recall--QPS Pareto front, confirming we measure on a competitive, not a
-broken, index---we contribute the following in a preliminary single-host study
-(Apple M4 Pro). (1) A \emph{durability-aware measurement protocol} for ANN
+HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M (and $0.98$ on the
+harder $960$-d GIST1M) and sits on the hnswlib recall--QPS Pareto front, confirming
+we measure on a competitive, not a broken, index---we contribute the following in a
+preliminary single-host study (Apple M4 Pro). (1) A \emph{durability-aware measurement protocol} for ANN
 indexes: a tmpfs (RAM-backed filesystem) guard, an \fsync{}-floor baseline, and
 mandatory \fsync{}-mode labeling, because on some platforms the default \fsync{}
 does not flush the drive cache and so reports optimistic ``durable'' numbers.
@@ -475,6 +475,38 @@ $1.02\times$ QPS (single-run, within timing noise), i.e.\ the two are
 Pareto-equivalent. Up-and-to-the-right is better.}
 \label{fig:pareto}
 \end{figure}
+
+\paragraph{GIST1M (960-d).} On the higher-dimensional GIST1M benchmark (1M
+$960$-d vectors, shipped exact 100-NN ground truth) the index behaves as expected
+of a correct HNSW on a harder dataset: recall@10 climbs monotonically from $0.48$
+at $\mathrm{ef}{=}10$ to $0.984$ at $\mathrm{ef}{=}500$ (Table~\ref{tab:gist}),
+reaching $0.94$ at $526$~QPS ($\mathrm{ef}{=}200$); the full graph builds in
+$2{,}567$\,s (peak arena $999$\,MiB). GIST's weaker neighbor structure and
+$7.5\times$ higher per-distance cost give lower recall-per-$\mathrm{ef}$ and
+$\sim$$10\times$ lower QPS than SIFT1M, consistent with published HNSW behavior.
+We report our index only on GIST1M; the head-to-head parity with hnswlib is
+established on SIFT1M (Table~\ref{tab:recall}), and a GIST hnswlib baseline is left
+to the full version.
+
+\begin{table}[t]
+\centering
+\caption{Recall@10 vs.\ single-thread QPS on GIST1M (Apple M4 Pro, $d{=}960$,
+$n{=}10^6$, $M{=}16$, $\mathrm{ef}_{\mathrm{construction}}{=}200$; build $2{,}567$\,s),
+ID-set recall@10 against the shipped exact ground truth. QPS is single-run.}
+\label{tab:gist}
+\begin{tabular}{rrr}
+\toprule
+$\mathrm{ef}$ & recall@10 & QPS \\
+\midrule
+10  & 0.484 & 5{,}381 \\
+32  & 0.709 & 2{,}417 \\
+64  & 0.825 & 1{,}400 \\
+100 & 0.879 &   963 \\
+200 & 0.940 &   526 \\
+500 & 0.984 &   238 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Related Work}
 \label{sec:related}

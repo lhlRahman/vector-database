@@ -79,9 +79,13 @@ of it down with group commit, and recover fast via sealed HNSW snapshots.
   consistency lineage cites, speedup rounding note, dimension robustness caveat).
 - Verified this session: `make test` 50/50; e2e clean under ThreadSanitizer (0 races);
   WAL + sealed-segment fuzz clean under ASan+UBSan. Committed (dcf6028).
+- **GIST1M (960-d) DONE** (ours): recall@10 0.48->0.984 monotonic, 0.94@526 QPS (ef=200),
+  build 2567s; folded into §7 (Table tab:gist) + abstract. hnswlib-GIST baseline + real-SIFT
+  durability were queued but stopped (laptop taken to work) — rerun via scripts/queue_after_gist.sh.
+- fuzz-db-ops also verified clean under ASan+UBSan (65k runs, 0 errors).
 - REMAINING (needs hardware/experiments, honest future work): Linux/NVMe + power-loss
-  (dm-log-writes); durability tax/recovery on real SIFT/GIST embeddings; N-sweep to
-  competitiveness scale; GIST1M (960-d) run.
+  (dm-log-writes); GIST hnswlib head-to-head; durability tax/recovery on real embeddings
+  (bench_durability --data is wired + queued); N-sweep to competitiveness scale.
 
 ## Preliminary results already measured in this repo (M4 Pro, `-mcpu=native`)
 - **Durability tax / group commit** (`make bench-durability`; synthetic, d=64):
