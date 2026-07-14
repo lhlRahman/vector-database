@@ -79,13 +79,15 @@ of it down with group commit, and recover fast via sealed HNSW snapshots.
   consistency lineage cites, speedup rounding note, dimension robustness caveat).
 - Verified this session: `make test` 50/50; e2e clean under ThreadSanitizer (0 races);
   WAL + sealed-segment fuzz clean under ASan+UBSan. Committed (dcf6028).
-- **GIST1M (960-d) DONE** (ours): recall@10 0.48->0.984 monotonic, 0.94@526 QPS (ef=200),
-  build 2567s; folded into §7 (Table tab:gist) + abstract. hnswlib-GIST baseline + real-SIFT
-  durability were queued but stopped (laptop taken to work) — rerun via scripts/queue_after_gist.sh.
+- **GIST1M (960-d) head-to-head DONE**: ours recall@10 0.48->0.984 vs hnswlib 0.41->0.964;
+  ours ABOVE hnswlib on BOTH axes at every ef (+5.5 recall pts, 1.18x QPS mean). Folded into
+  §7 (tab:gist + fig:gistpareto) + abstract. hnswlib GIST build 394s vs ours 2567s.
+- **Real-SIFT-embedding durability DONE**: tax reproduces on real vectors within trial spread
+  (floor 48.8k/322, per-write 408/111, gc 4.0x) -> retires the synthetic-vector threat (§4).
 - fuzz-db-ops also verified clean under ASan+UBSan (65k runs, 0 errors).
-- REMAINING (needs hardware/experiments, honest future work): Linux/NVMe + power-loss
-  (dm-log-writes); GIST hnswlib head-to-head; durability tax/recovery on real embeddings
-  (bench_durability --data is wired + queued); N-sweep to competitiveness scale.
+- Paper now 13 pages, 6 tables + 5 figures, compiles clean.
+- REMAINING (needs hardware, honest future work): Linux/NVMe + power-loss (dm-log-writes);
+  recovery/tax N-sweep to 1e6 scale; concurrent group committer; recall-staleness bound.
 
 ## Preliminary results already measured in this repo (M4 Pro, `-mcpu=native`)
 - **Durability tax / group commit** (`make bench-durability`; synthetic, d=64):

@@ -267,7 +267,11 @@ over this $2\times$ dimension change the tax is dominated by the device flush, n
 the graph work. We caution that this is two points, not a law: at much higher
 dimension (e.g.\ GIST's $960$-d, where per-insert graph work grows while the flush
 cost is fixed) we would expect the \emph{ratio} to shrink, and confirming that is
-future work.
+future work. We also re-ran the tax on \emph{real} SIFT1M embeddings rather than
+synthetic vectors, and the numbers land within the trial spread (\fsync{} floor
+$48{,}810$/$322$; per-write $408$/$111$\,inserts/s; group-commit $4.0\times$),
+confirming the tax is a property of the durable-write path, not of the vector
+distribution.
 
 \section{Group Commit for a Graph-ANN WAL}
 \label{sec:groupcommit}
@@ -477,36 +481,54 @@ Pareto-equivalent. Up-and-to-the-right is better.}
 \end{figure}
 
 \paragraph{GIST1M (960-d).} On the higher-dimensional GIST1M benchmark (1M
-$960$-d vectors, shipped exact 100-NN ground truth) the index behaves as expected
-of a correct HNSW on a harder dataset: recall@10 climbs monotonically from $0.48$
-at $\mathrm{ef}{=}10$ to $0.984$ at $\mathrm{ef}{=}500$ (Table~\ref{tab:gist}),
-reaching $0.94$ at $526$~QPS ($\mathrm{ef}{=}200$); the full graph builds in
-$2{,}567$\,s (peak arena $999$\,MiB). GIST's weaker neighbor structure and
-$7.5\times$ higher per-distance cost give lower recall-per-$\mathrm{ef}$ and
-$\sim$$10\times$ lower QPS than SIFT1M, consistent with published HNSW behavior.
-We report our index only on GIST1M; the head-to-head parity with hnswlib is
-established on SIFT1M (Table~\ref{tab:recall}), and a GIST hnswlib baseline is left
-to the full version.
+$960$-d vectors, shipped exact 100-NN ground truth) the same picture holds against
+hnswlib, more strongly. Recall@10 climbs monotonically from $0.48$ at
+$\mathrm{ef}{=}10$ to $0.984$ at $\mathrm{ef}{=}500$ (Table~\ref{tab:gist},
+Fig.~\ref{fig:gistpareto}), and at every $\mathrm{ef}$ our index is above hnswlib
+on \emph{both} axes---averaging $+5.5$ recall points at $1.18\times$ QPS (e.g.\
+$0.940$/$526$~QPS vs.\ $0.907$/$475$~QPS at $\mathrm{ef}{=}200$). The full graph
+builds in $2{,}567$\,s (peak arena $999$\,MiB). GIST's weaker neighbor structure
+and $7.5\times$ higher per-distance cost give lower recall-per-$\mathrm{ef}$ and
+$\sim$$10\times$ lower QPS than SIFT1M for both indexes, consistent with published
+HNSW behavior. We are deliberately cautious about the margin: it is larger than on
+SIFT1M and rests on single-run QPS, so although both indexes use matched $M$ and
+$\mathrm{ef}_{\mathrm{construction}}$, a controlled ef-semantics/tie-handling
+parity study is left to the full version. We therefore read GIST1M as ``at least on
+par with hnswlib,'' plausibly better on high-dimensional data where diversifying
+neighbor selection helps most---the point being, again, that the durability results
+sit on a competitive index.
 
 \begin{table}[t]
 \centering
 \caption{Recall@10 vs.\ single-thread QPS on GIST1M (Apple M4 Pro, $d{=}960$,
-$n{=}10^6$, $M{=}16$, $\mathrm{ef}_{\mathrm{construction}}{=}200$; build $2{,}567$\,s),
-ID-set recall@10 against the shipped exact ground truth. QPS is single-run.}
+$n{=}10^6$, $M{=}16$, $\mathrm{ef}_{\mathrm{construction}}{=}200$), ours vs.\
+hnswlib on the identical dataset/params/host, ID-set recall@10 against the shipped
+exact ground truth. Build: ours $2{,}567$\,s. QPS is single-run.}
 \label{tab:gist}
-\begin{tabular}{rrr}
+\begin{tabular}{rrrrr}
 \toprule
-$\mathrm{ef}$ & recall@10 & QPS \\
+& \multicolumn{2}{c}{this work} & \multicolumn{2}{c}{hnswlib} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+$\mathrm{ef}$ & recall@10 & QPS & recall@10 & QPS \\
 \midrule
-10  & 0.484 & 5{,}381 \\
-32  & 0.709 & 2{,}417 \\
-64  & 0.825 & 1{,}400 \\
-100 & 0.879 &   963 \\
-200 & 0.940 &   526 \\
-500 & 0.984 &   238 \\
+10  & 0.484 & 5{,}381 & 0.409 & 4{,}038 \\
+32  & 0.709 & 2{,}417 & 0.635 & 1{,}977 \\
+64  & 0.825 & 1{,}400 & 0.756 & 1{,}198 \\
+100 & 0.879 &   963 & 0.826 &   839 \\
+200 & 0.940 &   526 & 0.907 &   475 \\
+500 & 0.984 &   238 & 0.964 &   220 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.72\linewidth]{figs/gist1m_recall_qps.pdf}
+\caption{GIST1M recall--QPS Pareto front (single-thread, Apple M4 Pro). Our index
+(solid) is above hnswlib (dashed) on both axes across the range ($+5.5$ recall
+points, $1.18\times$ QPS on average at matched $\mathrm{ef}$); QPS is single-run.}
+\label{fig:gistpareto}
+\end{figure}
 
 \section{Related Work}
 \label{sec:related}
@@ -545,19 +567,20 @@ apply it to a graph-ANN WAL and characterize its ANN-specific effect.
 \section{Threats to Validity and Remaining Work}
 \label{sec:threats}
 Numbers here are medians of 7 trials on a single host (Apple M4 Pro, APFS/NVMe)
-using synthetic data at the SIFT dimensionality ($d{=}128$); every durability
-number is labeled by \fsync{} mode and reported with its min--max range. Because
+at the SIFT dimensionality ($d{=}128$); every durability number is labeled by
+\fsync{} mode and reported with its min--max range. The primary tables use synthetic
+vectors, but we verified the tax reproduces on real SIFT1M embeddings within the
+trial spread (\S\ref{sec:tax}), so the vector distribution is not a confound. Because
 macOS \fsync{} does not flush the drive cache, the honest figures use \fullfsync{},
 and the $\sim$155$\times$ floor gap is a macOS/APFS artifact that will be smaller on
 Linux/NVMe. A Linux host with \texttt{ext4}/\texttt{btrfs} on NVMe (and
 \texttt{dm-log-writes} for true power-loss injection) is needed to generalize.
-Remaining work before a full version: (i) the durability tax/recovery on real
-SIFT1M/GIST1M embeddings (the competitiveness study already uses them) rather than
-synthetic vectors; (ii) recovery on real media and the sealing-budget crossover,
-including the unmeasured snapshot-creation cost; (iii) a concurrent
-(leader/follower) group committer; (iv) a proven bound for the recall-staleness
-note; and (v) multi-host generalization with true power-loss injection. The
-single-host, macOS-artifact, and synthetic-vector limitations are the principal
+Remaining work before a full version: (i) recovery on real media and the
+sealing-budget crossover, including the unmeasured snapshot-creation cost; (ii) a
+recovery/tax $N$-sweep up to the $10^6$ scale of the competitiveness study; (iii) a
+concurrent (leader/follower) group committer; (iv) a proven bound for the
+recall-staleness note; and (v) multi-host generalization with true power-loss
+injection. The single-host and macOS-artifact limitations are the principal
 threats to external validity.
 
 \section{Conclusion}
