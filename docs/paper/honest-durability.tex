@@ -489,8 +489,9 @@ on \emph{both} axes---averaging $+5.5$ recall points at $1.18\times$ QPS (e.g.\
 $0.940$/$526$~QPS vs.\ $0.907$/$475$~QPS at $\mathrm{ef}{=}200$). The full graph
 builds in $2{,}567$\,s (peak arena $999$\,MiB). GIST's weaker neighbor structure
 and $7.5\times$ higher per-distance cost give lower recall-per-$\mathrm{ef}$ and
-$\sim$$10\times$ lower QPS than SIFT1M for both indexes, consistent with published
-HNSW behavior. We are deliberately cautious about the margin: it is larger than on
+$\sim$$4\times$ lower QPS at matched $\mathrm{ef}$ than SIFT1M for both indexes
+(and a larger gap, $\sim$$15$--$25\times$, at matched recall), consistent with
+published HNSW behavior. We are deliberately cautious about the margin: it is larger than on
 SIFT1M and rests on single-run QPS, so although both indexes use matched $M$ and
 $\mathrm{ef}_{\mathrm{construction}}$, a controlled ef-semantics/tie-handling
 parity study is left to the full version. We therefore read GIST1M as ``at least on
