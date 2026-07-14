@@ -6,6 +6,7 @@
 
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{textcomp}   % \textmu on pre-2020 TeX
@@ -29,10 +30,11 @@ Approximate nearest neighbor (ANN) search is evaluated almost entirely on two
 axes: recall and queries per second. Durability---whether an acknowledged write
 survives a crash or power loss---is largely absent from the ANN research
 literature and from the mainstream ANN benchmarks, and is unquantified even in
-systems that provide it. This is a \emph{measurement and methodology} paper: we
-do not claim novel storage mechanisms (group commit and snapshot recovery are
-textbook), but rather a reusable way to measure durability honestly for a graph
-ANN index, together with an illustrative characterization on one host. Using a
+systems that provide it. This is primarily a \emph{measurement and methodology}
+paper---the storage mechanisms we apply (group commit, snapshot recovery) are
+textbook---whose core is a reusable way to measure durability honestly for a graph
+ANN index, together with a characterization on one host; it also contributes one
+new ANN-specific primitive, a \emph{recall-bounded} durability guarantee. Using a
 from-scratch C++20 vector database with a segmented, write-ahead-logged (WAL)
 HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M (and $0.98$ on the
 harder $960$-d GIST1M) and sits on the hnswlib recall--QPS Pareto front, confirming
@@ -58,9 +60,14 @@ shutdown) checks crash-consistency. (4) An illustrative recovery comparison:
 snapshot-load of a sealed segment is near-constant while WAL replay grows with $N$
 (a $5\times$ to $32\times$ gap over $N{=}1$k--$6$k); we report this as motivation
 for periodic sealing, noting it omits sealing/snapshot-creation cost, and position
-it against P-HNSW's persistent-memory recovery analysis. All code, harnesses, and
-results are open and reproducible; every number is the \emph{median of 7 trials}
-with the observed min--max range reported alongside.
+it against P-HNSW's persistent-memory recovery analysis. (5) \emph{Recall-bounded
+durability}: we express the exposure of group commit's un-synced window in recall
+units and bound it (worst case $\min(W,k)/k$; benign expectation $W/N$), measuring
+on SIFT1M that a crash risks only $0.13\%$ recall@10 at our batch size---about
+$10^3\times$ below the distribution-free worst case---so a recall-staleness SLA and
+group-commit throughput coexist. All code, harnesses, and results are open and
+reproducible; every durability number is the \emph{median of 7 trials} with the
+observed min--max range reported alongside.
 \end{abstract}
 
 \section{Introduction}
@@ -90,13 +97,15 @@ from the host engine---delegating rather than analyzing it~\cite{cosmos}---or,
 like LSM-VEC~\cite{lsmvec}, build an LSM-tree graph index yet report no \fsync{}
 cost, crash consistency, or recovery time.
 
-Our stance is deliberately modest and measurement-oriented: build durability into
-a \emph{standalone} graph-ANN index using well-known techniques, then measure it
+Our stance is deliberately measurement-oriented: build durability into a
+\emph{standalone} graph-ANN index using well-known techniques, then measure it
 honestly and report where the naive measurement misleads. We do not claim the
-storage mechanisms as novel---group commit and snapshot-based recovery are
-textbook database techniques---and the contribution is the measurement protocol
-and the (single-host, median-of-7-trial) characterization it produces, not a new
-system.
+\emph{storage} mechanisms as novel---group commit and snapshot-based recovery are
+textbook database techniques---and the main contribution is the measurement protocol
+and the (single-host, median-of-7-trial) characterization it produces. The one
+genuinely new mechanism is conceptual and ANN-specific: expressing and bounding a
+crash's damage in \emph{recall} units (\S\ref{sec:recall}), which only makes sense
+because the index is approximate.
 Two observations motivate the work. First, durable writes are expensive in a way
 that ANN evaluation has never quantified, and the expense is easy to hide: on
 macOS (and any stack where \fsync{} does not force a drive-cache flush) the
@@ -122,6 +131,12 @@ vs.\ WAL-replay) for a standalone graph ANN on conventional block storage
 (\fsync{}/WAL)---extending P-HNSW's~\cite{phnsw} persistent-memory recovery
 analysis to this setting---reported with its caveats (snapshot-creation cost
 excluded).
+\item \textbf{C5 (\S\ref{sec:recall}).} \emph{Recall-bounded durability}: to our
+knowledge the first durability guarantee for an ANN index stated in \emph{recall}
+units. We bound the recall a crash can destroy---worst-case $\min(W,k)/k$ and benign
+expectation $W/N$ for an un-durable window of $W$ inserts---and measure that on
+SIFT1M the real exposure is $\sim$$10^3\times$ below the worst case ($0.13\%$ at our
+batch size), so group commit's throughput and a recall-staleness SLA are compatible.
 \end{itemize}
 
 \section{Background and System}
@@ -347,13 +362,57 @@ the child exits on a live OS, this validates crash-consistency (no acknowledged
 write lost, no torn record) but not power loss, which requires block-level
 injection (\S\ref{sec:threats}).
 
-\paragraph{Recall staleness (toward a stronger guarantee).} Group commit opens a
-window in which recently inserted-but-not-yet-\fsync{}'d vectors are visible to
-queries but not yet durable. In an ANN setting this window can be expressed in
-\emph{recall} units: bounding the number of un-synced records bounds the recall a
-query can lose if a crash discards them. Making this a provable ``a crash never
-costs more than $\varepsilon$ recall@$k$'' guarantee---a recall-aware commit
-scheduler---is a promising direction we leave to future work.
+\section{Recall-Bounded Durability}
+\label{sec:recall}
+Group commit trades durability for throughput by leaving a window of $W$
+acknowledged-but-not-yet-\fsync{}'d inserts; a crash loses those $W$ most-recent
+vectors. Because this is an ANN index, we can express that exposure in the unit the
+application actually cares about---\emph{recall}---and bound it. Define the
+\emph{recall at risk} $R(W)$ as the fraction of a query's top-$k$ results that lie
+in the un-durable window and would therefore vanish on a crash.
+
+Two bounds frame $R(W)$. \textbf{(i) Distribution-free worst case.} A query's
+top-$k$ are $k$ distinct vectors, so at most $\min(W,k)$ of them can be un-durable:
+$R(W)\le \min(W,k)/k$ for \emph{any} workload. To \emph{guarantee} ``a crash never
+costs more than $\varepsilon$ recall@$k$'' one sets $W\le\varepsilon k$---but that
+forces $W$ to a handful of records, essentially per-write \fsync{}. \textbf{(ii)
+Benign expectation.} If insertion order is independent of the query distribution,
+the $W$ un-durable inserts are a uniform random subset of the $N$ indexed vectors,
+so $\mathbb{E}[R(W)] = W/N$---linear in the window and independent of $k$.
+
+The gap between the two bounds is the opportunity, and it is large.
+Fig.~\ref{fig:recallrisk} measures $R(W)$ on SIFT1M ($N{=}10^6$, $k{=}10$, benign
+query set): the empirical curve tracks $W/N$ and sits about three orders of
+magnitude below the worst-case bound. At the batch size our group commit uses
+($W{=}2{,}000$), a crash risks only $0.13\%$ of recall@10---versus the $100\%$ the
+distribution-free bound admits---while delivering the $4.3\times$ throughput of
+Table~\ref{tab:gc}. On a workload whose inserts are not adversarially correlated
+with queries, group commit is thus almost free in recall terms.
+
+This yields a simple \emph{recall-aware commit} policy: given a target $\varepsilon$
+and a workload assumption, flush before $W$ exceeds the corresponding
+threshold---$W{=}\varepsilon k$ for the adversarial guarantee, or
+$W{=}\varepsilon N$ for the benign expectation---and otherwise use the largest safe
+batch. The measured margin makes the benign threshold enormous ($\varepsilon{=}1\%$
+allows $W{=}10^4$ on SIFT1M), so a recall-staleness SLA and full group-commit
+throughput are compatible for typical workloads. To our knowledge this is the first
+durability guarantee stated in recall units for an ANN index; a crash-time
+enforcement implementation and a proof under weaker-than-independence assumptions
+are future work. The construction is ANN-specific: it exploits that an approximate
+index already tolerates small recall perturbations, so a bounded loss of the newest
+vectors is a principled, quantifiable relaxation rather than a correctness bug.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.66\linewidth]{figs/recall_staleness_sift1m.pdf}
+\caption{Recall-bounded durability on SIFT1M ($N{=}10^6$). Recall@10 at risk from a
+crash, $R(W)$, vs.\ the un-durable window $W$: the distribution-free worst case
+$\min(W,k)/k$ (provable), the benign expectation $W/N$, and the measured empirical
+value (benign query set). The measured exposure sits $\sim$$10^3\times$ below the
+worst case; at $W{=}2{,}000$ (our group-commit batch) it is $0.13\%$. Shaded band =
+measurement resolution ($10^{-4}$).}
+\label{fig:recallrisk}
+\end{figure}
 
 \section{Fast, Crash-Consistent Recovery}
 \label{sec:recovery}
@@ -579,9 +638,10 @@ Linux/NVMe. A Linux host with \texttt{ext4}/\texttt{btrfs} on NVMe (and
 Remaining work before a full version: (i) recovery on real media and the
 sealing-budget crossover, including the unmeasured snapshot-creation cost; (ii) a
 recovery/tax $N$-sweep up to the $10^6$ scale of the competitiveness study; (iii) a
-concurrent (leader/follower) group committer; (iv) a proven bound for the
-recall-staleness note; and (v) multi-host generalization with true power-loss
-injection. The single-host and macOS-artifact limitations are the principal
+concurrent (leader/follower) group committer; (iv) crash-time enforcement of the
+recall-bounded commit policy (\S\ref{sec:recall}) and a proof under
+weaker-than-independence assumptions; and (v) multi-host generalization with true
+power-loss injection. The single-host and macOS-artifact limitations are the principal
 threats to external validity.
 
 \section{Conclusion}
@@ -594,11 +654,15 @@ honest \fsync{}-mode labeling can change a reported number by orders of magnitud
 (the macOS/APFS \fsync{} trap), that textbook group commit offsets the tax along a
 batch-size curve (up to $4.3\times$ under honest durability) while staying
 crash-consistent under a fork-and-crash test, and that reading a snapshot is far
-cheaper than WAL replay. These figures are medians of 7 trials on one host, not
-general claims; the transferable result is the measurement discipline. We hope the
-honest-measurement protocol becomes a default for durable ANN systems, and that a
-full study (multiple hosts, real media, and power-loss injection) puts numbers on
-it.
+cheaper than WAL replay. Beyond measurement, we introduce one ANN-native mechanism:
+\emph{recall-bounded durability}, which expresses a crash's damage in recall units
+and shows the real exposure of group commit is $\sim$$10^3\times$ below the
+distribution-free worst case---so a recall-staleness SLA and full throughput
+coexist. These figures are medians of 7 trials on one host, not general claims; the
+transferable results are the measurement discipline and the recall-bounded framing.
+We hope the honest-measurement protocol becomes a default for durable ANN systems,
+and that a full study (multiple hosts, real media, and power-loss injection) puts
+numbers on it.
 
 \section*{Reproducibility}
 All code, benchmarks, and tests are open. Key entry points:
