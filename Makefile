@@ -215,6 +215,19 @@ bench-ann: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
 	@echo "ANN benchmark built: $(ANN_BENCH)"
 	@./$(ANN_BENCH) $(ANN_ARGS)
 
+# Recall-bounded durability: recall-at-risk vs un-durable window size W.
+# make bench-recall-staleness ANN_ARGS="--data datasets/sift"
+RECALL_STALENESS_BENCH = $(BUILD_DIR)/bench_recall_staleness
+bench-recall-staleness: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/bench_recall_staleness.cpp -o $(BUILD_DIR)/bench_recall_staleness.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_recall_staleness.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(RECALL_STALENESS_BENCH)
+	@echo "recall-staleness benchmark built: $(RECALL_STALENESS_BENCH)"
+	@./$(RECALL_STALENESS_BENCH) $(ANN_ARGS)
+
 # Durability benchmark — per-write fsync vs group commit, fsync floor, recovery.
 # make bench-durability DURABILITY_ARGS="--full-fsync --dir /path/on/nvme"
 DURABILITY_ARGS ?=
@@ -445,4 +458,4 @@ fuzz: fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sea
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops

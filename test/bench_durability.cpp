@@ -112,7 +112,7 @@ double fsync_floor(const std::filesystem::path& dir, int n, bool full) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dir_arg, data_arg;
+    std::string dir_arg, data_arg, recn_arg, tag_arg;
     bool full = false;
     size_t N = 2000, D = 128, TRIALS = 7;
     for (int i = 1; i < argc; ++i) {
@@ -120,6 +120,8 @@ int main(int argc, char** argv) {
         if (a == "--full-fsync") full = true;
         else if (a == "--dir" && i + 1 < argc) dir_arg = argv[++i];
         else if (a == "--data" && i + 1 < argc) data_arg = argv[++i];
+        else if (a == "--recn" && i + 1 < argc) recn_arg = argv[++i];   // e.g. "1000,10000,50000"
+        else if (a == "--tag" && i + 1 < argc) tag_arg = argv[++i];     // CSV filename suffix
         else if (a == "--n" && i + 1 < argc) N = std::stoul(argv[++i]);
         else if (a == "--d" && i + 1 < argc) D = std::stoul(argv[++i]);
         else if (a == "--trials" && i + 1 < argc) TRIALS = std::stoul(argv[++i]);
@@ -176,7 +178,14 @@ int main(int argc, char** argv) {
     };
 
     const std::vector<size_t> batch_sizes = {1, 10, 50, 200, 1000, N};
-    const std::vector<size_t> rec_N = {1000, 3000, 6000};
+    std::vector<size_t> rec_N = {1000, 3000, 6000};
+    if (!recn_arg.empty()) {                      // override recovery-N sweep, e.g. "1000,10000,50000"
+        rec_N.clear();
+        size_t pos = 0, comma;
+        do { comma = recn_arg.find(',', pos);
+             rec_N.push_back(std::stoul(recn_arg.substr(pos, comma - pos)));
+             pos = comma + 1; } while (comma != std::string::npos);
+    }
 
     std::vector<double> floor_s, pw_qps, pw_p50, pw_p99, pw_max;
     std::map<size_t, std::vector<double>> gc_qps;                 // batch size -> qps/trial
@@ -299,7 +308,8 @@ int main(int argc, char** argv) {
 
     // Machine-readable summary (one block; easy to transcribe into paper tables).
     std::filesystem::create_directories("build/durability_results");
-    std::string tag = std::string(full ? "full" : "plain") + (real_n ? "_real" : "");
+    std::string tag = std::string(full ? "full" : "plain") + (real_n ? "_real" : "") +
+                      (tag_arg.empty() ? "" : "_" + tag_arg);
     std::ofstream csv("build/durability_results/durability_" + tag + "_d" + std::to_string(D) + ".csv");
     csv << "metric,d,mode,median,min,max\n";
     auto row = [&](const char* m, const Stat& s) {
