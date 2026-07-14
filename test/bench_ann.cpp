@@ -69,8 +69,21 @@ Dataset make_synthetic(size_t nb, size_t nq, size_t d, size_t clusters, unsigned
 
 Dataset load_real(const std::string& dir) {
     namespace fs = std::filesystem;
-    auto base = vecs_io::load_fvecs((fs::path(dir) / "sift_base.fvecs").string());
-    auto query = vecs_io::load_fvecs((fs::path(dir) / "sift_query.fvecs").string());
+    // Dataset-agnostic: find whatever *_base.fvecs / *_query.fvecs the dir ships
+    // (sift_*, gist_*, ...), so the same loader path serves SIFT1M and GIST1M.
+    std::string base_path, query_path;
+    auto ends_with = [](const std::string& s, const std::string& suf) {
+        return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+    };
+    for (const auto& e : fs::directory_iterator(dir)) {
+        auto name = e.path().filename().string();
+        if (ends_with(name, "_base.fvecs")) base_path = e.path().string();
+        else if (ends_with(name, "_query.fvecs")) query_path = e.path().string();
+    }
+    if (base_path.empty() || query_path.empty())
+        throw std::runtime_error("no *_base.fvecs / *_query.fvecs found in " + dir);
+    auto base = vecs_io::load_fvecs(base_path);
+    auto query = vecs_io::load_fvecs(query_path);
     if (base.d != query.d) throw std::runtime_error("base/query dimension mismatch");
     Dataset ds;
     ds.d = base.d; ds.nb = base.n; ds.nq = query.n;

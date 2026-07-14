@@ -38,6 +38,7 @@
 
 #include "../src/core/vector_database.hpp"
 #include "../src/utils/atomic_write.hpp"
+#include "../src/utils/vecs_io.hpp"
 
 using Clock = std::chrono::steady_clock;
 
@@ -111,18 +112,42 @@ double fsync_floor(const std::filesystem::path& dir, int n, bool full) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dir_arg;
+    std::string dir_arg, data_arg;
     bool full = false;
     size_t N = 2000, D = 128, TRIALS = 7;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--full-fsync") full = true;
         else if (a == "--dir" && i + 1 < argc) dir_arg = argv[++i];
+        else if (a == "--data" && i + 1 < argc) data_arg = argv[++i];
         else if (a == "--n" && i + 1 < argc) N = std::stoul(argv[++i]);
         else if (a == "--d" && i + 1 < argc) D = std::stoul(argv[++i]);
         else if (a == "--trials" && i + 1 < argc) TRIALS = std::stoul(argv[++i]);
     }
     if (full) vdb::io::set_full_fsync(true);
+
+    // Optional: draw the insert stream from a REAL embedding set (*_base.fvecs)
+    // instead of synthetic uniform-random vectors, so the tax is measured on real
+    // data. D is then set by the file's dimensionality.
+    std::vector<float> real_data;
+    size_t real_n = 0;
+    if (!data_arg.empty()) {
+        std::string base_p;
+        for (const auto& e : std::filesystem::directory_iterator(data_arg)) {
+            auto n = e.path().filename().string();
+            if (n.size() >= 11 && n.compare(n.size() - 11, 11, "_base.fvecs") == 0) { base_p = e.path().string(); break; }
+        }
+        if (base_p.empty()) { std::cerr << "no *_base.fvecs in " << data_arg << "\n"; return 2; }
+        auto m = vecs_io::load_fvecs(base_p);            // may be large; we only need a slice
+        real_n = std::min<size_t>(m.n, 20000);            // enough to cover N and recovery sizes
+        D = m.d;
+        real_data.assign(m.data.begin(), m.data.begin() + real_n * D);
+        std::cout << "using real embeddings from " << base_p << " (" << real_n << " x " << D << ")\n";
+    }
+    auto sample = [&](size_t i, std::mt19937& rng) -> std::vector<float> {
+        if (real_n) { const float* p = real_data.data() + (i % real_n) * D; return std::vector<float>(p, p + D); }
+        return rand_vec(D, rng);
+    };
 
     std::filesystem::path root = dir_arg.empty()
         ? (std::filesystem::temp_directory_path() / ("durability_bench_" + std::to_string(::getpid())))
@@ -169,7 +194,7 @@ int main(int argc, char** argv) {
             lat.reserve(N);
             auto t0 = Clock::now();
             for (size_t i = 0; i < N; ++i) {
-                auto v = rand_vec(D, rng);
+                auto v = sample(i, rng);
                 auto s = Clock::now();
                 (void)db->insert(Vector(v), "k" + std::to_string(i));
                 lat.push_back(std::chrono::duration<double, std::micro>(Clock::now() - s).count());
@@ -196,7 +221,7 @@ int main(int argc, char** argv) {
                 vecs.reserve(end - start);
                 for (size_t i = start; i < end; ++i) {
                     keys.push_back("k" + std::to_string(i));
-                    vecs.emplace_back(rand_vec(D, rng));
+                    vecs.emplace_back(sample(i, rng));
                 }
                 auto r = db->batchInsert(keys, vecs);
                 committed += r.operations_committed;
@@ -218,7 +243,7 @@ int main(int argc, char** argv) {
                     db->initialize();
                     std::vector<std::string> keys;
                     std::vector<Vector> vecs;
-                    for (size_t i = 0; i < n; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(rand_vec(D, rng)); }
+                    for (size_t i = 0; i < n; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(sample(i, rng)); }
                     (void)db->batchInsert(keys, vecs);
                     if (std::string(mode) == "sealed") db->sealMutableSegment();
                     (void)db->checkpoint();
@@ -274,7 +299,7 @@ int main(int argc, char** argv) {
 
     // Machine-readable summary (one block; easy to transcribe into paper tables).
     std::filesystem::create_directories("build/durability_results");
-    std::string tag = full ? "full" : "plain";
+    std::string tag = std::string(full ? "full" : "plain") + (real_n ? "_real" : "");
     std::ofstream csv("build/durability_results/durability_" + tag + "_d" + std::to_string(D) + ".csv");
     csv << "metric,d,mode,median,min,max\n";
     auto row = [&](const char* m, const Stat& s) {

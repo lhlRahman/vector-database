@@ -46,9 +46,25 @@ int main(int argc, char** argv) {
     if (dir.empty()) { std::cerr << "usage: bench_hnswlib --data <dir>\n"; return 2; }
     namespace fs = std::filesystem;
 
-    auto base = vecs_io::load_fvecs((fs::path(dir) / "sift_base.fvecs").string());
-    auto query = vecs_io::load_fvecs((fs::path(dir) / "sift_query.fvecs").string());
-    auto gt = vecs_io::load_ivecs((fs::path(dir) / "sift_groundtruth.ivecs").string());
+    // Dataset-agnostic: find whatever *_base/_query/_groundtruth the dir ships
+    // (sift_*, gist_*, ...), matching bench_ann's loader.
+    std::string base_p, query_p, gt_p;
+    auto ends = [](const std::string& s, const std::string& suf) {
+        return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+    };
+    for (const auto& e : fs::directory_iterator(dir)) {
+        auto n = e.path().filename().string();
+        if (ends(n, "_base.fvecs")) base_p = e.path().string();
+        else if (ends(n, "_query.fvecs")) query_p = e.path().string();
+        else if (ends(n, "_groundtruth.ivecs")) gt_p = e.path().string();
+    }
+    if (base_p.empty() || query_p.empty() || gt_p.empty()) {
+        std::cerr << "missing *_base/_query.fvecs or *_groundtruth.ivecs in " << dir << "\n";
+        return 2;
+    }
+    auto base = vecs_io::load_fvecs(base_p);
+    auto query = vecs_io::load_fvecs(query_p);
+    auto gt = vecs_io::load_ivecs(gt_p);
     const size_t d = base.d;
     std::cout << "hnswlib baseline  base=" << base.n << " query=" << query.n << " dim=" << d
               << " gt_k=" << gt.d << "  (M=" << M << " efc=" << efc << ")\n";

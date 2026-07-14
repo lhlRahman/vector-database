@@ -39,8 +39,14 @@ def load(path):
     return ef, rec, qps, p99
 
 
-ours = load(os.path.join(RES, "results.csv"))
-hnsw = load(os.path.join(RES, "hnswlib.csv"))
+import sys
+# Optional args: <ours_csv> <hnswlib_csv> <out_prefix> <title>  (default = SIFT1M)
+ours_csv = sys.argv[1] if len(sys.argv) > 1 else os.path.join(RES, "results.csv")
+hnsw_csv = sys.argv[2] if len(sys.argv) > 2 else os.path.join(RES, "hnswlib.csv")
+PREFIX = sys.argv[3] if len(sys.argv) > 3 else "sift1m"
+TITLE = sys.argv[4] if len(sys.argv) > 4 else "SIFT1M"
+ours = load(ours_csv)
+hnsw = load(hnsw_csv)
 
 OURS_C, HNSW_C = "#1f77b4", "#d62728"
 
@@ -59,10 +65,10 @@ ax.plot(hnsw[1], hnsw[2], "s--", color=HNSW_C, label="hnswlib", lw=1.8, ms=4)
 ax.set_xlabel("recall@10")
 ax.set_ylabel("QPS (single-thread)")
 ax.set_yscale("log")
-ax.set_title("SIFT1M: recall vs. throughput\n(up-and-right is better)")
+ax.set_title(f"{TITLE}: recall vs. throughput\n(up-and-right is better)")
 ax.grid(True, which="both", ls=":", alpha=0.5)
 ax.legend(frameon=False)
-save(fig, "sift1m_recall_qps")
+save(fig, f"{PREFIX}_recall_qps")
 
 # --- Fig 2: QPS speedup of ours over hnswlib at matched ef ---------------------
 # Both sweeps share ef in {10..200}; ratio > 1 => we serve more QPS at that ef,
@@ -88,10 +94,10 @@ a2.set_xlabel("ef_search")
 a2.set_ylabel("recall advantage (pts)")
 a2.set_title("Recall at matched ef (ours − hnswlib)")
 a2.grid(True, axis="y", ls=":", alpha=0.5)
-save(fig, "sift1m_advantage")
+save(fig, f"{PREFIX}_advantage")
 
 # --- textual verdict -----------------------------------------------------------
-print("\nSummary (SIFT1M, matched ef):")
+print(f"\nSummary ({TITLE}, matched ef):")
 print(f"  {'ef':>4} {'ours R':>8} {'hnsw R':>8} {'ours QPS':>9} {'hnsw QPS':>9} {'QPS x':>6}")
 for e in common:
     print(f"  {e:>4} {o_r[e]:>8.4f} {h_r[e]:>8.4f} {o_q[e]:>9.0f} {h_q[e]:>9.0f} {o_q[e]/h_q[e]:>6.2f}")
