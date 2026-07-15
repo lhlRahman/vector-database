@@ -102,7 +102,7 @@ double percentile(const std::vector<double>& sorted, double p) {
 
 int main(int argc, char** argv) {
     std::string data_dir;
-    size_t N = 30000, D = 128, Q = 1000, C = 150, k = 10, M = 16, efc = 200;
+    size_t N = 30000, D = 128, Q = 1000, C = 150, k = 10, M = 16, efc = 200, QTRIALS = 1;
     unsigned seed = 42;
     std::vector<size_t> ef_list = {10, 16, 24, 32, 48, 64, 100, 128, 200, 256, 400, 500};
 
@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
         else if (a == "--M") M = std::stoul(next());
         else if (a == "--efc") efc = std::stoul(next());
         else if (a == "--k") k = std::stoul(next());
+        else if (a == "--qtrials") QTRIALS = std::stoul(next());
     }
 
     Dataset ds;
@@ -239,6 +240,19 @@ int main(int argc, char** argv) {
         double recall = shipped_gt ? recall_id
                                    : (total ? static_cast<double>(tie_hits) / static_cast<double>(total) : 0.0);
         double qps = wall > 0 ? static_cast<double>(ds.nq) / wall : 0.0;
+        // Median-of-QTRIALS QPS: re-time the (deterministic) query sweep; recall is
+        // unchanged, so we only repeat the timing to de-noise the single-run QPS.
+        if (QTRIALS > 1) {
+            std::vector<double> qps_s = {qps};
+            for (size_t t = 1; t < QTRIALS; ++t) {
+                auto tt = Clock::now();
+                for (size_t q = 0; q < ds.nq; ++q) (void)hnsw.search(query_vec(q), k);
+                double w = std::chrono::duration<double>(Clock::now() - tt).count();
+                qps_s.push_back(w > 0 ? static_cast<double>(ds.nq) / w : 0.0);
+            }
+            std::sort(qps_s.begin(), qps_s.end());
+            qps = qps_s[qps_s.size() / 2];
+        }
         std::sort(lat.begin(), lat.end());
 
         max_recall = std::max(max_recall, recall);

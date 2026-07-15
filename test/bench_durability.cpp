@@ -113,7 +113,7 @@ double fsync_floor(const std::filesystem::path& dir, int n, bool full) {
 
 int main(int argc, char** argv) {
     std::string dir_arg, data_arg, recn_arg, tag_arg;
-    bool full = false;
+    bool full = false, skip_recovery = false;
     size_t N = 2000, D = 128, TRIALS = 7;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -122,6 +122,7 @@ int main(int argc, char** argv) {
         else if (a == "--data" && i + 1 < argc) data_arg = argv[++i];
         else if (a == "--recn" && i + 1 < argc) recn_arg = argv[++i];   // e.g. "1000,10000,50000"
         else if (a == "--tag" && i + 1 < argc) tag_arg = argv[++i];     // CSV filename suffix
+        else if (a == "--skip-recovery") skip_recovery = true;          // for the tax/gc N-sweep
         else if (a == "--n" && i + 1 < argc) N = std::stoul(argv[++i]);
         else if (a == "--d" && i + 1 < argc) D = std::stoul(argv[++i]);
         else if (a == "--trials" && i + 1 < argc) TRIALS = std::stoul(argv[++i]);
@@ -189,7 +190,7 @@ int main(int argc, char** argv) {
 
     std::vector<double> floor_s, pw_qps, pw_p50, pw_p99, pw_max;
     std::map<size_t, std::vector<double>> gc_qps;                 // batch size -> qps/trial
-    std::map<size_t, std::vector<double>> sealed_ms, mutable_ms;  // N -> ms/trial
+    std::map<size_t, std::vector<double>> sealed_ms, mutable_ms, seal_create_ms;  // N -> ms/trial
 
     for (size_t t = 0; t < TRIALS; ++t) {
         std::cout << "  trial " << (t + 1) << "/" << TRIALS << " ..." << std::flush;
@@ -242,6 +243,7 @@ int main(int argc, char** argv) {
 
         // 3) Recovery: sealed (snapshot load) vs mutable (WAL replay), swept over N.
         for (size_t n : rec_N) {
+            if (skip_recovery) break;
             for (const char* mode : {"sealed", "mutable"}) {
                 auto p = root / (std::string("recover_") + mode + "_" + std::to_string(n));
                 std::filesystem::remove_all(p);
@@ -254,7 +256,13 @@ int main(int argc, char** argv) {
                     std::vector<Vector> vecs;
                     for (size_t i = 0; i < n; ++i) { keys.push_back("k" + std::to_string(i)); vecs.emplace_back(sample(i, rng)); }
                     (void)db->batchInsert(keys, vecs);
-                    if (std::string(mode) == "sealed") db->sealMutableSegment();
+                    if (std::string(mode) == "sealed") {
+                        // Sealing cost = the snapshot-CREATION work the recovery table
+                        // excludes (the missing half of the sealed-vs-replay tradeoff).
+                        auto sc = Clock::now();
+                        db->sealMutableSegment();
+                        seal_create_ms[n].push_back(std::chrono::duration<double, std::milli>(Clock::now() - sc).count());
+                    }
                     (void)db->checkpoint();
                     db->shutdown();
                 }
@@ -297,13 +305,16 @@ int main(int argc, char** argv) {
                   << std::setw(10) << std::fixed << std::setprecision(1) << speedup << "x\n";
     }
 
-    std::cout << "\n=== recovery: sealed (snapshot) vs mutable (WAL replay) ===\n"
-              << "  " << std::setw(8) << "N" << std::setw(22) << "sealed ms" << std::setw(22) << "mutable ms" << std::setw(8) << "gap\n";
-    for (size_t n : rec_N) {
-        auto se = summarize(sealed_ms[n]), mu = summarize(mutable_ms[n]);
-        double gap = se.med > 0 ? mu.med / se.med : 0.0;
-        std::cout << "  " << std::setw(8) << n << std::setw(22) << fmt(se, 1) << std::setw(22) << fmt(mu, 1)
-                  << std::setw(6) << std::fixed << std::setprecision(1) << gap << "x\n";
+    if (!skip_recovery) {
+        std::cout << "\n=== recovery: sealed (snapshot) vs mutable (WAL replay) ===\n"
+                  << "  " << std::setw(8) << "N" << std::setw(20) << "sealed load ms" << std::setw(20) << "mutable ms"
+                  << std::setw(8) << "gap" << std::setw(20) << "seal-create ms\n";
+        for (size_t n : rec_N) {
+            auto se = summarize(sealed_ms[n]), mu = summarize(mutable_ms[n]), sc = summarize(seal_create_ms[n]);
+            double gap = se.med > 0 ? mu.med / se.med : 0.0;
+            std::cout << "  " << std::setw(8) << n << std::setw(20) << fmt(se, 1) << std::setw(20) << fmt(mu, 1)
+                      << std::setw(6) << std::fixed << std::setprecision(1) << gap << "x" << std::setw(20) << fmt(sc, 1) << "\n";
+        }
     }
 
     // Machine-readable summary (one block; easy to transcribe into paper tables).
@@ -323,6 +334,7 @@ int main(int argc, char** argv) {
     for (size_t b : batch_sizes) { std::string m = "gc_qps_b" + std::to_string(b); row(m.c_str(), summarize(gc_qps[b])); }
     for (size_t n : rec_N) { std::string m = "sealed_ms_n" + std::to_string(n); row(m.c_str(), summarize(sealed_ms[n])); }
     for (size_t n : rec_N) { std::string m = "mutable_ms_n" + std::to_string(n); row(m.c_str(), summarize(mutable_ms[n])); }
+    for (size_t n : rec_N) { std::string m = "seal_create_ms_n" + std::to_string(n); row(m.c_str(), summarize(seal_create_ms[n])); }
     csv.close();
 
     std::filesystem::remove_all(root);
