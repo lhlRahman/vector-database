@@ -65,7 +65,7 @@ it against P-HNSW's persistent-memory recovery analysis. (5) \emph{Recall-bounde
 durability}: we express the exposure of group commit's un-synced window in recall
 units and bound it (worst case $\min(W,k)/k$; benign expectation $W/N$), measuring
 on SIFT1M that a crash risks only $0.13\%$ recall@10 at our batch size---about
-$10^3\times$ below the distribution-free worst case---so a recall-staleness SLA and
+$\sim$770$\times$ below the distribution-free worst case---so a recall-staleness SLA and
 group-commit throughput coexist. All code, harnesses, and results are open and
 reproducible; every durability number is the \emph{median of 7 trials} with the
 observed min--max range reported alongside.
@@ -136,7 +136,7 @@ excluded).
 knowledge the first durability guarantee for an ANN index stated in \emph{recall}
 units. We bound the recall a crash can destroy---worst-case $\min(W,k)/k$ and benign
 expectation $W/N$ for an un-durable window of $W$ inserts---and measure that on
-SIFT1M the real exposure is $\sim$$10^3\times$ below the worst case ($0.13\%$ at our
+SIFT1M the real exposure is $\sim$770$\times$ below the worst case ($0.13\%$ at our
 batch size), so group commit's throughput and a recall-staleness SLA are compatible.
 \end{itemize}
 
@@ -275,6 +275,13 @@ insertion, not the sync, so a system that stops at plain \fsync{} both understat
 its true durability cost \emph{and} understates how much a batching optimization
 can help. That is the subject of \S\ref{sec:groupcommit}.
 
+\emph{Scale caveat.} These tax and group-commit numbers are at $N{=}2{,}000$
+inserts, whereas the competitiveness and recall-bounded results are at $N{=}10^6$.
+Per-insert graph work grows $\sim$$\log N$, so at production scale the graph term
+grows relative to the fixed flush cost: we expect the $4.5\times$ tax ratio to
+\emph{shrink} and the plain-vs-honest convergence to arrive at smaller batches.
+Confirming this with an $N$-sweep to $10^6$ is future work (\S\ref{sec:threats}).
+
 \paragraph{Dimension robustness check.} Repeating the measurement at $d{=}64$ gives
 near-identical numbers---\fsync{} floor $48{,}216$ vs.\ $49{,}199$ (plain) and
 $323$ vs.\ $317$ (\fullfsync{}); per-write $413$ vs.\ $442$ (plain) and $102$
@@ -284,10 +291,10 @@ the graph work. We caution that this is two points, not a law: at much higher
 dimension (e.g.\ GIST's $960$-d, where per-insert graph work grows while the flush
 cost is fixed) we would expect the \emph{ratio} to shrink, and confirming that is
 future work. We also re-ran the tax on \emph{real} SIFT1M embeddings rather than
-synthetic vectors, and the numbers land within the trial spread (\fsync{} floor
-$48{,}810$/$322$; per-write $408$/$111$\,inserts/s; group-commit $4.0\times$),
-confirming the tax is a property of the durable-write path, not of the vector
-distribution.
+synthetic vectors, and the numbers are consistent to within $\sim$10\% (\fsync{}
+floor $48{,}810$/$322$; per-write $408$/$111$\,inserts/s, the latter's own 7-trial
+range $105$--$119$; group-commit $4.0\times$), confirming the tax is a property of
+the durable-write path, not of the vector distribution.
 
 \section{Group Commit for a Graph-ANN WAL}
 \label{sec:groupcommit}
@@ -384,8 +391,9 @@ so $\mathbb{E}[R(W)] = W/N$---linear in the window and independent of $k$.
 Between these two bounds lies what actually happens, and it depends on how
 correlated inserts are with queries. Fig.~\ref{fig:recallrisk} measures $R(W)$ on
 SIFT1M ($N{=}10^6$, $k{=}10$) in two regimes. \emph{Benign} (insertion order
-uncorrelated with queries): the empirical curve tracks $W/N$ and sits
-$\sim$$10^3\times$ below the worst case---at our group-commit batch ($W{=}2{,}000$)
+uncorrelated with queries): the empirical curve follows $W/N$ (sitting modestly
+below it---$0.13\%$ measured vs.\ $0.20\%$ expected at $W{=}2{,}000$) and stays
+$\sim$770$\times$ below the worst case---so at our group-commit batch ($W{=}2{,}000$)
 a crash risks only $0.13\%$ of recall@10, versus the $100\%$ the distribution-free
 bound admits, while delivering the $4.3\times$ throughput of Table~\ref{tab:gc}.
 \emph{Adversarial} (the un-durable window is exactly the query-hot vectors---i.e.\
@@ -412,7 +420,7 @@ quantifiable relaxation rather than a correctness bug.
 crash, $R(W)$, vs.\ the un-durable window $W$: the distribution-free worst case
 $\min(W,k)/k$ (provable), the benign expectation $W/N$, the measured benign value,
 and the measured \emph{adversarial} value (un-durable window = query-hot vectors).
-The benign exposure sits $\sim$$10^3\times$ below the worst case ($0.13\%$ at
+The benign exposure sits $\sim$770$\times$ below the worst case ($0.13\%$ at
 $W{=}2{,}000$, our group-commit batch); the adversarial curve rises to $100\%$ by
 $W{=}10^4$, so the safe window depends on insert/query correlation. Shaded band =
 measurement resolution ($10^{-4}$).}
@@ -555,7 +563,9 @@ $\mathrm{ef}{=}10$ to $0.984$ at $\mathrm{ef}{=}500$ (Table~\ref{tab:gist},
 Fig.~\ref{fig:gistpareto}), and at every $\mathrm{ef}$ our index is above hnswlib
 on \emph{both} axes---averaging $+5.5$ recall points at $1.18\times$ QPS (e.g.\
 $0.940$/$526$~QPS vs.\ $0.907$/$475$~QPS at $\mathrm{ef}{=}200$). The full graph
-builds in $2{,}567$\,s (peak arena $999$\,MiB). GIST's weaker neighbor structure
+builds in $2{,}567$\,s (peak graph arena $999$\,MiB---the same as SIFT1M because the
+pooled arena holds adjacency lists only, not the vectors, so it is
+dimension-independent). GIST's weaker neighbor structure
 and $7.5\times$ higher per-distance cost give lower recall-per-$\mathrm{ef}$ and
 $\sim$$4\times$ lower QPS at matched $\mathrm{ef}$ than SIFT1M for both indexes
 (and a larger gap, $\sim$$15$--$25\times$, at matched recall), consistent with
@@ -604,9 +614,9 @@ points, $1.18\times$ QPS on average at matched $\mathrm{ef}$); QPS is single-run
 \textbf{Graph ANN and updates.} HNSW~\cite{hnsw} and DiskANN~\cite{diskann} are the
 dominant graph indexes; FreshDiskANN~\cite{freshdiskann} and SPFresh~\cite{spfresh}
 add streaming updates (out-of-place merge and in-place rebalancing, respectively),
-and each describes a redo-log/snapshot crash-recovery mechanism (FreshDiskANN's
-\S5.6 even reports coarse recovery times of minutes at 5--30M points; SPFresh's
-\S4.4 uses snapshot+WAL), while LSM-VEC~\cite{lsmvec} distributes a proximity graph
+and each describes a redo-log/snapshot crash-recovery mechanism (FreshDiskANN
+even reports coarse recovery times of minutes at 5--30M points; SPFresh pairs a
+snapshot with a WAL), while LSM-VEC~\cite{lsmvec} distributes a proximity graph
 across LSM levels. None, however, isolate and \emph{quantify} an \fsync{}/durability
 tax against a non-durable baseline, and none report a controlled
 snapshot-load-vs-WAL-replay recovery comparison for a standalone block-storage ANN;
@@ -665,7 +675,7 @@ batch-size curve (up to $4.3\times$ under honest durability) while staying
 crash-consistent under a fork-and-crash test, and that reading a snapshot is far
 cheaper than WAL replay. Beyond measurement, we introduce one ANN-native mechanism:
 \emph{recall-bounded durability}, which expresses a crash's damage in recall units
-and shows the real exposure of group commit is $\sim$$10^3\times$ below the
+and shows the real exposure of group commit is $\sim$770$\times$ below the
 distribution-free worst case---so a recall-staleness SLA and full throughput
 coexist. These figures are medians of 7 trials on one host, not general claims; the
 transferable results are the measurement discipline and the recall-bounded framing.
