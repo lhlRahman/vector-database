@@ -70,8 +70,8 @@ units and bound it (worst case $\min(W,k)/k$; benign expectation $W/N$), measuri
 on SIFT1M that a crash risks only $0.13\%$ recall@10 at our batch size---about
 $\sim$770$\times$ below the distribution-free worst case---so a recall-staleness SLA and
 group-commit throughput coexist. All code, harnesses, and results are open and
-reproducible; every durability number is the \emph{median of 7 trials} with the
-observed min--max range reported alongside.
+reproducible; durability numbers are the \emph{median of 7 trials} (3 for the
+$N$-sweeps) with the observed min--max range reported alongside.
 \end{abstract}
 
 \section{Introduction}
@@ -205,10 +205,10 @@ Linux/NVMe. The transferable point is the trap---a number labeled ``durable''
 under plain \fsync{} on this platform is a page-cache number---not the specific
 $155\times$.
 
-\paragraph{Methodology and statistics.} Every durability number in this paper is
-the \emph{median of 7 trials} on one host, taken after a warm-up pass, and we
-report the observed min--max range alongside each median so the reader can see the
-run-to-run spread. We use median-and-range rather than a parametric confidence
+\paragraph{Methodology and statistics.} Durability numbers are the \emph{median of
+7 trials} (the larger-$N$ sweeps of Tables~\ref{tab:nsweep} and the extended
+recovery use 3), taken after a warm-up pass, and we report the observed min--max
+range alongside each median so the reader can see the run-to-run spread. We use median-and-range rather than a parametric confidence
 interval because 7 trials is too few to justify a distributional assumption; the
 ranges are wide enough in places (e.g.\ the plain-\fsync{} floor spans $-15\%$ to
 $+5\%$ around its median) that we read differences smaller than the ranges as
@@ -491,10 +491,11 @@ We read the \emph{shape} (constant vs.\ growing) as the result. On the one
 often-raised caveat---that the comparison charges WAL replay for a graph rebuild but
 not the sealed path for creating the snapshot---we now measure the sealing cost
 directly: producing the snapshot takes $29.7$/$36.0$/$55.3$\,ms at
-$N{=}1$k/$3$k/$6$k, i.e.\ tens of milliseconds, one-to-two orders of magnitude
-\emph{below} the WAL replay it avoids ($250$/$1097$/$3169$\,ms at the same $N$). So
-even charging the sealing cost in full, sealing pays for itself after a single
-recovery; amortized over a segment's serving lifetime it is negligible. The residual
+$N{=}1$k/$3$k/$6$k---tens of milliseconds, one-to-two orders of magnitude
+\emph{below} the WAL replay it avoids (Table~\ref{tab:recovery}'s
+$195.5$/$650.7$/$1483.6$\,ms mutable column at the same $N$). So even charging the
+sealing cost in full, sealing pays for itself after a single recovery; amortized
+over a segment's serving lifetime it is negligible. The residual
 caveat is external: one host and one filesystem. (With multiple trials the sealed
 column is monotonic in $N$; the earlier single-run non-monotonicity was jitter around
 a slowly-growing cost.)
