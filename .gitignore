@@ -65,3 +65,6 @@ worktrees/
 /gist.tar.gz
 /sift.tar.gz
 *.tar.gz
+
+# Claude Code session dir
+.claude/
