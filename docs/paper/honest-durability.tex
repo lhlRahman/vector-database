@@ -414,6 +414,19 @@ the child exits on a live OS, this validates crash-consistency (no acknowledged
 write lost, no torn record) but not power loss, which requires block-level
 injection (\S\ref{sec:threats}).
 
+\paragraph{External validity: the effect reproduces in a production system.} To
+check that batching is a real durability lever and not an artifact of our engine, we
+measured Qdrant~\cite{qdrant} (a widely deployed vector DB) on the same Linux host,
+using its per-request durability knob (\texttt{wait=True} blocks until the write is
+applied and in the WAL; \texttt{wait=False} is asynchronous). Batching durable
+upserts from $1$ to $1{,}000$ per request raises throughput $27.9\times$ ($229\to
+6{,}408$ inserts/s)---the group-commit effect, larger than in our engine. The
+per-request durable-vs-async gap is smaller here ($1.2\times$) because Qdrant's
+client/server path and asynchronous WAL make network and request overhead, not the
+flush, dominate single-item latency---a reminder that the \emph{shape} of the tax
+(and thus where batching helps) is architecture-dependent, even as the qualitative
+lever generalizes.
+
 \section{Recall-Bounded Durability}
 \label{sec:recall}
 Group commit trades durability for throughput by leaving a window of $W$
@@ -829,6 +842,11 @@ Zilliz.
 \newblock {VectorDBBench}: A benchmark tool for vector databases.
 \newblock Open-source software, GitHub, 2023.
 \newblock \url{https://github.com/zilliztech/VectorDBBench}.
+
+\bibitem{qdrant}
+Qdrant.
+\newblock {Qdrant}: Open-source vector database and similarity search engine.
+\newblock \url{https://qdrant.tech}.
 
 \bibitem{aether}
 R.~Johnson, I.~Pandis, R.~Stoica, M.~Athanassoulis, and A.~Ailamaki.

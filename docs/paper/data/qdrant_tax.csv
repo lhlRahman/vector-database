@@ -1,0 +1,8 @@
+batch,durable_ins_per_s,async_ins_per_s
+# Qdrant 1.18.3 in docker on AWS Linux/NVMe, synthetic d=128, N=20000.
+# wait=True = block until applied+WAL (durable ack); wait=False = async.
+1,229,281
+10,1416,2233
+100,4517,5454
+1000,6408,6791
+# tax (async/durable, batch=1) = 1.2x ; group-commit speedup (durable, batch 1->1000) = 27.9x
