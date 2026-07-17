@@ -86,8 +86,15 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
                             (void)persistence_->remove(prev_op.key);
                             break;
                         case OperationType::DELETE:
-                            // Undo delete by re-inserting
-                            (void)persistence_->insert(prev_op.key, prev_op.vector, prev_op.metadata);
+                            // A DELETE op carries no vector (executeBatchDelete builds
+                            // it with an empty Vector), so it cannot be faithfully
+                            // undone. Re-inserting a 0-dim vector would CORRUPT the key,
+                            // so only restore when a real vector is present (mixed batch);
+                            // otherwise leave it deleted and rely on WAL replay for
+                            // consistency (as with UPDATE below).
+                            if (prev_op.vector.size() > 0) {
+                                (void)persistence_->insert(prev_op.key, prev_op.vector, prev_op.metadata);
+                            }
                             break;
                         case OperationType::UPDATE:
                             // Cannot perfectly undo update without old value;
@@ -123,6 +130,10 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatch(const std::vector
 AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatchInsert(const std::vector<std::string>& keys,
                                                                      const std::vector<Vector>& vectors,
                                                                      const std::vector<std::string>& metadata) {
+    if (keys.size() != vectors.size()) {
+        failed_batches++;
+        return BatchResult{false, 0, "keys and vectors size mismatch", 0, std::chrono::duration<double>(0)};
+    }
     std::vector<BatchOperation> ops;
     ops.reserve(keys.size());
     for (size_t i = 0; i < keys.size(); ++i) {
@@ -135,6 +146,10 @@ AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatchInsert(const std::
 AtomicBatchInsert::BatchResult AtomicBatchInsert::executeBatchUpdate(const std::vector<std::string>& keys,
                                                                      const std::vector<Vector>& vectors,
                                                                      const std::vector<std::string>& metadata) {
+    if (keys.size() != vectors.size()) {
+        failed_batches++;
+        return BatchResult{false, 0, "keys and vectors size mismatch", 0, std::chrono::duration<double>(0)};
+    }
     std::vector<BatchOperation> ops;
     ops.reserve(keys.size());
     for (size_t i = 0; i < keys.size(); ++i) {

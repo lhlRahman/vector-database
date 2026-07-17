@@ -1,5 +1,6 @@
 #include "parallel_processing.hpp"
 
+#include <atomic>
 #include <functional>
 #include <future>
 #include <numeric>
@@ -10,16 +11,20 @@
 
 namespace parallel_ops {
 
-void batchInsert(VectorDatabase &db, const std::vector<Vector> &vectors,
-                 const std::vector<std::string> &keys) {
+size_t batchInsert(VectorDatabase &db, const std::vector<Vector> &vectors,
+                   const std::vector<std::string> &keys) {
   if (vectors.size() != keys.size()) {
     throw std::invalid_argument("Number of vectors and keys must match");
   }
 
+  std::atomic<size_t> ok_count{0};
   auto task = [&](size_t start, size_t end) {
     for (size_t i = start; i < end; ++i) {
-      // FIX: Call the 3-argument version of insert to resolve ambiguity.
-      (void)db.insert(vectors[i], keys[i], "");
+      // Do not discard insert()'s [[nodiscard]] result: count failures
+      // (duplicate key / NaN / full) instead of silently dropping them.
+      if (db.insert(vectors[i], keys[i], "")) {
+        ok_count.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   };
 
@@ -45,6 +50,7 @@ void batchInsert(VectorDatabase &db, const std::vector<Vector> &vectors,
   for (auto &future : futures) {
     future.get();
   }
+  return ok_count.load(std::memory_order_relaxed);
 }
 
 std::vector<std::vector<std::pair<std::string, float>>>
@@ -118,6 +124,14 @@ void parallel_for_each(std::vector<int> &indices,
 
 std::vector<float> parallel_transform(const std::vector<Vector> &queries,
                                       const Vector &centroid) {
+  // inner_product walks each query's full length against centroid.begin(); a
+  // query longer than the centroid would read past the centroid's storage.
+  for (const auto &q : queries) {
+    if (q.size() > centroid.size()) {
+      throw std::invalid_argument("parallel_transform: query dimension exceeds centroid dimension");
+    }
+  }
+
   std::vector<float> results(queries.size());
 
   auto task = [&](size_t start, size_t end) {

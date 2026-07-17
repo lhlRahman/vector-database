@@ -10,7 +10,9 @@
 #include "../core/vector_database.hpp"
 
 namespace parallel_ops {
-    void batchInsert(VectorDatabase& db, const std::vector<Vector>& vectors, const std::vector<std::string>& keys);
+    // Returns the number of inserts that succeeded (insert() returns false on
+    // duplicate key / NaN / full segment); callers can detect partial failure.
+    size_t batchInsert(VectorDatabase& db, const std::vector<Vector>& vectors, const std::vector<std::string>& keys);
     
     std::vector<std::vector<std::pair<std::string, float>>> batchSimilaritySearch(
         VectorDatabase& db, const std::vector<Vector>& queries, size_t k);

@@ -10,6 +10,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "../utils/atomic_write.hpp"  // vdb::io::fsync_file
+
 // Helper function for timestamp
 namespace {
 inline uint64_t now_us() {
@@ -250,7 +252,23 @@ CommitLog::CommitLog(const std::string& log_directory, size_t max_size, size_t m
     
     // Create log directory if it doesn't exist
     std::filesystem::create_directories(log_dir);
-    
+
+    // Resume the log-file counter from any existing WAL so a restart does not
+    // reuse a lower number (which would mis-order files and, with checkpoint
+    // recovery, risk dropping post-restart entries).
+    {
+        const std::string prefix = "commit.log.";
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(log_dir, ec)) {
+            const std::string name = e.path().filename().string();
+            if (name.rfind(prefix, 0) != 0) continue;
+            try {
+                uint64_t n = std::stoull(name.substr(prefix.size()));
+                if (n >= next_sequence_number) next_sequence_number = n + 1;
+            } catch (...) {}
+        }
+    }
+
     // Generate initial log filename
     log_filename = generateLogFilename(next_sequence_number);
     
@@ -274,7 +292,9 @@ CommitLog::~CommitLog() noexcept {
 
 std::string CommitLog::generateLogFilename(uint64_t sequence) const {
     std::ostringstream oss;
-    oss << log_dir << "/commit.log." << std::setfill('0') << std::setw(6) << sequence;
+    // Fixed 20-digit zero-padded suffix so lexicographic filename order matches
+    // numeric order across the full uint64 range (setw(6) broke past 999999).
+    oss << log_dir << "/commit.log." << std::setfill('0') << std::setw(20) << sequence;
     return oss.str();
 }
 
@@ -289,6 +309,16 @@ bool CommitLog::writeEntry(const LogEntry& entry) {
         std::cerr << "[WAL] CRITICAL: write/flush failed (disk full?). "
                   << "Entry seq " << entry.sequence_number << " may be lost.\n";
         // Try to clear error state for future writes
+        log_file.clear();
+        return false;
+    }
+
+    // Durability: flush() only reaches the OS page cache. fsync so an
+    // acknowledged entry survives power loss (matches the segmented WAL).
+    try {
+        vdb::io::fsync_file(log_filename);
+    } catch (const std::exception& e) {
+        std::cerr << "[WAL] CRITICAL: fsync failed: " << e.what() << "\n";
         log_file.clear();
         return false;
     }

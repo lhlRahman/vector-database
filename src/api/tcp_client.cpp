@@ -1,8 +1,10 @@
 #include "tcp_client.hpp"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <netdb.h>
 #include <netinet/tcp.h>
 #include <stdexcept>
 #include <sys/socket.h>
@@ -30,7 +32,22 @@ void TCPClient::connect() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port_));
-    inet_pton(AF_INET, host_.c_str(), &addr.sin_addr);
+    {
+        // Resolve host properly (numeric IP or hostname). Previously inet_pton's
+        // return was ignored, so a hostname silently dialed 0.0.0.0.
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* res = nullptr;
+        int gai = ::getaddrinfo(host_.c_str(), nullptr, &hints, &res);
+        if (gai != 0 || res == nullptr) {
+            close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("cannot resolve host '" + host_ + "': " + gai_strerror(gai));
+        }
+        addr.sin_addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr;
+        freeaddrinfo(res);
+    }
 
     if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         close(fd_);
@@ -164,7 +181,9 @@ std::vector<TCPClient::SearchResult> TCPClient::search(const float* data, size_t
     uint32_t count = r.read_u32();
 
     std::vector<SearchResult> results;
-    results.reserve(count);
+    // Bound the reservation by the response payload (each result is >= 6 bytes),
+    // so a hostile/buggy server can't drive an unbounded client allocation.
+    results.reserve(std::min<size_t>(count, r.remaining() / 6 + 1));
     for (uint32_t i = 0; i < count; ++i) {
         SearchResult sr;
         sr.key = r.read_string();
@@ -213,6 +232,8 @@ std::optional<TCPClient::GetResult> TCPClient::get(const std::string& key) {
 
     proto::BufferReader r(resp.payload.data(), resp.payload.size());
     uint32_t dims = r.read_u32();
+    if (static_cast<size_t>(dims) * sizeof(float) > r.remaining())
+        throw std::runtime_error("server-declared dims exceed response payload");
 
     GetResult result;
     result.vector.resize(dims);
@@ -226,6 +247,9 @@ std::optional<TCPClient::GetResult> TCPClient::get(const std::string& key) {
 TCPClient::BatchResult TCPClient::batch_insert(const std::vector<std::string>& keys,
                                                 const std::vector<std::vector<float>>& vectors,
                                                 const std::vector<std::string>& metadata) {
+    if (vectors.size() != keys.size()) {
+        throw std::invalid_argument("batch_insert: keys and vectors size mismatch");
+    }
     std::vector<uint8_t> payload;
     proto::BufferWriter w(payload);
     w.write_u32(static_cast<uint32_t>(keys.size()));

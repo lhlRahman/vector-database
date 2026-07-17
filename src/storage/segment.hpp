@@ -27,8 +27,8 @@ public:
     struct Config {
         size_t dimensions{0};
         size_t hnsw_m{16};
-        size_t hnsw_ef_construction{80};
-        size_t hnsw_ef_search{50};
+        size_t hnsw_ef_construction{200};  // was 80
+        size_t hnsw_ef_search{64};         // was 50
         HNSWIndex::AllocationStrategy allocation_strategy{HNSWIndex::AllocationStrategy::Arena};
         size_t arena_initial_size{1024 * 1024};
         std::shared_ptr<const DistanceMetric> metric{std::make_shared<EuclideanDistance>()};
@@ -85,6 +85,11 @@ public:
     void seal();
     void flush();
 
+    // Group commit: while deferred, WAL/tombstone appends skip the per-record
+    // fsync; commitDeferredSync() issues a single fsync covering the whole batch.
+    void beginDeferredSync();
+    void commitDeferredSync();
+
     size_t recordCount() const { return records_.size(); }
     size_t liveCount() const { return live_count_; }
     size_t tombstoneCount() const { return tombstone_count_; }
@@ -124,6 +129,7 @@ private:
     size_t live_count_{0};
     size_t tombstone_count_{0};
     uint64_t max_sequence_{0};
+    bool defer_sync_{false};  // group-commit: skip per-append fsync when set
     std::unique_ptr<HNSWIndex> hnsw_;
 
     void rebuildIndex();

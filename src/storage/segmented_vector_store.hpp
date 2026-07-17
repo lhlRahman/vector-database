@@ -15,8 +15,8 @@ public:
     struct Config {
         size_t dimensions{0};
         size_t hnsw_m{16};
-        size_t hnsw_ef_construction{80};
-        size_t hnsw_ef_search{50};
+        size_t hnsw_ef_construction{200};  // was 80; 200 builds a stronger graph for recall
+        size_t hnsw_ef_search{64};         // was 50
         size_t max_mutable_segment_records{100000};
         size_t max_sealed_segments{16};
         double max_tombstone_ratio{0.25};
@@ -54,6 +54,11 @@ public:
     void shutdown();
 
     [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
+    // Group-commit batch insert: appends all WAL records, then a single fsync for
+    // the whole batch. Returns the number inserted (skips dim-mismatch/duplicate).
+    size_t insertBatch(const std::vector<std::string>& keys,
+                       const std::vector<Vector>& vectors,
+                       const std::vector<std::string>& metadata);
     [[nodiscard]] bool update(const Vector& vector, const std::string& key, const std::string& metadata = "");
     [[nodiscard]] bool remove(const std::string& key);
     [[nodiscard]] std::optional<Vector> get(const std::string& key) const;

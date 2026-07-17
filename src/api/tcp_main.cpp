@@ -33,18 +33,36 @@ int main(int argc, char* argv[]) {
     int port = 9090;
     size_t threads = 4;
 
+    // Parse a numeric argument, exiting with a clear message instead of an
+    // uncaught std::invalid_argument/out_of_range (which would std::terminate).
+    auto parse_ul = [](const char* s, const char* name) -> unsigned long {
+        try {
+            size_t pos = 0;
+            unsigned long v = std::stoul(s, &pos);
+            if (pos != std::string(s).size()) throw std::invalid_argument("trailing characters");
+            return v;
+        } catch (const std::exception&) {
+            std::cerr << "Invalid value for " << name << ": '" << s << "'\n";
+            std::exit(2);
+        }
+    };
+
     // Simple arg parsing: --dims N --host H --port P --threads T
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--dims" && i + 1 < argc)    dims = std::stoul(argv[++i]);
+        if (arg == "--dims" && i + 1 < argc)    dims = parse_ul(argv[++i], "--dims");
         else if (arg == "--host" && i + 1 < argc) host = argv[++i];
-        else if (arg == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
-        else if (arg == "--threads" && i + 1 < argc) threads = std::stoul(argv[++i]);
+        else if (arg == "--port" && i + 1 < argc) port = static_cast<int>(parse_ul(argv[++i], "--port"));
+        else if (arg == "--threads" && i + 1 < argc) threads = parse_ul(argv[++i], "--threads");
         else if (arg == "--help") {
             std::cout << "Usage: " << argv[0] << " [--dims N] [--host H] [--port P] [--threads T]\n";
             return 0;
         }
     }
+
+    if (dims == 0)                  { std::cerr << "--dims must be > 0\n"; return 2; }
+    if (port < 1 || port > 65535)   { std::cerr << "--port must be in 1..65535\n"; return 2; }
+    if (threads == 0)               threads = 1;
 
     std::cout << "Starting TCP vector database server\n"
               << "  dimensions: " << dims << "\n"
