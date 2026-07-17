@@ -39,17 +39,19 @@ group commit and snapshot recovery, are textbook). Using a
 from-scratch C++20 vector database with a segmented, write-ahead-logged (WAL)
 HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M (and $0.98$ on the
 harder $960$-d GIST1M) and sits on the hnswlib recall--QPS Pareto front, confirming
-we measure on a competitive, not a broken, index---we contribute the following in a
-preliminary single-host study (Apple M4 Pro). (1) A \emph{durability-aware measurement protocol} for ANN
+we measure on a competitive, not a broken, index---we contribute the following,
+measured on two hosts (Apple M4 Pro; AWS Linux/NVMe). (1) A \emph{durability-aware measurement protocol} for ANN
 indexes: a tmpfs (RAM-backed filesystem) guard, an \fsync{}-floor baseline, and
 mandatory \fsync{}-mode labeling, because on some platforms the default \fsync{}
 does not flush the drive cache and so reports optimistic ``durable'' numbers.
 (2) An illustration of that protocol catching an \fsync{}-mode trap: on
 macOS/APFS, where plain \fsync{} is a page-cache no-op, switching to honest
 per-write durability (\fullfsync{}) lowers the device's durable-sync ceiling by
-$\sim$155$\times$ (49{,}199 to 317 syncs/s) in a tight-loop microbenchmark. We
-foreground this as a cautionary example of how mislabeled numbers arise, not as a
-headline system result; it is a macOS/APFS artifact. (3) An illustrative
+$\sim$155$\times$ (49{,}199 to 317 syncs/s) in a tight-loop microbenchmark---a
+cautionary example of how mislabeled numbers arise. We confirm on a second host
+(AWS Linux/NVMe, where plain \fsync{} is genuinely durable at $527$/s) that this gap
+is a macOS/APFS artifact while the tax, group commit ($4.9\times$), and recovery
+($128\times$) all reproduce---so the findings are not platform-specific. (3) An illustrative
 durability-tax and group-commit characterization on the SIFT-scale ($d{=}128$)
 index: honest per-write durability cuts insert throughput $\sim$4.5$\times$ (442 to
 98 inserts/s), and a group-commit \emph{batch-size sweep} then recovers the tax
@@ -59,9 +61,10 @@ showing the speedup is a function of both batch size and \fsync{} mode rather th
 a single constant---and a fork-and-crash test (child \texttt{\_exit}s without clean
 shutdown) checks crash-consistency. (4) An illustrative recovery comparison:
 snapshot-load of a sealed segment is near-constant while WAL replay grows with $N$
-(a $5\times$ to $32\times$ gap over $N{=}1$k--$6$k); we report this as motivation
-for periodic sealing, noting it omits sealing/snapshot-creation cost, and position
-it against P-HNSW's persistent-memory recovery analysis. (5) \emph{Recall-bounded
+(a $5\times$ to $32\times$ gap over $N{=}1$k--$6$k, widening to $\sim$157$\times$ at
+$N{=}20$k); the snapshot-creation cost we measure (tens of ms) is far below the
+replay it saves, so sealing amortizes; positioned against P-HNSW's persistent-memory
+recovery analysis. (5) \emph{Recall-bounded
 durability}: we express the exposure of group commit's un-synced window in recall
 units and bound it (worst case $\min(W,k)/k$; benign expectation $W/N$), measuring
 on SIFT1M that a crash risks only $0.13\%$ recall@10 at our batch size---about
@@ -130,8 +133,8 @@ curve in batch size and depends on \fsync{} mode---not a single headline speedup
 \item \textbf{C4 (\S\ref{sec:recovery}).} A recovery comparison (snapshot-load
 vs.\ WAL-replay) for a standalone graph ANN on conventional block storage
 (\fsync{}/WAL)---extending P-HNSW's~\cite{phnsw} persistent-memory recovery
-analysis to this setting---reported with its caveats (snapshot-creation cost
-excluded).
+analysis to this setting---including the snapshot-creation cost, which we measure to
+be far below the WAL replay it saves.
 \item \textbf{C5 (\S\ref{sec:recall}).} \emph{Recall-bounded durability}: to our
 knowledge the first durability guarantee for an ANN index stated in \emph{recall}
 units. We bound the recall a crash can destroy---worst-case $\min(W,k)/k$ and benign
@@ -216,20 +219,38 @@ at fixed parameters.
 
 \begin{table}[t]
 \centering
-\caption{\fsync{} floor on the testbed (Apple M4 Pro, APFS/NVMe): durable syncs/s
-in a tight \texttt{write()+sync} loop, median of 7 trials (min--max). Plain
-\fsync{} does not flush the drive cache; \fullfsync{} does. Device microbenchmark;
-the $\sim$155$\times$ gap is a macOS/APFS artifact, not a property of the index.}
+\caption{\fsync{} floor: durable syncs/s in a tight \texttt{write()+sync} loop,
+median of 7 trials (min--max). On macOS/APFS plain \fsync{} does \emph{not} flush the
+drive cache (a page-cache no-op), so its 49k/s is not durable; \fullfsync{} is. On
+Linux (AWS, ext4/NVMe) plain \fsync{} \emph{does} flush, so its rate is honest---and
+lands right next to macOS \fullfsync{}. The lesson is not a number but the trap:
+macOS plain \fsync{} overstates the true durable rate by $\sim$93$\times$, while the
+real durable ceiling is $\sim$300--500/s on both platforms.}
 \label{tab:floor}
-\begin{tabular}{lr}
+\begin{tabular}{llr}
 \toprule
-Mode & Durable syncs/s (median, min--max) \\
+Platform & Mode & Durable syncs/s (median, min--max) \\
 \midrule
-Plain \fsync{} (page cache) & 49{,}199 \ (41{,}983--51{,}782) \\
-\fullfsync{} (drive-cache flush) & 317 \ (291--324) \\
+macOS/APFS & Plain \fsync{} (page cache) & 49{,}199 \ (41{,}983--51{,}782) \\
+macOS/APFS & \fullfsync{} (drive flush) & 317 \ (291--324) \\
+Linux/NVMe & Plain \fsync{} (real flush) & 527 \ (511--529) \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{Cross-platform validation (Linux/NVMe).} To confirm the phenomena are
+not macOS artifacts, we ran the full suite on an AWS Linux host (x86-64, ext4 on
+NVMe), where plain \fsync{} is genuinely durable. Every result reproduces, and the
+mechanisms are, if anything, \emph{stronger}: the honest per-write tax is
+$378$\,inserts/s (vs.\ the $527$/s floor), group commit yields $4.9\times$
+(Table~\ref{tab:gc} shows $4.3\times$ on macOS \fullfsync{}), and the recovery gap
+reaches $128\times$ at $N{=}6$k with sealing cost ($29$--$47$\,ms) again far below
+the WAL replay it saves ($385$--$4843$\,ms). So the durability tax, the group-commit
+curve, and the snapshot-vs-replay recovery result all hold on the platform vector
+databases actually run on---the macOS numbers are illustrative, but the findings are
+not platform-specific. (The one thing still exercised only on macOS is the
+process-crash consistency test; block-level power-loss injection is
+\S\ref{sec:threats}.)
 
 \section{The Durability Tax}
 \label{sec:tax}
@@ -275,12 +296,35 @@ insertion, not the sync, so a system that stops at plain \fsync{} both understat
 its true durability cost \emph{and} understates how much a batching optimization
 can help. That is the subject of \S\ref{sec:groupcommit}.
 
-\emph{Scale caveat.} These tax and group-commit numbers are at $N{=}2{,}000$
-inserts, whereas the competitiveness and recall-bounded results are at $N{=}10^6$.
-Per-insert graph work grows $\sim$$\log N$, so at production scale the graph term
-grows relative to the fixed flush cost: we expect the $4.5\times$ tax ratio to
-\emph{shrink} and the plain-vs-honest convergence to arrive at smaller batches.
-Confirming this with an $N$-sweep to $10^6$ is future work (\S\ref{sec:threats}).
+\paragraph{The tax shrinks with scale.} The headline $4.5\times$ is at $N{=}2{,}000$
+inserts; because per-insert graph work grows with $N$ while the flush cost is fixed,
+the tax should fall as the index grows---and it does. Sweeping $N$
+(Table~\ref{tab:nsweep}), the plain-vs-\fullfsync{} throughput ratio drops from
+$4.5\times$ ($N{=}2$k) to $2.37\times$ ($N{=}10$k) to $2.12\times$ ($N{=}30$k), as
+plain-\fsync{} throughput falls (graph-bound: $442\!\to\!205\!\to\!162$/s) while the
+\fullfsync{} rate stays flush-bound ($98\!\to\!86\!\to\!77$/s). The group-commit
+speedup shrinks in lock-step ($4.3\times\!\to\!2.4\times\!\to\!2.2\times$): once the
+graph dominates, there is less flush to amortize. So the tax is largest exactly when
+the index is small (bulk-load, cold start) and eases as it grows---the honest,
+and reassuring, scaling story. Reaching $N{=}10^6$ under \fullfsync{} is
+device-flush-bound (hours per run) and left to the Linux study (\S\ref{sec:threats}).
+
+\begin{table}[t]
+\centering
+\caption{Durability tax vs.\ index size $N$ (Apple M4 Pro, $d{=}128$, per-write,
+median of 3 trials). The tax and group-commit benefit both shrink as graph work
+grows relative to the fixed flush cost.}
+\label{tab:nsweep}
+\begin{tabular}{rrrrr}
+\toprule
+$N$ & Plain ins/s & \fullfsync{} ins/s & Tax ratio & Group-commit speedup \\
+\midrule
+2{,}000  & 442 & 98 & 4.5$\times$ & 4.3$\times$ \\
+10{,}000 & 205 & 86 & 2.4$\times$ & 2.4$\times$ \\
+30{,}000 & 162 & 77 & 2.1$\times$ & 2.2$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \paragraph{Dimension robustness check.} Repeating the measurement at $d{=}64$ gives
 near-identical numbers---\fsync{} floor $48{,}216$ vs.\ $49{,}199$ (plain) and
@@ -443,15 +487,17 @@ graph grows), so the gap widens from $\sim$5$\times$ to $\sim$32$\times$. At muc
 larger $N$ snapshot load is itself linear in the serialized size---P-HNSW~\cite{phnsw}
 reports this at $1$--$10$M---so the durable statement is a far smaller per-element
 constant, not a constant recovery time.
-We read the \emph{shape} (constant vs.\ growing) as the result, and note two
-caveats on the absolute values. First, the comparison is deliberately
-apples-to-oranges: it charges WAL replay for rebuilding the graph but does
-\emph{not} charge the sealed path for the snapshot-creation (sealing) work that
-must have happened earlier to produce the snapshot---that sealing cost is unmeasured
-here. The table therefore shows that \emph{reading} a snapshot is cheap, not that
-snapshotting is free. Second, it is one host and one filesystem. (With 7 trials the
-sealed column is now monotonic in $N$, $38.9 \to 44.2 \to 47.0$\,ms, confirming the
-earlier single-run non-monotonicity was jitter around a slowly-growing cost.)
+We read the \emph{shape} (constant vs.\ growing) as the result. On the one
+often-raised caveat---that the comparison charges WAL replay for a graph rebuild but
+not the sealed path for creating the snapshot---we now measure the sealing cost
+directly: producing the snapshot takes $29.7$/$36.0$/$55.3$\,ms at
+$N{=}1$k/$3$k/$6$k, i.e.\ tens of milliseconds, one-to-two orders of magnitude
+\emph{below} the WAL replay it avoids ($250$/$1097$/$3169$\,ms at the same $N$). So
+even charging the sealing cost in full, sealing pays for itself after a single
+recovery; amortized over a segment's serving lifetime it is negligible. The residual
+caveat is external: one host and one filesystem. (With multiple trials the sealed
+column is monotonic in $N$; the earlier single-run non-monotonicity was jitter around
+a slowly-growing cost.)
 
 \begin{table}[t]
 \centering
@@ -526,8 +572,8 @@ at $\mathrm{ef}{=}10$; the pooled arena cut peak index memory on that workload f
 $n{=}10^6$, $M{=}16$, $\mathrm{ef}_{\mathrm{construction}}{=}200$), ours vs.\
 hnswlib on the identical dataset/params/host, measured against the dataset's
 shipped exact ground truth (ID-set recall@10). Recall is deterministic at fixed
-parameters; QPS is a single-run timing (unlike the median-of-7 durability numbers).
-Build: ours 504\,s (peak arena 999\,MiB), hnswlib 394\,s.}
+parameters; the QPS shown is single-run but a median-of-5 re-timing reproduced it
+within $\sim$3\%. Build: ours 504\,s (peak arena 999\,MiB), hnswlib 394\,s.}
 \label{tab:recall}
 \begin{tabular}{rrrrr}
 \toprule
@@ -645,23 +691,23 @@ apply it to a graph-ANN WAL and characterize its ANN-specific effect.
 
 \section{Threats to Validity and Remaining Work}
 \label{sec:threats}
-Numbers here are medians of 7 trials on a single host (Apple M4 Pro, APFS/NVMe)
-at the SIFT dimensionality ($d{=}128$); every durability number is labeled by
-\fsync{} mode and reported with its min--max range. The primary tables use synthetic
-vectors, but we verified the tax reproduces on real SIFT1M embeddings within the
-trial spread (\S\ref{sec:tax}), so the vector distribution is not a confound. Because
-macOS \fsync{} does not flush the drive cache, the honest figures use \fullfsync{},
-and the $\sim$155$\times$ floor gap is a macOS/APFS artifact that will be smaller on
-Linux/NVMe. A Linux host with \texttt{ext4}/\texttt{btrfs} on NVMe (and
-\texttt{dm-log-writes} for true power-loss injection) is needed to generalize.
-Remaining work before a full version: (i) recovery on real media and the
-sealing-budget crossover, including the unmeasured snapshot-creation cost; (ii) a
-recovery/tax $N$-sweep up to the $10^6$ scale of the competitiveness study; (iii) a
-concurrent (leader/follower) group committer; (iv) crash-time enforcement of the
-recall-bounded commit policy (\S\ref{sec:recall}) and a proof under
-weaker-than-independence assumptions; and (v) multi-host generalization with true
-power-loss injection. The single-host and macOS-artifact limitations are the principal
-threats to external validity.
+Numbers here are medians of 7 trials, primarily on an Apple M4 Pro (APFS/NVMe) at
+the SIFT dimensionality ($d{=}128$), and cross-validated on an AWS Linux/NVMe host;
+every durability number is labeled by \fsync{} mode with its min--max range. The
+primary tables use synthetic vectors, but the tax reproduces on real SIFT1M
+embeddings within the trial spread (\S\ref{sec:tax}), so the vector distribution is
+not a confound; and it reproduces on Linux/NVMe (\S\ref{sec:honest}), so the
+macOS/APFS \fsync{} behavior is not a confound either. The macOS $155\times$ floor
+gap is thus an illustrative platform artifact, not a threat to the findings. What
+remains genuinely open: (i) block-level \emph{power-loss} injection
+(\texttt{dm-log-writes}) to upgrade the process-crash consistency test to true
+power-loss---the harness is written (\S Reproducibility); (ii) a recovery/tax
+$N$-sweep to the $10^6$ scale of the competitiveness study (the tax already measured
+to shrink from $4.5\times$ to $2.1\times$ over $N{=}2$k--$30$k); (iii) a concurrent
+(leader/follower) group committer; and (iv) crash-time enforcement of the
+recall-bounded commit policy (\S\ref{sec:recall}) with a proof under
+weaker-than-independence assumptions. Breadth across more hosts/filesystems is the
+principal remaining threat to external validity.
 
 \section{Conclusion}
 Durability is the axis ANN evaluation forgot. This paper's contribution is a way

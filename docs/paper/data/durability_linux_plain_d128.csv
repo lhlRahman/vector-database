@@ -1,0 +1,22 @@
+metric,d,mode,median,min,max
+# AWS Linux (x86-64, EBS/NVMe, ext4 on the instance root), plain fsync = real drive flush.
+fsync_floor,128,linux_plain,527,511,529
+perwrite_qps,128,linux_plain,378,359,388
+perwrite_p50,128,linux_plain,2642,2586,2786
+perwrite_p99,128,linux_plain,3339,3120,3874
+perwrite_max,128,linux_plain,4928,3464,8152
+gc_qps_b1,128,linux_plain,378,356,385
+gc_qps_b10,128,linux_plain,1304,1241,1320
+gc_qps_b50,128,linux_plain,1679,1590,1708
+gc_qps_b200,128,linux_plain,1800,1682,1821
+gc_qps_b1000,128,linux_plain,1838,1826,1867
+gc_qps_b2000,128,linux_plain,1853,1777,1884
+sealed_ms_n1000,128,linux_plain,18.9,18.6,19.4
+sealed_ms_n3000,128,linux_plain,26.5,26.0,27.0
+sealed_ms_n6000,128,linux_plain,37.8,35.9,38.6
+mutable_ms_n1000,128,linux_plain,385.2,382.6,393.5
+mutable_ms_n3000,128,linux_plain,1809.0,1771.0,2499.2
+mutable_ms_n6000,128,linux_plain,4843.5,4715.8,4994.6
+seal_create_ms_n1000,128,linux_plain,28.6,27.9,30.2
+seal_create_ms_n3000,128,linux_plain,36.6,35.8,39.2
+seal_create_ms_n6000,128,linux_plain,46.5,43.1,48.6
