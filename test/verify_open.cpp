@@ -10,12 +10,36 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <random>
 #include <string>
+#include <vector>
 
 #include "../src/core/vector_database.hpp"
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::cerr << "usage: verify_open <db_dir> [expected_min_count]\n"; return 2; }
+    // Insert mode: populate <db_dir> with <n> per-write-fsync'd records and LEAVE
+    // the data in place (the durability bench cleans up after itself; the power-loss
+    // harness needs the workload to persist). Each insert issues a WAL fsync -> a
+    // FLUSH barrier that dm-log-writes records.
+    if (argc >= 4 && std::string(argv[1]) == "--insert") {
+        std::string dir = argv[2];
+        int n = std::atoi(argv[3]);
+        VectorDatabase db(128, VectorDatabase::SearchMode::HNSW, false, false, PersistenceConfig{},
+                          false, 0, dir, VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        std::mt19937 rng(1);
+        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+        for (int i = 0; i < n; ++i) {
+            std::vector<float> v(128);
+            for (float& x : v) x = u(rng);
+            db.insert(Vector(v), "k" + std::to_string(i));
+        }
+        db.shutdown();
+        std::cout << "inserted " << n << " durable records into " << dir << "\n";
+        return 0;
+    }
+    if (argc < 2) { std::cerr << "usage: verify_open <db_dir> [expected_min_count]\n"
+                              << "       verify_open --insert <db_dir> <n>\n"; return 2; }
     std::string dir = argv[1];
     long long expected_min = (argc >= 3) ? std::atoll(argv[2]) : -1;
     try {
