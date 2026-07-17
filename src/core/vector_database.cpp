@@ -18,6 +18,15 @@
 #include "../optimizations/gpu_operations.hpp"
 #include "../optimizations/simd_operations.hpp"
 
+namespace {
+// A vector with any NaN component corrupts distance-based search (NaN poisons
+// comparisons and, mixed with finite distances, can break the sort ordering).
+// insert() has always rejected these; update()/batch paths must too.
+bool containsNaN(const Vector& v) {
+    return std::ranges::any_of(v, [](float f) { return std::isnan(f); });
+}
+}  // namespace
+
 // -------------------- ctor / dtor --------------------
 
 std::string VectorDatabase::make_temp_path() {
@@ -414,6 +423,11 @@ bool VectorDatabase::update(const Vector& vector, const std::string& key, const 
     if (!ready.load()) throw std::runtime_error("Database not initialized");
     if (vector.size() != dimensions) throw std::invalid_argument("Vector dimension mismatch");
 
+    if (containsNaN(vector)) {
+        std::cerr << "Warning: Vector " << key << " contains NaN values. Skipping update.\n";
+        return false;
+    }
+
     if (storage_engine == StorageEngine::Segmented) {
         bool updated = segmented_store_->update(vector, key, metadata);
         if (updated) {
@@ -562,9 +576,9 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
     if (storage_engine == StorageEngine::Segmented) {
         total_searches.fetch_add(1, std::memory_order_relaxed);
         std::vector<std::pair<std::string, float>> results;
-        if (query_cache && query_cache->get(query, results)) return results;
+        if (query_cache && query_cache->get(query, k, results)) return results;
         results = segmented_store_->search(query, k);
-        if (query_cache) query_cache->put(query, results);
+        if (query_cache) query_cache->put(query, k, results);
         return results;
     }
 
@@ -573,7 +587,7 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
     total_searches.fetch_add(1, std::memory_order_relaxed);
 
     std::vector<std::pair<std::string, float>> results;
-    if (query_cache && query_cache->get(query, results)) {
+    if (query_cache && query_cache->get(query, k, results)) {
         return results;
     }
 
@@ -587,7 +601,7 @@ std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(cons
     }
 
     if (query_cache) {
-        query_cache->put(query, results);
+        query_cache->put(query, k, results);
     }
 
     return results;
@@ -616,7 +630,7 @@ VectorDatabase::similaritySearchWithMetadata(const Vector& query, size_t k) {
     total_searches.fetch_add(1, std::memory_order_relaxed);
 
     std::vector<std::pair<std::string, float>> rawResults;
-    if (query_cache && query_cache->get(query, rawResults)) {
+    if (query_cache && query_cache->get(query, k, rawResults)) {
         // cache hit
     } else if (gpu_enabled && key_to_slot_.size() > gpu_threshold) {
         rawResults = gpuAcceleratedSearch(query, k);
@@ -626,7 +640,7 @@ VectorDatabase::similaritySearchWithMetadata(const Vector& query, size_t k) {
         rawResults = exactSearch(query, k);
     }
     if (query_cache) {
-        query_cache->put(query, rawResults);
+        query_cache->put(query, k, rawResults);
     }
 
     std::vector<SearchResult> results;
@@ -661,7 +675,7 @@ VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t
         total_searches.fetch_add(1, std::memory_order_relaxed);
 
         std::vector<std::pair<std::string, float>> single_result;
-        if (query_cache && query_cache->get(query, single_result)) {
+        if (query_cache && query_cache->get(query, k, single_result)) {
             results.push_back(std::move(single_result));
             continue;
         }
@@ -675,7 +689,7 @@ VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t
         }
 
         if (query_cache) {
-            query_cache->put(query, single_result);
+            query_cache->put(query, k, single_result);
         }
 
         results.push_back(std::move(single_result));
@@ -707,12 +721,26 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
         RWLock::WriteGuard wg(rw_lock_);
 
         if (storage_engine == StorageEngine::Segmented) {
+            // Validate up front (dims/NaN — the single-insert path does this), then
+            // group-commit the valid subset: one fsync for the whole batch instead
+            // of one per row.
+            std::vector<std::string> vkeys;
+            std::vector<Vector> vvecs;
+            std::vector<std::string> vmetas;
+            vkeys.reserve(keys.size());
+            vvecs.reserve(keys.size());
+            vmetas.reserve(keys.size());
             for (size_t i = 0; i < keys.size(); ++i) {
-                const std::string& meta = (i < metadata.size()) ? metadata[i] : "";
-                if (segmented_store_->insert(vectors[i], keys[i], meta)) {
-                    result.operations_committed++;
+                if (vectors[i].size() != dimensions || containsNaN(vectors[i])) {
+                    result.success = false;
+                    result.error_message = "invalid vector (dims/NaN) for key: " + keys[i];
+                    continue;
                 }
+                vkeys.push_back(keys[i]);
+                vvecs.push_back(vectors[i]);
+                vmetas.push_back(i < metadata.size() ? metadata[i] : "");
             }
+            result.operations_committed = segmented_store_->insertBatch(vkeys, vvecs, vmetas);
             if (query_cache) query_cache->invalidate();
             total_inserts.fetch_add(result.operations_committed, std::memory_order_relaxed);
             result.duration = std::chrono::steady_clock::now() - start_time;
@@ -722,6 +750,11 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
         // Use sequential access for bulk insert
         storage_->advise_sequential();
 
+        // Track committed inserts so we can roll the whole batch back on failure
+        // (all-or-nothing), rather than leaving a partial, durable mutation.
+        std::vector<std::pair<std::string, uint64_t>> committed;
+        committed.reserve(keys.size());
+
         for (size_t i = 0; i < keys.size(); ++i) {
             const std::string& key = keys[i];
             const Vector& vector = vectors[i];
@@ -729,9 +762,9 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
 
             if (key_to_slot_.count(key)) continue;
 
-            if (vector.size() != dimensions) {
+            if (vector.size() != dimensions || containsNaN(vector)) {
                 result.success = false;
-                result.error_message = "Vector dimension mismatch for key: " + key;
+                result.error_message = "invalid vector (dims/NaN) for key: " + key;
                 break;
             }
 
@@ -744,13 +777,26 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchInsert(const std::vector<std
                 if (!persistence_manager->insert(key, vector, meta)) {
                     storage_->remove(slot_id);
                     key_to_slot_.erase(key);
+                    if (hnsw_index) hnsw_index->remove(key);
                     result.success = false;
                     result.error_message = "Failed to persist key: " + key;
                     break;
                 }
             }
 
+            committed.emplace_back(key, slot_id);
             result.operations_committed++;
+        }
+
+        if (!result.success) {
+            // Undo every committed insert in reverse so the batch is atomic.
+            for (auto it = committed.rbegin(); it != committed.rend(); ++it) {
+                storage_->remove(it->second);
+                key_to_slot_.erase(it->first);
+                if (hnsw_index) hnsw_index->remove(it->first);
+                if (persistence_manager) (void)persistence_manager->remove(it->first);
+            }
+            result.operations_committed = 0;
         }
 
         // Back to random access
@@ -791,6 +837,11 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
 
         if (storage_engine == StorageEngine::Segmented) {
             for (size_t i = 0; i < keys.size(); ++i) {
+                if (vectors[i].size() != dimensions || containsNaN(vectors[i])) {
+                    result.success = false;
+                    result.error_message = "invalid vector (dims/NaN) for key: " + keys[i];
+                    continue;
+                }
                 const std::string& meta = (i < metadata.size()) ? metadata[i] : "";
                 if (segmented_store_->update(vectors[i], keys[i], meta)) {
                     result.operations_committed++;
@@ -810,9 +861,9 @@ AtomicBatchInsert::BatchResult VectorDatabase::batchUpdate(const std::vector<std
             auto it = key_to_slot_.find(key);
             if (it == key_to_slot_.end()) continue;
 
-            if (vector.size() != dimensions) {
+            if (vector.size() != dimensions || containsNaN(vector)) {
                 result.success = false;
-                result.error_message = "Vector dimension mismatch for key: " + key;
+                result.error_message = "invalid vector (dims/NaN) for key: " + key;
                 break;
             }
 
@@ -917,6 +968,10 @@ size_t VectorDatabase::flush() {
 }
 
 bool VectorDatabase::checkpoint() {
+    // Same shared-lock discipline as flush(): SegmentedVectorStore has no internal
+    // mutex, so without this guard checkpoint() races a concurrent writer holding
+    // the WriteGuard (e.g. sealMutableSegment/compact mutating sealed_segments_).
+    RWLock::ReadGuard rg(rw_lock_);
     if (segmented_store_) {
         segmented_store_->flush();
         return true;
@@ -1012,6 +1067,12 @@ size_t VectorDatabase::vectorCount() const {
 }
 
 void VectorDatabase::enableSIMD(bool enable) {
+    // NOTE: this toggles a PROCESS-GLOBAL flag (Vector::enable_simd), not per
+    // instance — all VectorDatabase instances share it. It is currently inert
+    // for search results: the distance metrics never consult it (its only
+    // consumer, Vector::dot_product, has no production callers). Kept as a
+    // global on purpose; documented so the per-instance-looking API isn't
+    // mistaken for per-instance state.
     Vector::enable_simd(enable);
 }
 
@@ -1057,6 +1118,12 @@ size_t VectorDatabase::getGPUThreshold() const {
 }
 
 std::vector<std::pair<std::string, float>> VectorDatabase::gpuAcceleratedSearch(const Vector& query, size_t k) {
+    // The GPU kernel only implements Euclidean distance. For any other configured
+    // metric, fall back to the metric-correct CPU path rather than silently
+    // ranking by Euclidean.
+    if (dynamic_cast<const EuclideanDistance*>(distance_metric.get()) == nullptr) {
+        return exactSearch(query, k);
+    }
     std::lock_guard<std::mutex> gpu_lock(gpu_mutex_);
 
     if (gpu_buffer_dirty.load(std::memory_order_acquire)) {

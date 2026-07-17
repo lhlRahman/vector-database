@@ -83,6 +83,30 @@ bool SegmentedVectorStore::insert(const Vector& vector, const std::string& key, 
     return true;
 }
 
+size_t SegmentedVectorStore::insertBatch(const std::vector<std::string>& keys,
+                                         const std::vector<Vector>& vectors,
+                                         const std::vector<std::string>& metadata) {
+    if (!initialized_) throw std::runtime_error("segmented store not initialized");
+    size_t committed = 0;
+    mutable_segment_->beginDeferredSync();  // defer fsync across the whole batch
+    for (size_t i = 0; i < keys.size() && i < vectors.size(); ++i) {
+        const Vector& v = vectors[i];
+        const std::string& key = keys[i];
+        if (v.size() != config_.dimensions) continue;
+        if (key_locations_.count(key) != 0) continue;
+        const std::string& meta = (i < metadata.size()) ? metadata[i] : "";
+        uint64_t sequence = nextSequence();
+        if (mutable_segment_->insert(v, key, meta, sequence)) {  // appends WAL (deferred), applies
+            key_locations_[key] = Location{mutable_segment_, sequence};
+            ++committed;
+        }
+    }
+    mutable_segment_->commitDeferredSync();  // single fsync for the batch (group commit)
+    maybeSealMutableSegment();
+    maybeCompact();
+    return committed;
+}
+
 bool SegmentedVectorStore::update(const Vector& vector, const std::string& key, const std::string& metadata) {
     if (!initialized_) throw std::runtime_error("segmented store not initialized");
     if (vector.size() != config_.dimensions) throw std::invalid_argument("vector dimension mismatch");
@@ -321,8 +345,11 @@ void SegmentedVectorStore::setMetric(std::shared_ptr<const DistanceMetric> metri
     sealed_segments_.clear();
     mutable_segment_ = createSegment(VectorSegment::State::Mutable);
     for (const auto& record : records) {
-        if (!mutable_segment_->insertRecovered(Vector(record.values), record.key,
-                                               record.metadata, record.sequence)) {
+        // Use insert() (not insertRecovered) so each migrated record is appended
+        // to the new segment's WAL and fsync'd. insertRecovered skips the WAL, so
+        // the migrated data lived only in memory and was lost on the next reload.
+        if (!mutable_segment_->insert(Vector(record.values), record.key,
+                                      record.metadata, record.sequence)) {
             throw std::runtime_error("recovery: failed to insert recovered record for key " + record.key);
         }
     }

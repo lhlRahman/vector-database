@@ -28,6 +28,7 @@ private:
     struct CacheEntry {
         std::vector<std::pair<std::string, float>> results;
         uint64_t generation;
+        size_t k;  // how many neighbors these cached results can satisfy
     };
 
     size_t capacity_;
@@ -42,8 +43,10 @@ private:
 
 public:
     explicit QueryCache(size_t capacity);
-    [[nodiscard]] bool get(const Vector& query, std::vector<std::pair<std::string, float>>& results);
-    void put(const Vector& query, const std::vector<std::pair<std::string, float>>& results);
+    // A cache entry is only a hit if it was computed with k' >= the requested k
+    // (top-k is a prefix of top-k'); otherwise it cannot satisfy the request.
+    [[nodiscard]] bool get(const Vector& query, size_t k, std::vector<std::pair<std::string, float>>& results);
+    void put(const Vector& query, size_t k, const std::vector<std::pair<std::string, float>>& results);
     void invalidate();
     void clear();
     Statistics getStatistics() const;

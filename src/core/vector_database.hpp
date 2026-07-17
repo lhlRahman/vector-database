@@ -20,17 +20,22 @@
 #include "../storage/segmented_vector_store.hpp"
 
 /**
- * Vector Database with mmap-backed page storage.
+ * Vector Database facade over two storage engines.
  *
- * Vectors live in an mmap'd file — the OS pages them in/out like PostgreSQL.
- * HNSW stores slot IDs, not vector copies. Exact search uses a flat scan over
- * mmap-backed vectors.
- * Reads are lock-free via epoch-based RCU.
+ * Default engine: SegmentedVectorStore (WAL-backed mutable segment + sealed HNSW
+ * snapshots). Legacy engine: MMapStorage (mmap'd slot file, OS-paged like
+ * PostgreSQL). Indexes store slot IDs, not vector copies, reading through a
+ * VectorAccessor. Concurrency is a single RWLock (std::shared_mutex): shared for
+ * readers, exclusive for writers. (An earlier epoch-RCU was removed as unsound —
+ * TSan caught it racing; there is no lock-free read path.)
  */
 class VectorDatabase {
-    static constexpr size_t kDefaultHNSW_M = 10;
-    static constexpr size_t kDefaultHNSW_EfConstruction = 8;
-    static constexpr size_t kDefaultHNSW_EfSearch = 8;
+    // Sane HNSW defaults (the old 10/8/8 gave ~0.6 recall@10 on the in-memory
+    // path). ef_construction=200 builds a good graph; ef_search=64 is a solid
+    // recall/latency point (search also clamps ef_search >= k).
+    static constexpr size_t kDefaultHNSW_M = 16;
+    static constexpr size_t kDefaultHNSW_EfConstruction = 200;
+    static constexpr size_t kDefaultHNSW_EfSearch = 64;
     static constexpr size_t kDefaultGPUThreshold = 1000;
     static constexpr size_t kDefaultCacheCapacity = 1000;
 

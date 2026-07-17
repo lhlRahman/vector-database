@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -47,8 +48,10 @@ private:
     void worker_loop();
     void handle_connection(int client_fd);
 
-    // Read exactly n bytes from fd, returns false on disconnect/error
-    static bool recv_exact(int fd, void* buf, size_t n);
+    // Read exactly n bytes from fd, returns false on disconnect/error or if the
+    // whole read does not complete before `deadline` (bounds slow-trickle clients).
+    static bool recv_exact(int fd, void* buf, size_t n,
+                           std::chrono::steady_clock::time_point deadline);
     static bool send_all(int fd, const void* buf, size_t n);
 
     // Protocol dispatch

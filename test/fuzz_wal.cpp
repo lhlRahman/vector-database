@@ -47,6 +47,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         cfg.dimensions = 8;
         cfg.metric = std::make_shared<EuclideanDistance>();
         VectorSegment seg("fuzz-seg", dir, cfg, VectorSegment::State::Mutable);
+        seg.load();  // actually parse/replay the (fuzzed) WAL — the ctor alone does not
         (void)seg.recordCount();
     } catch (const std::runtime_error&) {
     } catch (const std::invalid_argument&) {

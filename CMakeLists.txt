@@ -5,13 +5,29 @@ project(VectorDatabase)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# An unset CMAKE_BUILD_TYPE silently compiles at -O0 (unoptimized) — which, with
+# the SIMD paths, produced meaningless performance. Default to Release.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # Enable ARM NEON for ARM architectures
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
-    # For Apple Silicon, NEON is always available and enabled by default
-    # For other ARM systems, we might need additional flags
-    if(NOT APPLE)
+    if(APPLE)
+        # Tune for the host Apple Silicon core (M1..M4) when supported.
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag("-mcpu=native" HAVE_MCPU_NATIVE)
+        if(HAVE_MCPU_NATIVE)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=native")
+        endif()
+    else()
+        # For other ARM systems, we might need additional flags
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon")
     endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686")
+    # Without these the AVX kernels (guarded on __AVX__/__FMA__) fall back to
+    # scalar. Matches the Makefile's x86 ARCH_FLAGS.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2 -mfma")
 endif()
 
 # Add include directories

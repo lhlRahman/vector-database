@@ -30,15 +30,11 @@ struct ManhattanMetricPolicy {
 
 struct CosineMetricPolicy {
     float distance(std::span<const float> a, std::span<const float> b) const {
-        float dot = 0.0f;
-        float norm_a = 0.0f;
-        float norm_b = 0.0f;
-        const size_t dims = a.size();
-        for (size_t i = 0; i < dims; ++i) {
-            dot += a[i] * b[i];
-            norm_a += a[i] * a[i];
-            norm_b += b[i] * b[i];
-        }
+        // Use the shared SIMD dot-product kernel (like the sibling policies)
+        // rather than a hand-rolled scalar loop duplicated from CosineSimilarity.
+        const float dot = simd_ops::dot_product(a.data(), b.data(), a.size());
+        const float norm_a = simd_ops::dot_product(a.data(), a.data(), a.size());
+        const float norm_b = simd_ops::dot_product(b.data(), b.data(), b.size());
         if (norm_a == 0.0f || norm_b == 0.0f) return 1.0f;
         return 1.0f - dot / (std::sqrt(norm_a) * std::sqrt(norm_b));
     }

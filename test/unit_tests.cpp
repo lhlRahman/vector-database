@@ -361,12 +361,12 @@ void test_cache_hit_miss() {
     Vector q(std::vector<float>{1.0f, 2.0f});
 
     std::vector<std::pair<std::string, float>> results;
-    ASSERT_FALSE(cache.get(q, results));
+    ASSERT_FALSE(cache.get(q, 2, results));
 
     std::vector<std::pair<std::string, float>> data = {{"a", 0.5f}, {"b", 1.0f}};
-    cache.put(q, data);
+    cache.put(q, 2, data);
 
-    ASSERT_TRUE(cache.get(q, results));
+    ASSERT_TRUE(cache.get(q, 2, results));
     ASSERT_EQ(results.size(), 2u);
     ASSERT_EQ(results[0].first, "a");
 }
@@ -376,12 +376,12 @@ void test_cache_invalidation() {
     Vector q(std::vector<float>{1.0f, 2.0f});
 
     std::vector<std::pair<std::string, float>> data = {{"a", 0.5f}};
-    cache.put(q, data);
+    cache.put(q, 1, data);
 
     cache.invalidate();
 
     std::vector<std::pair<std::string, float>> results;
-    ASSERT_FALSE(cache.get(q, results));
+    ASSERT_FALSE(cache.get(q, 1, results));
 }
 
 void test_cache_eviction() {
@@ -389,7 +389,7 @@ void test_cache_eviction() {
 
     for (int i = 0; i < 5; i++) {
         Vector q(std::vector<float>{static_cast<float>(i), 0.0f});
-        cache.put(q, {{"x", static_cast<float>(i)}});
+        cache.put(q, 1, {{"x", static_cast<float>(i)}});
     }
 
     auto stats = cache.getStatistics();
@@ -401,9 +401,9 @@ void test_cache_statistics() {
     Vector q(std::vector<float>{1.0f});
 
     std::vector<std::pair<std::string, float>> out;
-    (void)cache.get(q, out);              // expected miss
-    cache.put(q, {{"a", 1.0f}});
-    (void)cache.get(q, out);              // expected hit
+    (void)cache.get(q, 1, out);              // expected miss
+    cache.put(q, 1, {{"a", 1.0f}});
+    (void)cache.get(q, 1, out);              // expected hit
 
     auto stats = cache.getStatistics();
     ASSERT_EQ(stats.hits, 1u);
@@ -414,9 +414,43 @@ void test_cache_statistics() {
 void test_cache_clear() {
     QueryCache cache(10);
     Vector q(std::vector<float>{1.0f});
-    cache.put(q, {{"a", 1.0f}});
+    cache.put(q, 1, {{"a", 1.0f}});
 
     cache.clear();
+    auto stats = cache.getStatistics();
+    ASSERT_EQ(stats.current_size, 0u);
+}
+
+// Regression: an entry cached for k' neighbors must not answer a query for a
+// larger k (top-k is only a prefix of top-k' when k' >= k).
+void test_cache_k_aware() {
+    QueryCache cache(10);
+    Vector q(std::vector<float>{1.0f, 2.0f});
+    std::vector<std::pair<std::string, float>> three = {{"a", 0.1f}, {"b", 0.2f}, {"c", 0.3f}};
+    cache.put(q, 3, three);
+
+    std::vector<std::pair<std::string, float>> out;
+    ASSERT_TRUE(cache.get(q, 3, out));
+    ASSERT_EQ(out.size(), 3u);
+
+    // Smaller k is a prefix hit.
+    ASSERT_TRUE(cache.get(q, 2, out));
+    ASSERT_EQ(out.size(), 2u);
+    ASSERT_EQ(out[0].first, "a");
+
+    // Larger k than was cached must MISS, not return a short/stale result.
+    ASSERT_FALSE(cache.get(q, 5, out));
+}
+
+// Regression: a zero-capacity cache must be a safe no-op (previously back() on
+// an empty list = UB).
+void test_cache_zero_capacity() {
+    QueryCache cache(0);
+    Vector q(std::vector<float>{1.0f});
+    cache.put(q, 1, {{"a", 1.0f}});   // must not crash / no eviction on empty list
+
+    std::vector<std::pair<std::string, float>> out;
+    ASSERT_FALSE(cache.get(q, 1, out));  // nothing is stored
     auto stats = cache.getStatistics();
     ASSERT_EQ(stats.current_size, 0u);
 }
@@ -758,6 +792,53 @@ void test_db_default_segmented_single_op_crash_recovery() {
     std::filesystem::remove_all(path);
 }
 
+// Group commit must be crash-consistent: after batchInsert() returns, its single
+// fsync has made the WHOLE batch durable, so a crash (no clean shutdown) must
+// recover every row.
+void test_db_group_commit_crash_recovery() {
+    auto path = std::filesystem::temp_directory_path() /
+                ("vdb_groupcommit_crash_" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(path);
+    constexpr size_t N = 50;
+
+    pid_t pid = fork();
+    ASSERT_TRUE(pid >= 0);
+    if (pid == 0) {
+        bool ok = true;
+        try {
+            VectorDatabase db(4, VectorDatabase::SearchMode::HNSW, false, /*batch=*/true,
+                              {}, false, 0, path.string());
+            db.initialize();
+            std::vector<std::string> keys;
+            std::vector<Vector> vecs;
+            for (size_t i = 0; i < N; ++i) {
+                keys.push_back("k" + std::to_string(i));
+                vecs.push_back(Vector(std::vector<float>{static_cast<float>(i), 1.0f, 2.0f, 3.0f}));
+            }
+            auto r = db.batchInsert(keys, vecs);  // group commit: one fsync for all N
+            ok = (r.operations_committed == N);
+        } catch (...) {
+            ok = false;
+        }
+        _exit(ok ? 0 : 1);  // NO shutdown() — simulate a crash right after the batch's fsync
+    }
+
+    int status = 0;
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+
+    {
+        VectorDatabase db(4, VectorDatabase::SearchMode::HNSW, false, true, {}, false, 0, path.string());
+        db.initialize();
+        ASSERT_EQ(db.vectorCount(), N);  // every row of the group-committed batch survived
+        for (size_t i = 0; i < N; ++i) ASSERT_TRUE(db.get("k" + std::to_string(i)).has_value());
+        db.shutdown();
+    }
+    std::filesystem::remove_all(path);
+}
+
 // =====================================================================
 //  PROTOCOL (BufferReader / BufferWriter)
 // =====================================================================
@@ -988,6 +1069,19 @@ void test_scalar_quantizer_train_and_quantize() {
     uint32_t d_ab = q.distance_quantized(qa, qb);
     ASSERT_EQ(d_aa, uint32_t{0});  // self-distance is exactly zero
     ASSERT_TRUE(d_ab > 0);
+
+    // Regression: with a GLOBAL scale the quantized distance is proportional to
+    // true L2, so its ordering must match true-L2 ordering. c is closer to a
+    // than b is (true L2), so quantized d(a,c) must be < d(a,b). A per-dimension
+    // scale could violate this.
+    auto true_l2_sq = [](const std::vector<float>& x, const std::vector<float>& y) {
+        float s = 0.0f;
+        for (size_t i = 0; i < x.size(); ++i) { float d = x[i] - y[i]; s += d * d; }
+        return s;
+    };
+    ASSERT_TRUE(true_l2_sq(data[0], data[2]) < true_l2_sq(data[0], data[1]));
+    uint32_t d_ac = q.distance_quantized(qa, qc);
+    ASSERT_TRUE(d_ac < d_ab);  // quantized ordering matches true-L2 ordering
 }
 
 // =====================================================================
@@ -1120,6 +1214,8 @@ int main() {
     run_test("eviction", test_cache_eviction);
     run_test("statistics", test_cache_statistics);
     run_test("clear", test_cache_clear);
+    run_test("k-aware hit/miss", test_cache_k_aware);
+    run_test("zero capacity no-op", test_cache_zero_capacity);
 
     std::cout << "\n[VectorDatabase]\n";
     run_test("insert and get", test_db_insert_get);
@@ -1142,6 +1238,7 @@ int main() {
     run_test("get all vectors", test_db_get_all_vectors);
     run_test("segmented persistence recovery", test_db_segmented_persistence_recovery);
     run_test("default segmented single-op crash recovery", test_db_default_segmented_single_op_crash_recovery);
+    run_test("group commit crash recovery", test_db_group_commit_crash_recovery);
 
     std::cout << "\n[Protocol]\n";
     run_test("buffer roundtrip",          test_protocol_buffer_roundtrip);

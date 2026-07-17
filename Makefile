@@ -7,11 +7,12 @@ BASE_CXXFLAGS = -std=c++20 -Iinclude -Isrc -Wno-psabi -I$(SRC_DIR)
 # Detect architecture and set appropriate flags
 UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_M),arm64)
-    # ARM64 (Apple Silicon) - use NEON
-    ARCH_FLAGS = -mcpu=apple-m1
+    # ARM64 (Apple Silicon): tune for the actual host CPU when the toolchain
+    # accepts -mcpu=native (e.g. targets M4 on an M4), else a safe baseline.
+    ARCH_FLAGS := $(shell $(CXX) -mcpu=native -E -x c++ /dev/null >/dev/null 2>&1 && echo -mcpu=native || echo -mcpu=apple-m1)
 else ifeq ($(UNAME_M),x86_64)
-    # x86_64 - use AVX
-    ARCH_FLAGS = -mavx -mavx2
+    # x86_64 - AVX2 + FMA (the distance kernels use _mm256_fmadd_ps under __FMA__)
+    ARCH_FLAGS = -mavx -mavx2 -mfma
 else
     # Default fallback
     ARCH_FLAGS =
@@ -34,10 +35,18 @@ ifeq ($(UNAME_S),Darwin)
     # Metal frameworks for GPU acceleration (macOS only)
     METAL_FRAMEWORKS = -framework Metal -framework MetalPerformanceShaders -framework Foundation
     GPU_OPS_OBJ = $(BUILD_DIR)/optimizations/gpu_operations.o
+    # For the integration fuzzer: build the real Metal GPU object (the stub is
+    # #ifndef __APPLE__, i.e. empty here) with the fuzz flags + ObjC++ ARC.
+    FUZZ_GPU_SRC = src/optimizations/gpu_operations.mm
+    FUZZ_GPU_OBJ = $(BUILD_DIR)/optimizations/gpu_operations.o
+    FUZZ_GPU_OBJCXX = $(OBJCXXFLAGS)
 else
     DEBUGGER = gdb
     METAL_FRAMEWORKS =
     GPU_OPS_OBJ = $(BUILD_DIR)/optimizations/gpu_operations_stub.o
+    FUZZ_GPU_SRC = src/optimizations/gpu_operations_stub.cpp
+    FUZZ_GPU_OBJ = $(BUILD_DIR)/optimizations/gpu_operations_stub.o
+    FUZZ_GPU_OBJCXX =
 endif
 
 # Set default flags to release mode
@@ -191,6 +200,60 @@ bench-hnsw-allocator: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vec
 	@echo "Running HNSW allocator benchmark..."
 	@./$(HNSW_ALLOC_BENCH)
 
+# ANN recall-vs-QPS benchmark — traces the Pareto curve vs exact ground truth.
+# Runs synthetic clustered data by default; pass a real dataset via ANN_ARGS,
+# e.g.  make bench-ann ANN_ARGS="--data datasets/sift"
+ANN_BENCH = $(BUILD_DIR)/bench_ann
+ANN_ARGS ?=
+bench-ann: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/bench_ann.cpp -o $(BUILD_DIR)/bench_ann.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_ann.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(ANN_BENCH)
+	@echo "ANN benchmark built: $(ANN_BENCH)"
+	@./$(ANN_BENCH) $(ANN_ARGS)
+
+# Recall-bounded durability: recall-at-risk vs un-durable window size W.
+# make bench-recall-staleness ANN_ARGS="--data datasets/sift"
+RECALL_STALENESS_BENCH = $(BUILD_DIR)/bench_recall_staleness
+bench-recall-staleness: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/bench_recall_staleness.cpp -o $(BUILD_DIR)/bench_recall_staleness.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_recall_staleness.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(RECALL_STALENESS_BENCH)
+	@echo "recall-staleness benchmark built: $(RECALL_STALENESS_BENCH)"
+	@./$(RECALL_STALENESS_BENCH) $(ANN_ARGS)
+
+# Crash-consistency verifier (used by the Linux dm-log-writes power-loss harness).
+VERIFY_OPEN = $(BUILD_DIR)/verify_open
+verify-open: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/verify_open.cpp -o $(BUILD_DIR)/verify_open.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/verify_open.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(VERIFY_OPEN)
+	@echo "verify-open built: $(VERIFY_OPEN)"
+
+# Durability benchmark — per-write fsync vs group commit, fsync floor, recovery.
+# make bench-durability DURABILITY_ARGS="--full-fsync --dir /path/on/nvme"
+DURABILITY_ARGS ?=
+bench-durability: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -c test/bench_durability.cpp -o $(BUILD_DIR)/bench_durability.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/bench_durability.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(BUILD_DIR)/bench_durability
+	@echo "Durability benchmark built."
+	@./$(BUILD_DIR)/bench_durability $(DURABILITY_ARGS)
+
+# hnswlib baseline (vendored via datasets/fetch_sift.sh). Compares recall/QPS.
+HNSWLIB_ARGS ?=
+bench-hnswlib:
+	@test -f third_party/hnswlib/hnswlib/hnswlib.h || { echo "hnswlib not vendored — run datasets/fetch_sift.sh first"; exit 1; }
+	@mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -Ithird_party/hnswlib -c test/bench_hnswlib.cpp -o $(BUILD_DIR)/bench_hnswlib.o
+	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/bench_hnswlib.o -o $(BUILD_DIR)/bench_hnswlib
+	@echo "hnswlib baseline built."
+	@./$(BUILD_DIR)/bench_hnswlib $(HNSWLIB_ARGS)
+
 # Segmented persistence benchmark (legacy mmap/HNSW vs segment WAL/HNSW snapshots)
 SEGMENTED_PERSISTENCE_BENCH = $(BUILD_DIR)/bench_segmented_persistence
 bench-segmented-persistence: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
@@ -300,10 +363,106 @@ fuzz-logentry: $(FUZZ_MAIN_OBJ)
 	@echo "Running LogEntry fuzzer..."
 	@./$(FUZZ_LOGENTRY) $(FUZZ_RUN_FLAGS)
 
-fuzz: fuzz-protocol fuzz-wal fuzz-logentry
+FUZZ_MMAP = $(BUILD_DIR)/fuzz_mmap_file
+fuzz-mmap-file: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/storage
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/storage/mmap_storage.cpp -o $(BUILD_DIR)/storage/mmap_storage.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_mmap_file.cpp -o $(BUILD_DIR)/fuzz_mmap_file.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_mmap_file.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/storage/mmap_storage.o \
+		$(FUZZ_LDFLAGS) -pthread -o $(FUZZ_MMAP)
+	@echo "Running mmap-file fuzzer..."
+	@./$(FUZZ_MMAP) $(FUZZ_RUN_FLAGS)
+
+FUZZ_DISTANCE = $(BUILD_DIR)/fuzz_distance
+fuzz-distance: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/core $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/core/vector.cpp -o $(BUILD_DIR)/core/vector.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/utils/distance_metrics.cpp -o $(BUILD_DIR)/utils/distance_metrics.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/optimizations/simd_operations.cpp -o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_distance.cpp -o $(BUILD_DIR)/fuzz_distance.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_distance.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/core/vector.o $(BUILD_DIR)/utils/distance_metrics.o \
+		$(BUILD_DIR)/optimizations/simd_operations.o \
+		$(FUZZ_LDFLAGS) -pthread -o $(FUZZ_DISTANCE)
+	@echo "Running distance/quantizer fuzzer..."
+	@./$(FUZZ_DISTANCE) $(FUZZ_RUN_FLAGS)
+
+FUZZ_SEALED = $(BUILD_DIR)/fuzz_sealed_segment
+fuzz-sealed-segment: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/storage $(BUILD_DIR)/algorithms $(BUILD_DIR)/core $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/storage/segment.cpp -o $(BUILD_DIR)/storage/segment.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/storage/mmap_storage.cpp -o $(BUILD_DIR)/storage/mmap_storage.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/algorithms/hnsw_index.cpp -o $(BUILD_DIR)/algorithms/hnsw_index.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/core/vector.cpp -o $(BUILD_DIR)/core/vector.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/utils/distance_metrics.cpp -o $(BUILD_DIR)/utils/distance_metrics.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/optimizations/simd_operations.cpp -o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_sealed_segment.cpp -o $(BUILD_DIR)/fuzz_sealed_segment.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_sealed_segment.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/storage/segment.o $(BUILD_DIR)/storage/mmap_storage.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		$(FUZZ_LDFLAGS) -pthread -o $(FUZZ_SEALED)
+	@echo "Running sealed-segment fuzzer..."
+	@./$(FUZZ_SEALED) $(FUZZ_RUN_FLAGS)
+
+# Full-stack integration fuzzer: drives a real VectorDatabase (segmented engine).
+FUZZ_DBOPS = $(BUILD_DIR)/fuzz_db_ops
+fuzz-db-ops: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/core $(BUILD_DIR)/features $(BUILD_DIR)/algorithms $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations $(BUILD_DIR)/storage
+	@for f in core/vector_database core/vector features/query_cache features/atomic_batch_insert \
+	          features/atomic_persistence features/commit_log algorithms/hnsw_index \
+	          utils/distance_metrics utils/random_generator optimizations/simd_operations \
+	          optimizations/parallel_processing storage/mmap_storage storage/segment \
+	          storage/segmented_vector_store; do \
+		$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/$$f.cpp -o $(BUILD_DIR)/$$f.o || exit 1; \
+	done
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) $(FUZZ_GPU_OBJCXX) -c $(FUZZ_GPU_SRC) -o $(FUZZ_GPU_OBJ)
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_db_ops.cpp -o $(BUILD_DIR)/fuzz_db_ops.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_db_ops.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
+		$(BUILD_DIR)/features/atomic_persistence.o $(BUILD_DIR)/features/commit_log.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/utils/distance_metrics.o \
+		$(BUILD_DIR)/utils/random_generator.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		$(BUILD_DIR)/optimizations/parallel_processing.o $(FUZZ_GPU_OBJ) \
+		$(BUILD_DIR)/storage/mmap_storage.o $(BUILD_DIR)/storage/segment.o \
+		$(BUILD_DIR)/storage/segmented_vector_store.o \
+		$(FUZZ_LDFLAGS) -pthread $(METAL_FRAMEWORKS) -o $(FUZZ_DBOPS)
+	@echo "Running db-ops integration fuzzer..."
+	@./$(FUZZ_DBOPS) $(FUZZ_RUN_FLAGS)
+
+# Fast integration fuzzer: same as fuzz-db-ops but on the MMap engine (no
+# per-op fsync), so it reaches far higher throughput for broad coverage.
+FUZZ_DBOPS_MMAP = $(BUILD_DIR)/fuzz_db_ops_mmap
+fuzz-db-ops-mmap: $(FUZZ_MAIN_OBJ)
+	@mkdir -p $(BUILD_DIR)/core $(BUILD_DIR)/features $(BUILD_DIR)/algorithms $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations $(BUILD_DIR)/storage
+	@for f in core/vector_database core/vector features/query_cache features/atomic_batch_insert \
+	          features/atomic_persistence features/commit_log algorithms/hnsw_index \
+	          utils/distance_metrics utils/random_generator optimizations/simd_operations \
+	          optimizations/parallel_processing storage/mmap_storage storage/segment \
+	          storage/segmented_vector_store; do \
+		$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c src/$$f.cpp -o $(BUILD_DIR)/$$f.o || exit 1; \
+	done
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) $(FUZZ_GPU_OBJCXX) -c $(FUZZ_GPU_SRC) -o $(FUZZ_GPU_OBJ)
+	$(FUZZ_CC) $(FUZZ_CXXFLAGS) -c test/fuzz_db_ops_mmap.cpp -o $(BUILD_DIR)/fuzz_db_ops_mmap.o
+	$(FUZZ_CC) $(BUILD_DIR)/fuzz_db_ops_mmap.o $(FUZZ_MAIN_OBJ) \
+		$(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
+		$(BUILD_DIR)/features/atomic_persistence.o $(BUILD_DIR)/features/commit_log.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/utils/distance_metrics.o \
+		$(BUILD_DIR)/utils/random_generator.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		$(BUILD_DIR)/optimizations/parallel_processing.o $(FUZZ_GPU_OBJ) \
+		$(BUILD_DIR)/storage/mmap_storage.o $(BUILD_DIR)/storage/segment.o \
+		$(BUILD_DIR)/storage/segmented_vector_store.o \
+		$(FUZZ_LDFLAGS) -pthread $(METAL_FRAMEWORKS) -o $(FUZZ_DBOPS_MMAP)
+	@echo "Running db-ops (mmap) integration fuzzer..."
+	@./$(FUZZ_DBOPS_MMAP) $(FUZZ_RUN_FLAGS)
+
+fuzz: fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops-mmap fuzz-db-ops
 
 # Clean up
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence fuzz fuzz-protocol fuzz-wal fuzz-logentry
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops

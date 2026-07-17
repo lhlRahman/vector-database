@@ -14,6 +14,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <unistd.h>  // getpid
+
 #include "../src/core/vector.hpp"
 #include "../src/core/vector_database.hpp"
 #include "../src/utils/distance_metrics.hpp"
@@ -650,6 +652,252 @@ void test_segmented_recovery_after_restart() {
     std::filesystem::remove_all(path);
 }
 
+// Regression (#17): changing the distance metric migrates all live vectors into
+// a fresh segment. That migration must be durable (WAL-appended), so the data
+// survives a restart even without an explicit checkpoint.
+void test_setmetric_durable_across_restart() {
+    auto path = std::filesystem::temp_directory_path() /
+                ("e2e_setmetric_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(path);
+
+    constexpr size_t N = 30;
+    {
+        VectorDatabase db(4, VectorDatabase::SearchMode::HNSW,
+                          false, false, {}, false, 0,
+                          path.string(), VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        for (size_t i = 0; i < N; ++i) {
+            ASSERT_TRUE(db.insert(random_vec(4, static_cast<unsigned>(i + 1)),
+                                  "k" + std::to_string(i), "m" + std::to_string(i)));
+        }
+        db.setDistanceMetric(std::make_shared<ManhattanDistance>());  // triggers migration
+        ASSERT_EQ(db.vectorCount(), N);
+        db.shutdown();
+    }
+    {
+        VectorDatabase db(4, VectorDatabase::SearchMode::HNSW,
+                          false, false, {}, false, 0,
+                          path.string(), VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        ASSERT_EQ(db.vectorCount(), N);  // was 0 before the fix (migration lost)
+        for (size_t i = 0; i < N; ++i) {
+            ASSERT_TRUE(db.get("k" + std::to_string(i)).has_value());
+            ASSERT_EQ(db.getMetadata("k" + std::to_string(i)), "m" + std::to_string(i));
+        }
+        db.shutdown();
+    }
+    std::filesystem::remove_all(path);
+}
+
+// Regression (#2): update() must reject a NaN vector (as insert() does) and
+// leave the existing value untouched.
+void test_update_rejects_nan() {
+    VectorDatabase db(3);
+    db.initialize();
+    ASSERT_TRUE(db.insert(Vector(std::vector<float>{1.0f, 2.0f, 3.0f}), "k", "orig"));
+
+    Vector nan_vec(std::vector<float>{1.0f, NAN, 3.0f});
+    ASSERT_FALSE(db.update(nan_vec, "k", "bad"));
+
+    ASSERT_TRUE(db.get("k").has_value());
+    ASSERT_EQ(db.getMetadata("k"), "orig");
+    db.shutdown();
+}
+
+// Regression (#8): on the MMap+HNSW path, update() does remove()+insert() reusing
+// the same slot; the old graph node must be tombstoned so the key isn't returned
+// twice.
+void test_hnsw_update_no_duplicate() {
+    VectorDatabase db(3, VectorDatabase::SearchMode::HNSW,
+                      false, false, {}, false, 0, "", VectorDatabase::StorageEngine::MMap);
+    db.initialize();
+    ASSERT_TRUE(db.insert(Vector(std::vector<float>{1.0f, 0.0f, 0.0f}), "a"));
+    ASSERT_TRUE(db.insert(Vector(std::vector<float>{0.0f, 1.0f, 0.0f}), "b"));
+    ASSERT_TRUE(db.insert(Vector(std::vector<float>{0.0f, 0.0f, 1.0f}), "c"));
+    ASSERT_TRUE(db.update(Vector(std::vector<float>{0.9f, 0.1f, 0.0f}), "a"));
+
+    auto res = db.similaritySearch(Vector(std::vector<float>{1.0f, 0.0f, 0.0f}), 3);
+    int count_a = 0;
+    for (const auto& [key, dist] : res) if (key == "a") ++count_a;
+    ASSERT_EQ(count_a, 1);
+    db.shutdown();
+}
+
+// Regression (#24): M==1 made ml = 1/log(1) = inf → getRandomLevel() cast inf to
+// size_t (UB / OOM). Must not crash.
+void test_hnsw_m1_no_crash() {
+    VectorDatabase db(3, VectorDatabase::SearchMode::HNSW,
+                      false, false, {}, false, 0, "", VectorDatabase::StorageEngine::MMap);
+    db.initialize();
+    db.configureHNSW(1, 8, 8);
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_TRUE(db.insert(random_vec(3, static_cast<unsigned>(i + 1)), "k" + std::to_string(i)));
+    }
+    auto res = db.similaritySearch(random_vec(3, 1), 3);
+    ASSERT_TRUE(res.size() >= 1);
+    db.shutdown();
+}
+
+static float l2_sq(const Vector& a, const Vector& b) {
+    float s = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) { float d = a[i] - b[i]; s += d * d; }
+    return s;
+}
+
+// Exercises the segmented lifecycle end to end: forced sealing (small mutable
+// segment), tombstones + compaction, then crash-free recovery of exactly the
+// live set. Validates #17/#52 and the snapshot-recovery path at scale.
+void test_segmented_seal_compact_recover() {
+    auto path = std::filesystem::temp_directory_path() /
+                ("e2e_seal_compact_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(path);
+
+    constexpr size_t N = 240;
+    std::unordered_set<std::string> live;
+    std::unordered_set<std::string> deleted;
+    {
+        VectorDatabase db(8, VectorDatabase::SearchMode::HNSW,
+                          false, false, {}, false, 0,
+                          path.string(), VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        db.configureSegmentedStorage(/*max_mutable_segment_records=*/40, 16, 0.25); // force sealing
+
+        for (size_t i = 0; i < N; ++i) {
+            std::string k = "k" + std::to_string(i);
+            ASSERT_TRUE(db.insert(random_vec(8, static_cast<unsigned>(i + 1)), k, "m" + std::to_string(i)));
+            live.insert(k);
+        }
+        ASSERT_EQ(db.vectorCount(), N);
+
+        // Delete every 3rd key to build tombstones, then compact + seal.
+        for (size_t i = 0; i < N; i += 3) {
+            std::string k = "k" + std::to_string(i);
+            ASSERT_TRUE(db.remove(k));
+            live.erase(k);
+            deleted.insert(k);
+        }
+        db.compactSegments();
+        db.sealMutableSegment();
+
+        ASSERT_EQ(db.vectorCount(), live.size());
+        for (const auto& k : live)    ASSERT_TRUE(db.get(k).has_value());
+        for (const auto& k : deleted) ASSERT_FALSE(db.get(k).has_value());
+        ASSERT_TRUE(db.checkpoint());
+        db.shutdown();
+    }
+    {   // Cold reopen — recovery must reconstruct exactly the live set.
+        VectorDatabase db(8, VectorDatabase::SearchMode::HNSW,
+                          false, false, {}, false, 0,
+                          path.string(), VectorDatabase::StorageEngine::Segmented);
+        db.initialize();
+        ASSERT_EQ(db.vectorCount(), live.size());
+        for (const auto& k : live)    ASSERT_TRUE(db.get(k).has_value());
+        for (const auto& k : deleted) ASSERT_FALSE(db.get(k).has_value());
+        db.shutdown();
+    }
+    std::filesystem::remove_all(path);
+}
+
+// Larger-scale recall@10 on the rewritten HNSW (real hierarchical descent +
+// pruning). MMap engine so this is a pure single-graph index test, no fsync.
+void test_hnsw_recall_large_scale() {
+    VectorDatabase db(16, VectorDatabase::SearchMode::HNSW,
+                      false, false, {}, false, 0, "", VectorDatabase::StorageEngine::MMap);
+    db.initialize();
+    // The MMap engine's default HNSW params are tiny (M=10, ef=8); set realistic
+    // ones (the segmented engine uses ef_construction=80/ef_search=50 by default).
+    db.configureHNSW(/*M=*/16, /*ef_construction=*/200, /*ef_search=*/64);
+
+    constexpr size_t N = 1500, D = 16, Q = 40, K = 10;
+    std::vector<Vector> data;
+    data.reserve(N);
+    for (size_t i = 0; i < N; ++i) {
+        Vector v = random_vec(D, static_cast<unsigned>(i + 1));
+        ASSERT_TRUE(db.insert(v, "k" + std::to_string(i)));
+        data.push_back(std::move(v));
+    }
+
+    double hits = 0, total = 0;
+    for (size_t q = 0; q < Q; ++q) {
+        Vector query = random_vec(D, static_cast<unsigned>(100000 + q));
+        // Brute-force ground truth: indices of the K nearest by L2.
+        std::vector<std::pair<float, size_t>> d;
+        d.reserve(N);
+        for (size_t i = 0; i < N; ++i) d.emplace_back(l2_sq(query, data[i]), i);
+        std::partial_sort(d.begin(), d.begin() + K, d.end());
+        std::unordered_set<std::string> truth;
+        for (size_t i = 0; i < K; ++i) truth.insert("k" + std::to_string(d[i].second));
+
+        auto res = db.similaritySearch(query, K);
+        for (const auto& [key, dist] : res) if (truth.count(key)) hits += 1;
+        total += K;
+    }
+    double recall = hits / total;
+    if (recall < 0.75) { std::cerr << "  recall@10 = " << recall << " (want >= 0.75)\n"; }
+    ASSERT_TRUE(recall >= 0.75);
+    db.shutdown();
+}
+
+// After many in-place updates of the same keys, no key may appear twice in a
+// result set (validates the HNSW dup-node fix at scale on the default engine).
+void test_hnsw_no_dup_after_many_updates() {
+    VectorDatabase db(8);  // default segmented
+    db.initialize();
+    constexpr size_t N = 40;
+    for (size_t i = 0; i < N; ++i) ASSERT_TRUE(db.insert(random_vec(8, static_cast<unsigned>(i)), "k" + std::to_string(i)));
+    for (int round = 0; round < 4; ++round)
+        for (size_t i = 0; i < N; ++i)
+            ASSERT_TRUE(db.update(random_vec(8, static_cast<unsigned>(i + round * 1000 + 1)), "k" + std::to_string(i)));
+
+    for (size_t q = 0; q < 10; ++q) {
+        auto res = db.similaritySearch(random_vec(8, static_cast<unsigned>(q + 7)), N);
+        std::unordered_set<std::string> seen;
+        for (const auto& [key, dist] : res) {
+            ASSERT_TRUE(seen.insert(key).second);  // no duplicate key in one result set
+        }
+    }
+    db.shutdown();
+}
+
+// Mixed concurrent workload — insert/search/update/delete from many threads.
+// The value is running clean under TSan/ASan (no races, no crashes, DB usable).
+void test_concurrent_mixed_ops_stress() {
+    VectorDatabase db(8);
+    db.initialize();
+    for (size_t i = 0; i < 200; ++i)
+        (void)db.insert(random_vec(8, static_cast<unsigned>(i)), "s" + std::to_string(i));
+
+    constexpr int kThreads = 8, kIters = 300;
+    std::vector<std::thread> ts;
+    std::atomic<int> next_new{0};
+    for (int t = 0; t < kThreads; ++t) {
+        ts.emplace_back([&, t] {
+            std::mt19937 rng(static_cast<unsigned>(t + 1));
+            for (int it = 0; it < kIters; ++it) {
+                int key = static_cast<int>(rng() % 200);
+                std::string k = "s" + std::to_string(key);
+                try {
+                    switch (t % 4) {
+                        case 0: (void)db.similaritySearch(random_vec(8, rng()), 5); break;
+                        case 1: (void)db.update(random_vec(8, rng()), k); break;
+                        case 2: {
+                            int n = next_new.fetch_add(1);
+                            (void)db.insert(random_vec(8, rng()), "n" + std::to_string(n));
+                            break;
+                        }
+                        case 3: (void)db.remove(k); break;
+                    }
+                } catch (const std::exception&) { /* concurrent state races are fine */ }
+            }
+        });
+    }
+    for (auto& th : ts) th.join();
+    // Must still be usable after the storm.
+    (void)db.similaritySearch(random_vec(8, 12345), 5);
+    ASSERT_TRUE(db.vectorCount() <= 200 + kThreads * kIters);
+    db.shutdown();
+}
+
 // =====================================================================
 //  CONCURRENCY: many threads, all unique keys → no insert lost
 // =====================================================================
@@ -872,6 +1120,14 @@ int main() {
 
     std::cout << "\n[Persistence]\n";
     run_test("segmented recovery after restart", test_segmented_recovery_after_restart);
+    run_test("setMetric durable across restart", test_setmetric_durable_across_restart);
+    run_test("update rejects NaN", test_update_rejects_nan);
+    run_test("HNSW update no duplicate", test_hnsw_update_no_duplicate);
+    run_test("HNSW M=1 no crash", test_hnsw_m1_no_crash);
+    run_test("segmented seal+compact+recover", test_segmented_seal_compact_recover);
+    run_test("HNSW recall@10 large scale", test_hnsw_recall_large_scale);
+    run_test("HNSW no dup after many updates", test_hnsw_no_dup_after_many_updates);
+    run_test("concurrent mixed ops stress", test_concurrent_mixed_ops_stress);
 
     std::cout << "\n[Concurrency at scale]\n";
     run_test("concurrent inserts no data loss",  test_concurrent_inserts_no_data_loss);
