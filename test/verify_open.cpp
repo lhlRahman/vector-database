@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "--insert") {
         std::string dir = argv[2];
         int n = std::atoi(argv[3]);
-        VectorDatabase db(128, VectorDatabase::SearchMode::HNSW, false, false, PersistenceConfig{},
+        VectorDatabase db(128, VectorDatabase::SearchMode::HNSW, false, true, PersistenceConfig{},
                           false, 0, dir, VectorDatabase::StorageEngine::Segmented);
         db.initialize();
         std::mt19937 rng(1);
