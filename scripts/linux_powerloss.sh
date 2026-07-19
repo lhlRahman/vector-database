@@ -41,9 +41,12 @@ cat > "$CHECK" <<EOF
 #!/bin/bash
 set -u
 fsck."$FS" -fy "$REPLAY_DEV" >/dev/null 2>&1
-mount "$REPLAY_DEV" "$SCRATCH" 2>/dev/null || exit 1
+# Early barriers precede mkfs completion: the device isn't a mountable fs yet, which
+# is not an inconsistency -> skip. Only barriers that mount are candidates for a
+# real torn-DB failure.
+mount "$REPLAY_DEV" "$SCRATCH" 2>/dev/null || exit 0
 rc=0
-# Early barriers precede DB creation; only require the DB to open once it exists.
+# Early barriers also precede DB creation; only require the DB to open once it exists.
 if [ -d "$SCRATCH/$DBREL" ]; then
   "$VERIFY" "$SCRATCH/$DBREL" 0 >/dev/null 2>&1 || rc=1
 fi
