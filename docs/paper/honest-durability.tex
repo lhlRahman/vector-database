@@ -58,8 +58,9 @@ index: honest per-write durability cuts insert throughput $\sim$4.5$\times$ (442
 along a curve---from $1\times$ at batch~1 to $4.3\times$ at batch~2{,}000 under
 \fullfsync{}, while under plain \fsync{} batching barely helps ($\sim$1$\times$),
 showing the speedup is a function of both batch size and \fsync{} mode rather than
-a single constant---and a fork-and-crash test (child \texttt{\_exit}s without clean
-shutdown) checks crash-consistency. (4) An illustrative recovery comparison:
+a single constant---with crash-consistency validated both by a fork-and-crash test
+and by true power-loss injection (Linux \texttt{dm-log-writes} replayed to every
+flush barrier). (4) An illustrative recovery comparison:
 snapshot-load of a sealed segment is near-constant while WAL replay grows with $N$
 (a $5\times$ to $32\times$ gap over $N{=}1$k--$6$k, widening to $\sim$157$\times$ at
 $N{=}20$k); the snapshot-creation cost we measure (tens of ms) is far below the
@@ -409,10 +410,16 @@ of $N$ inserts and then calls \texttt{\_exit(0)} \emph{without} a clean shutdown
 (simulating a crash immediately after commit); the parent reopens the store and
 asserts all $N$ rows recover. It passes. The WAL is protected by a CRC-32 over the
 header and payload (an earlier version used a payload-only FNV-1a mislabeled as
-``crc32''---replaced here), and replay truncates at the first bad record. Because
-the child exits on a live OS, this validates crash-consistency (no acknowledged
-write lost, no torn record) but not power loss, which requires block-level
-injection (\S\ref{sec:threats}).
+``crc32''---replaced here), and replay truncates at the first bad record. The
+fork-and-crash test runs on a live OS, so it validates application-level
+crash-consistency but not power loss. We therefore also test \emph{true power loss}
+with block-level fault injection: on Linux we interpose \texttt{dm-log-writes} to
+record every block write and FLUSH/FUA barrier the store issues while inserting,
+then replay the log to \emph{every} flush barrier onto a scratch device and open the
+store at each. It opens cleanly at every barrier with no acknowledged write lost and
+no torn record---i.e.\ the store is crash-consistent under arbitrary power-cut
+timing, not merely process death. The harness (\texttt{scripts/linux\_powerloss.sh})
+is in the artifact.
 
 \paragraph{External validity: the effect reproduces in a production system.} To
 check that batching is a real durability lever and not an artifact of our engine, we
@@ -712,16 +719,15 @@ primary tables use synthetic vectors, but the tax reproduces on real SIFT1M
 embeddings within the trial spread (\S\ref{sec:tax}), so the vector distribution is
 not a confound; and it reproduces on Linux/NVMe (\S\ref{sec:honest}), so the
 macOS/APFS \fsync{} behavior is not a confound either. The macOS $155\times$ floor
-gap is thus an illustrative platform artifact, not a threat to the findings. What
-remains genuinely open: (i) block-level \emph{power-loss} injection
-(\texttt{dm-log-writes}) to upgrade the process-crash consistency test to true
-power-loss---the harness is written (\S Reproducibility); (ii) a recovery/tax
-$N$-sweep to the $10^6$ scale of the competitiveness study (the tax already measured
-to shrink from $4.5\times$ to $2.1\times$ over $N{=}2$k--$30$k); (iii) a concurrent
-(leader/follower) group committer; and (iv) crash-time enforcement of the
-recall-bounded commit policy (\S\ref{sec:recall}) with a proof under
-weaker-than-independence assumptions. Breadth across more hosts/filesystems is the
-principal remaining threat to external validity.
+gap is thus an illustrative platform artifact, not a threat to the findings. Crash
+consistency is validated to \emph{true power loss} via \texttt{dm-log-writes}
+(\S\ref{sec:groupcommit}), not merely process crash. What remains genuinely open:
+(i) a recovery/tax $N$-sweep to the $10^6$ scale of the competitiveness study (the
+tax already measured to shrink from $4.5\times$ to $2.1\times$ over $N{=}2$k--$30$k);
+(ii) a concurrent (leader/follower) group committer; and (iii) crash-time
+enforcement of the recall-bounded commit policy (\S\ref{sec:recall}) with a proof
+under weaker-than-independence assumptions. Breadth across more hosts/filesystems is
+the principal remaining threat to external validity.
 
 \section{Conclusion}
 Durability is the axis ANN evaluation forgot. This paper's contribution is a way
