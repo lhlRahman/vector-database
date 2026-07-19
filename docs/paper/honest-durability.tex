@@ -40,7 +40,9 @@ from-scratch C++20 vector database with a segmented, write-ahead-logged (WAL)
 HNSW store---whose index reaches $0.999$ recall@10 on SIFT1M (and $0.98$ on the
 harder $960$-d GIST1M) and sits on the hnswlib recall--QPS Pareto front, confirming
 we measure on a competitive, not a broken, index---we contribute the following,
-measured on two hosts (Apple M4 Pro; AWS Linux/NVMe). (1) A \emph{durability-aware measurement protocol} for ANN
+measured on two hosts (Apple M4 Pro; AWS Linux/NVMe).
+
+\noindent (1) A \emph{durability-aware measurement protocol} for ANN
 indexes: a tmpfs (RAM-backed filesystem) guard, an \fsync{}-floor baseline, and
 mandatory \fsync{}-mode labeling, because on some platforms the default \fsync{}
 does not flush the drive cache and so reports optimistic ``durable'' numbers.
@@ -70,7 +72,9 @@ durability}: we express the exposure of group commit's un-synced window in recal
 units and bound it (worst case $\min(W,k)/k$; benign expectation $W/N$), measuring
 on SIFT1M that a crash risks only $0.13\%$ recall@10 at our batch size---about
 $\sim$770$\times$ below the distribution-free worst case---so a recall-staleness SLA and
-group-commit throughput coexist. All code, harnesses, and results are open and
+group-commit throughput coexist.
+
+\noindent All code, harnesses, and results are open and
 reproducible; durability numbers are the \emph{median of 7 trials} (3 for the
 $N$-sweeps) with the observed min--max range reported alongside.
 \end{abstract}
