@@ -71,9 +71,9 @@ recovery analysis. (5) \emph{Recall-bounded
 durability}: we express the exposure of an un-durable insert window as top-$k$
 \emph{membership at risk} and bound it (worst case $\min(W,k)/k$; exchangeable
 expectation $W/N$), measure on SIFT1M that it is only $0.13\%$ at our batch size
-($\sim$770$\times$ below the worst case), and specify a recall-aware committer that
-couples this bound to WAL hardening---a cross-layer design (bounds + measurement),
-not yet a fully-enforced system.
+($\sim$770$\times$ below the worst case), and prototype a recall-aware committer
+whose crash loss we validate against an exact oracle (benign $\Delta$recall
+$\le\varepsilon$ on SIFT1M); production WAL integration is future work.
 
 \noindent All code, harnesses, and results are open and
 reproducible; durability numbers are the \emph{median of 7 trials} (3 for the
@@ -145,10 +145,11 @@ be far below the WAL replay it saves.
 the top-$k$ \emph{membership} a crash can destroy---worst-case $\min(W,k)/k$ and
 exchangeable expectation $W/N$ for an un-durable window of $W$ inserts---measure on
 SIFT1M that the real exposure is $\sim$770$\times$ below the worst case ($0.13\%$ at
-our batch size), and specify a recall-aware committer that couples this bound to WAL
-hardening. To our knowledge this cross-layer loop (measured ANN exposure $\to$ flush
-trigger $\to$ crash-verified) is new; we present it as bounds + measurement + design,
-not a fully-enforced system.
+our batch size), and prototype a recall-aware committer that couples this bound to
+WAL hardening---crash-validated against an exact oracle (benign $\Delta$recall
+$\le\varepsilon$ at every budget on SIFT1M). To our knowledge this cross-layer loop
+(measured ANN exposure $\to$ flush trigger $\to$ crash-verified) is new; production
+integration into the WAL path is future work.
 \end{itemize}
 
 \section{Background and System}
@@ -483,16 +484,65 @@ independent delta that never mutates durable edges, with a deterministic durable
 candidate set across recovery; then every lost answer must lie in the window, giving
 $\Delta\text{recall}\le M(W)\le\min(W,k)/k$.
 
-\textbf{Toward a recall-aware committer.} A \emph{recall-aware commit} policy would
-pick the largest $W$ with $M(W)\le\varepsilon$ for the deployment's regime
-($W{=}\varepsilon N$ benign, $\varepsilon k$ adversarial) and \fsync{} before that
-budget is exceeded. We specify the mechanism---a weak-ack API and a leader/follower
-committer that reserves risk before a write becomes visible, over the isolated delta
-above---but do not yet enforce it end-to-end: our current batch path is
-\emph{fully durable} (\fsync{} before return, so acknowledged window
-$W_{\text{ack}}{=}0$; the $4.3\times$ of \S\ref{sec:groupcommit} is durable
-batching). What we establish here is the metric, the two bounds, and the measured
-margin; a running committer with exact-oracle crash validation is future work.
+\textbf{A prototype recall-aware committer, crash-validated.} A \emph{recall-aware
+commit} policy picks the largest window $W$ with $M(W)\le\varepsilon$ for the
+deployment's regime ($W{=}\varepsilon N$ benign, $\varepsilon k$ adversarial) and
+\fsync{}es before that budget is exceeded. We prototype it on the isolation model
+above---the durable layer is the HNSW over the committed set; the volatile window is
+searched \emph{exactly} (a flat scan that never mutates the durable graph) and merged
+by true distance---then inject a crash (drop the window) and measure the
+\emph{actual} service recall@10 lost against the exact pre-crash top-$k$.
+Table~\ref{tab:commit} and Fig.~\ref{fig:commitsla} (SIFT1M, $N{=}50$k, $1$k queries) show the SLA holds
+end-to-end under a \emph{real, approximate} HNSW: benign mean $\Delta$recall stays
+$\le\varepsilon$ at every budget ($0.004$ at $\varepsilon{=}0.5\%$ to $0.029$ at
+$5\%$), while the adversarial (query-hot) window exceeds it everywhere
+($0.075$--$0.41$), confirming the budget must shrink under correlation. (Per-query
+worst-case loss is much higher, consistent with the mean-vs-tail gap above; a
+per-query SLO needs the tail policy.) This validates the mechanism, not just the
+bound. What remains for a production system: our shipped batch path is still
+\emph{fully durable} (\fsync{} before return, $W_{\text{ack}}{=}0$; the $4.3\times$ of
+\S\ref{sec:groupcommit} is durable batching), so wiring a continuous weak-ack
+leader/follower committer into the WAL and validating it under block-level power loss
+are future work.
+
+\begin{table}[t]
+\centering
+\caption{Recall-aware committer, crash validation on SIFT1M ($N{=}50$k, $k{=}10$,
+$1$k queries): target budget $\varepsilon$ vs.\ \emph{measured} mean service
+$\Delta$recall@10 after a crash (drop the window), against the exact pre-crash
+top-$k$. Benign holds the SLA at every budget; adversarial (query-hot window) does
+not, so it needs a smaller window.}
+\label{tab:commit}
+\begin{tabular}{rrrr}
+\toprule
+$\varepsilon$ & window $W$ & benign $\Delta$recall & adversarial $\Delta$recall \\
+\midrule
+0.5\% & 250   & 0.004 \ (\checkmark) & 0.075 \\
+1\%   & 500   & 0.006 \ (\checkmark) & 0.125 \\
+2\%   & 1{,}000 & 0.012 \ (\checkmark) & 0.225 \\
+5\%   & 2{,}500 & 0.029 \ (\checkmark) & 0.411 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figs/recall_commit_sla.pdf}
+\caption{Recall-aware committer, crash-validated on SIFT1M. Measured mean crash
+$\Delta$recall@10 vs.\ target budget $\varepsilon$: benign stays on/under the SLA
+line ($\Delta$recall $\le\varepsilon$), adversarial (query-hot window) sits above it.}
+\label{fig:commitsla}
+\end{figure}
+
+Prior art frames the boundary.
+Bounded-staleness/consistency SLAs (TACT~\cite{tact}, PBS~\cite{pbs},
+Pileus~\cite{pileus}, Cosmos DB~\cite{cosmos}) bound read staleness; adaptive/delayed
+group commit (Aether~\cite{aether}, Silo~\cite{silo}, Elasticsearch~\cite{elastic})
+bounds acknowledged loss by time or size; vector systems bound freshness
+(Manu~\cite{manu}) or recover an index (FreshDiskANN, SPFresh, P-HNSW). To our
+knowledge none closes the loop from a \emph{measured ANN top-$k$ exposure} to a
+local WAL-hardening trigger verified after a crash---that cross-layer coupling,
+enabled because an approximate index tolerates a small, quantified perturbation, is
 Bounded-staleness/consistency SLAs (TACT~\cite{tact}, PBS~\cite{pbs},
 Pileus~\cite{pileus}, Cosmos DB~\cite{cosmos}) bound read staleness; adaptive/delayed
 group commit (Aether~\cite{aether}, Silo~\cite{silo}, Elasticsearch~\cite{elastic})
@@ -754,10 +804,10 @@ consistency is validated to \emph{true power loss} via \texttt{dm-log-writes}
 (\S\ref{sec:groupcommit}), not merely process crash. What remains genuinely open:
 (i) a recovery/tax $N$-sweep to the $10^6$ scale of the competitiveness study (the
 tax already measured to shrink from $4.5\times$ to $2.1\times$ over $N{=}2$k--$30$k);
-(ii) a concurrent (leader/follower) group committer; and (iii) crash-time
-enforcement of the recall-bounded commit policy (\S\ref{sec:recall}) with a proof
-under weaker-than-independence assumptions. Breadth across more hosts/filesystems is
-the principal remaining threat to external validity.
+(ii) integrating the crash-validated recall-aware committer prototype
+(\S\ref{sec:recall}) into the production WAL path as a concurrent (leader/follower)
+weak-ack committer, with a proof under weaker-than-independence assumptions. Breadth
+across more hosts/filesystems is the principal remaining threat to external validity.
 
 \section{Conclusion}
 Durability is the axis ANN evaluation forgot. This paper's contribution is a way
@@ -774,8 +824,9 @@ cheaper than WAL replay. Beyond measurement, we introduce one ANN-native design:
 membership at risk, bounds it (worst case $\min(W,k)/k$; exchangeable expectation
 $W/N$), and couples that bound to WAL hardening---the real exposure being
 $\sim$770$\times$ below the worst case, so a recall-staleness SLA and full throughput
-can coexist (we give bounds, measurement, and mechanism; end-to-end enforcement is
-future work). These figures are medians of 7 trials on one host, not general claims; the
+can coexist---and a prototype committer, crash-validated against an exact oracle,
+holds benign $\Delta$recall $\le\varepsilon$ (production WAL integration is future
+work). These figures are medians of 7 trials on one host, not general claims; the
 transferable results are the measurement discipline and the recall-bounded framing.
 We hope the honest-measurement protocol becomes a default for durable ANN systems,
 and that a full study (multiple hosts, real media, and power-loss injection) puts

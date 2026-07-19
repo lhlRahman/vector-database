@@ -228,6 +228,18 @@ bench-recall-staleness: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/v
 	@echo "recall-staleness benchmark built: $(RECALL_STALENESS_BENCH)"
 	@./$(RECALL_STALENESS_BENCH) $(ANN_ARGS)
 
+# Recall-aware committer prototype + crash validation (recall-bounded durability).
+RECALL_COMMIT_BENCH = $(BUILD_DIR)/bench_recall_commit
+bench-recall-commit: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
+	$(CXX) $(CXXFLAGS) -c test/bench_recall_commit.cpp -o $(BUILD_DIR)/bench_recall_commit.o
+	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_recall_commit.o \
+		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
+		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
+		-o $(RECALL_COMMIT_BENCH)
+	@echo "recall-commit benchmark built: $(RECALL_COMMIT_BENCH)"
+	@./$(RECALL_COMMIT_BENCH) $(ANN_ARGS)
+
 # Crash-consistency verifier (used by the Linux dm-log-writes power-loss harness).
 VERIFY_OPEN = $(BUILD_DIR)/verify_open
 verify-open: $(LIB_OBJS)
@@ -465,4 +477,4 @@ fuzz: fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sea
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-recall-commit bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops

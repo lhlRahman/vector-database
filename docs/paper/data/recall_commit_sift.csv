@@ -1,0 +1,9 @@
+eps,W,regime,mean_dRecall,max_dRecall,commits_per_N,holds
+0.005,250,benign,0.004,0.4,200,1
+0.005,250,adversarial,0.075,0.7,200,0
+0.01,500,benign,0.0059,0.4,100,1
+0.01,500,adversarial,0.125,0.8,100,0
+0.02,1000,benign,0.0119,0.4,50,1
+0.02,1000,adversarial,0.225,0.9,50,0
+0.05,2500,benign,0.0292,0.8,20,1
+0.05,2500,adversarial,0.4113,1,20,0
