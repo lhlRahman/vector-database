@@ -225,8 +225,11 @@ median of 7 trials (min--max). On macOS/APFS plain \fsync{} does \emph{not} flus
 drive cache (a page-cache no-op), so its 49k/s is not durable; \fullfsync{} is. On
 Linux (AWS, ext4/NVMe) plain \fsync{} \emph{does} flush, so its rate is honest---and
 lands right next to macOS \fullfsync{}. The lesson is not a number but the trap:
-macOS plain \fsync{} overstates the true durable rate by $\sim$93$\times$, while the
-real durable ceiling is $\sim$300--500/s on both platforms.}
+macOS plain \fsync{} overstates the true durable rate---by $\sim$155$\times$ against
+same-host \fullfsync{} ($317$/s) and $\sim$93$\times$ against Linux's honest
+plain-\fsync{} flush ($527$/s)---while the real durable ceiling is $\sim$300--500/s on
+both platforms. (Elsewhere ``$155\times$'' always denotes the same-host macOS
+plain-vs-\fullfsync{} gap.)}
 \label{tab:floor}
 \begin{tabular}{llr}
 \toprule
@@ -423,11 +426,12 @@ is in the artifact.
 
 \paragraph{External validity: the effect reproduces in a production system.} To
 check that batching is a real durability lever and not an artifact of our engine, we
-measured Qdrant~\cite{qdrant} (a widely deployed vector DB) on the same Linux host,
-using its per-request durability knob (\texttt{wait=True} blocks until the write is
-applied and in the WAL; \texttt{wait=False} is asynchronous). Batching durable
-upserts from $1$ to $1{,}000$ per request raises throughput $27.9\times$ ($229\to
-6{,}408$ inserts/s)---the group-commit effect, larger than in our engine. The
+measured Qdrant~\cite{qdrant} (v1.18.3, a widely deployed vector DB) on the same
+Linux host, using its per-request durability knob (\texttt{wait=True} blocks until
+the write is applied and in the WAL; \texttt{wait=False} is asynchronous). Batching
+durable upserts from $1$ to $1{,}000$ per request raises throughput $27.9\times$
+($229\to 6{,}408$ inserts/s; single illustrative run)---the group-commit effect,
+larger than in our engine. The
 per-request durable-vs-async gap is smaller here ($1.2\times$) because Qdrant's
 client/server path and asynchronous WAL make network and request overhead, not the
 flush, dominate single-item latency---a reminder that the \emph{shape} of the tax
@@ -628,8 +632,11 @@ $960$-d vectors, shipped exact 100-NN ground truth) the same picture holds again
 hnswlib, more strongly. Recall@10 climbs monotonically from $0.48$ at
 $\mathrm{ef}{=}10$ to $0.984$ at $\mathrm{ef}{=}500$ (Table~\ref{tab:gist},
 Fig.~\ref{fig:gistpareto}), and at every $\mathrm{ef}$ our index is above hnswlib
-on \emph{both} axes---averaging $+5.5$ recall points at $1.18\times$ QPS (e.g.\
-$0.940$/$526$~QPS vs.\ $0.907$/$475$~QPS at $\mathrm{ef}{=}200$). The full graph
+on \emph{both} axes---averaging $+5.4$ recall points (deterministic) at $1.18\times$
+QPS (single-run; e.g.\ $0.940$/$526$~QPS vs.\ $0.907$/$475$~QPS at
+$\mathrm{ef}{=}200$). As with SIFT (\S\ref{sec:index}), we treat the recall gap as
+the robust signal and the QPS as within-noise given single-run timing and possible
+ef-semantics differences, so we claim ``at least on par.'' The full graph
 builds in $2{,}567$\,s (peak graph arena $999$\,MiB---the same as SIFT1M because the
 pooled arena holds adjacency lists only, not the vectors, so it is
 dimension-independent). GIST's weaker neighbor structure
@@ -671,8 +678,9 @@ $\mathrm{ef}$ & recall@10 & QPS & recall@10 & QPS \\
 \centering
 \includegraphics[width=0.72\linewidth]{figs/gist1m_recall_qps.pdf}
 \caption{GIST1M recall--QPS Pareto front (single-thread, Apple M4 Pro). Our index
-(solid) is above hnswlib (dashed) on both axes across the range ($+5.5$ recall
-points, $1.18\times$ QPS on average at matched $\mathrm{ef}$); QPS is single-run.}
+(solid) tracks or leads hnswlib (dashed): $+5.4$ recall points (deterministic) at a
+mean $1.18\times$ QPS at matched $\mathrm{ef}$. QPS is single-run, so we read the
+result as ``at least on par''; the recall gap is the robust signal.}
 \label{fig:gistpareto}
 \end{figure}
 
