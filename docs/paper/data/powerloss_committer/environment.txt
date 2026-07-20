@@ -1,0 +1,29 @@
+Linux ip-172-31-0-139.us-west-2.compute.internal 5.14.0-710.el9.x86_64 #1 SMP PREEMPT_DYNAMIC Wed May 27 09:04:56 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+filesystem=ext4
+data=/dev/loop10 sectors=2097152
+log=/dev/loop11 sectors=2097152
+replay=/dev/loop12 sectors=2097152
+workload=/home/cloud-user/vector-database/build/committer_crash_test
+verifier=/home/cloud-user/vector-database/build/verify_committer_image
+Library version:   1.02.207-RHEL9 (2026-06-04)
+Driver version:    4.50.0
+mount from util-linux 2.37.4 (libmount 2.37.4: selinux, btrfs, namespaces, assert, debug)
+mke2fs 1.46.5 (30-Dec-2021)
+	Using EXT2FS Library version 1.46.5
+e2fsck 1.46.5 (30-Dec-2021)
+	Using EXT2FS Library version 1.46.5, 30-Dec-2021
+device=/dev/loop10 logical=512 physical=512 read_ahead=256
+device=/dev/loop11 logical=512 physical=512 read_ahead=256
+device=/dev/loop12 logical=512 physical=512 read_ahead=256
+NAME                   MAJ:MIN SIZE TYPE FSTYPE MOUNTPOINTS
+loop10                   7:10    1G loop        
+└─vdb-committer-271315 253:0     1G dm   ext4   /mnt/vdb-committer-src-271315
+loop11                   7:11    1G loop        
+└─vdb-committer-271315 253:0     1G dm   ext4   /mnt/vdb-committer-src-271315
+loop12                   7:12    1G loop        
+NAME                   DISC-ALN DISC-GRAN DISC-MAX DISC-ZERO
+loop10                        0        4K       4G         0
+└─vdb-committer-271315        0        4K       4G         0
+loop11                        0        4K       4G         0
+└─vdb-committer-271315        0        4K       4G         0
+loop12                        0        4K       4G         0

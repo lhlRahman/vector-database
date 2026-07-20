@@ -1,0 +1,18 @@
+replay-log: unrecognized option '--help'
+Usage: replay-log --log <logfile> [options]
+	--replay <device> - replay onto a specific device
+	--limit <number> - number of entries to replay
+	--next-flush - replay to/find the next flush
+	--next-fua - replay to/find the next fua
+	--start-entry <entry> - start at the given entry #
+	--start-mark <mark> - mark to start from
+	--end-mark <mark> - replay to/find the given mark
+	--find - put replay-log in find mode, will search based on the other options
+	--number-entries - print the number of entries in the log
+	--no-discard - don't process discard entries
+	--fsck - the fsck command to run, must specify --check
+	--check [<number>|flush|fua|discard] when to check the file system, mush specify --fsck
+	--start-sector <sector> - replay ops on region from <sector> onto <device>
+	--end-sector <sector> - replay ops on region to <sector> onto <device>
+	-v or --verbose - print replayed ops
+	-vv - print also skipped ops

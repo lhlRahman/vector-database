@@ -1,0 +1,1 @@
+ledger valid: intents=18 acks=18 frontiers=20
