@@ -719,12 +719,16 @@ uint64_t SegmentedVectorStore::nextSequence() {
 }
 
 void SegmentedVectorStore::reserveSequenceBlock() {
+    if (config_.sequence_reservation_block == 0) {
+        throw std::invalid_argument("sequence reservation block must be positive");
+    }
     const uint64_t persisted = readSequenceHighwater();
     const uint64_t base = std::max({latest_sequence_, reserved_sequence_hi_, persisted});
-    if (base > std::numeric_limits<uint64_t>::max() - kSequenceReservationBlock) {
+    if (base > std::numeric_limits<uint64_t>::max() -
+                   config_.sequence_reservation_block) {
         throw std::overflow_error("sequence LSN space exhausted");
     }
-    const uint64_t next_highwater = base + kSequenceReservationBlock;
+    const uint64_t next_highwater = base + config_.sequence_reservation_block;
     writeSequenceHighwater(next_highwater);
     latest_sequence_ = base;
     reserved_sequence_hi_ = next_highwater;

@@ -598,7 +598,9 @@ void testAgeFencePreemptsGroupDelay() {
         return db.insertWithAck(
             Vector(std::vector<float>{5.0f, 6.0f}), "queued", vdb::AckMode::Weak);
     });
-    CHECK(db.waitUntilDurable(weak.lsn, std::chrono::milliseconds(250)));
+    // Allow completion slack beyond the 30 ms fence-start deadline while
+    // remaining well below the 500 ms group delay it must preempt.
+    CHECK(db.waitUntilDurable(weak.lsn, std::chrono::milliseconds(100)));
     CHECK(queued.get().actual_ack == vdb::AckLevel::Weak);
     CHECK(db.recallCommitterStatistics().age_fences >= 1);
     db.shutdown();

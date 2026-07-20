@@ -35,6 +35,7 @@
 
 #include <atomic>
 #include <random>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -1770,6 +1771,143 @@ public:
     }
 };
 
+class ForcedFullSyncOverrideGuard {
+public:
+    explicit ForcedFullSyncOverrideGuard(
+        vdb::io::detail::FileSyncCallOverride override_call) {
+        vdb::io::testing::set_file_sync_call_override(override_call);
+        vdb::io::testing::set_force_full_fsync_for_testing(true);
+    }
+
+    ~ForcedFullSyncOverrideGuard() {
+        vdb::io::testing::set_force_full_fsync_for_testing(false);
+        vdb::io::testing::set_file_sync_call_override(nullptr);
+    }
+};
+
+struct RolloverSyncFaultState {
+    std::filesystem::path highwater_path;
+    uint64_t expected_highwater{0};
+    size_t full_calls{0};
+    size_t plain_calls{0};
+    bool saw_regular_file_sync{false};
+    bool saw_renamed_highwater{false};
+    bool saw_directory_barrier{false};
+};
+
+RolloverSyncFaultState* rollover_sync_fault_state = nullptr;
+
+int fail_post_rename_directory_full_sync_for_test(
+    int fd, vdb::io::FileSyncMode mode) {
+    auto* state = rollover_sync_fault_state;
+    if (state == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (mode != vdb::io::FileSyncMode::FullFsync) {
+        ++state->plain_calls;
+        errno = EINVAL;
+        return -1;
+    }
+
+    ++state->full_calls;
+    if (state->full_calls == 1) {
+        struct stat descriptor_stat {};
+        state->saw_regular_file_sync =
+            ::fstat(fd, &descriptor_stat) == 0 && S_ISREG(descriptor_stat.st_mode);
+        return 0;
+    }
+    if (state->full_calls != 2) return 0;
+
+    std::ifstream is(state->highwater_path, std::ios::binary);
+    uint64_t highwater = 0;
+    is.seekg(2 * sizeof(uint32_t));
+    is.read(reinterpret_cast<char*>(&highwater), sizeof(highwater));
+    state->saw_renamed_highwater =
+        is.gcount() == static_cast<std::streamsize>(sizeof(highwater)) &&
+        highwater == state->expected_highwater;
+    struct stat descriptor_stat {};
+    state->saw_directory_barrier =
+        ::fstat(fd, &descriptor_stat) == 0 && S_ISDIR(descriptor_stat.st_mode);
+    errno = EIO;
+    return -1;
+}
+
+void test_sequence_rollover_barrier_failure_rejects_weak_write() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("lsn_rollover_sync_failure_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    SegmentedVectorStore::Config config;
+    config.dimensions = 2;
+    config.sequence_reservation_block = 2;
+
+    auto store = std::make_unique<SegmentedVectorStore>(root, config);
+    store->initialize();
+    const auto first = store->stageInsert(
+        Vector(std::vector<float>{1.0f, 0.0f}), "weak-1");
+    const auto second = store->stageInsert(
+        Vector(std::vector<float>{0.0f, 1.0f}), "weak-2");
+    ASSERT_TRUE(first.applied);
+    ASSERT_TRUE(second.applied);
+    ASSERT_EQ(first.lsn, uint64_t{1});
+    ASSERT_EQ(second.lsn, uint64_t{2});
+
+    RolloverSyncFaultState fault;
+    fault.highwater_path = root / "lsn.highwater";
+    fault.expected_highwater = 4;
+    rollover_sync_fault_state = &fault;
+    const auto sync_before = vdb::io::file_sync_statistics();
+    bool threw = false;
+    std::string error_message;
+    {
+        ForcedFullSyncOverrideGuard fail_directory_barrier(
+            fail_post_rename_directory_full_sync_for_test);
+        try {
+            // The weak-ACK committer publishes its receipt only after this
+            // staging boundary returns successfully.
+            (void)store->stageInsert(
+                Vector(std::vector<float>{2.0f, 2.0f}), "must-not-ack");
+        } catch (const std::runtime_error& error) {
+            threw = true;
+            error_message = error.what();
+        }
+    }
+    rollover_sync_fault_state = nullptr;
+
+    ASSERT_TRUE(threw);
+    ASSERT_TRUE(error_message.find("F_FULLFSYNC") != std::string::npos);
+    ASSERT_EQ(fault.full_calls, size_t{2});
+    ASSERT_EQ(fault.plain_calls, size_t{0});
+    ASSERT_TRUE(fault.saw_regular_file_sync);
+    ASSERT_TRUE(fault.saw_renamed_highwater);
+    ASSERT_TRUE(fault.saw_directory_barrier);
+    ASSERT_EQ(store->vectorCount(), size_t{2});
+    ASSERT_EQ(store->visibleLsn(), uint64_t{2});
+    ASSERT_EQ(store->durableLsn(), uint64_t{0});
+    ASSERT_FALSE(store->get("must-not-ack").has_value());
+
+    const auto sync_after = vdb::io::file_sync_statistics();
+    ASSERT_EQ(sync_after.full_fsync_successes,
+              sync_before.full_fsync_successes + 1);
+    ASSERT_EQ(sync_after.failures, sync_before.failures);
+
+    // Do not call shutdown: model recovery immediately after the failed
+    // reservation. The two prior weak writes are unfenced and are discarded;
+    // the renamed high-water file makes recovery skip the failed [3, 4] range.
+    store.reset();
+    SegmentedVectorStore recovered(root, config);
+    recovered.initialize();
+    ASSERT_EQ(recovered.vectorCount(), size_t{0});
+    const auto after_recovery = recovered.stageInsert(
+        Vector(std::vector<float>{3.0f, 3.0f}), "after-recovery");
+    ASSERT_TRUE(after_recovery.applied);
+    ASSERT_EQ(after_recovery.lsn, uint64_t{5});
+    recovered.shutdown();
+
+    std::filesystem::remove_all(root);
+}
+
 void test_sync_failure_cannot_report_stable_ack() {
     const auto path = std::filesystem::temp_directory_path() /
                       ("vdb_sync_failure_" + std::to_string(::getpid()));
@@ -1905,6 +2043,8 @@ int main() {
     run_test("WAL v1 migrates and rejects bad suffix", test_wal_v1_migrates_and_rejects_bad_suffix);
     run_test("WAL recovery bounds corrupt lengths", test_wal_recovery_bounds_corrupt_lengths);
     run_test("sequence high-water skips restart range", test_sequence_highwater_skips_restart_range);
+    run_test("sequence rollover barrier rejects weak write",
+             test_sequence_rollover_barrier_failure_rejects_weak_write);
     run_test("HNSW seed persists across reopen", test_hnsw_seed_persists_across_reopen);
 
     std::cout << "\n[Scalar Quantizer]\n";

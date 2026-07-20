@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -14,23 +16,30 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "../src/core/vector_database.hpp"
 #include "../src/utils/atomic_write.hpp"
 #include "../src/utils/vecs_io.hpp"
 
 // End-to-end benchmark for the production recall-aware committer. Every trial
-// uses the public API, clones a live database before shutdown, and opens that
-// image through production read-only recovery. Exact truth comes from the
-// externally recorded visible snapshot, never from recovered state.
+// uses the public API and opens a logical crash image through production
+// read-only recovery. The partial-survival case uses a controlled process exit
+// after WAL-fence sync and before in-memory frontier publication. This is not a
+// claim of physical power-loss injection. Exact truth comes from the externally
+// recorded visible snapshot, never from recovered state.
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -72,6 +81,7 @@ struct CaseSpec {
     size_t record_cap{std::numeric_limits<size_t>::max()};
     std::chrono::milliseconds age_cap{0};
     bool correlation_guard{false};
+    bool partial_survival_frontier{false};
 };
 
 struct WriteOp {
@@ -88,6 +98,38 @@ struct QueryOp {
     double exact_recall{0.0};
 };
 
+struct CrashCohortRecord {
+    std::string key;
+    Values values;
+    std::string metadata;
+    vdb::WriteReceipt receipt;
+    bool expected_to_survive{false};
+};
+
+struct RankedKey {
+    std::string key;
+    double distance{0.0};
+};
+
+struct CrashPreQuery {
+    size_t query_index{0};
+    uint64_t snapshot_lsn{0};
+    std::vector<RankedKey> latest;
+    std::vector<RankedKey> stable;
+};
+
+struct PartialCrashResult {
+    vdb::DurabilityStatus status;
+    std::vector<CrashCohortRecord> cohort;
+    std::vector<CrashPreQuery> queries;
+    int child_exit_status{-1};
+};
+
+struct PostRecoverySuffixResult {
+    WriteOp operation;
+    bool verified{false};
+};
+
 struct CrashObservation {
     double membership_risk{0.0};
     double realized_loss{0.0};
@@ -98,7 +140,8 @@ struct CrashObservation {
     double answer_churn{0.0};
     double durable_overlap{0.0};
     bool lost_ids_subset_weak{true};
-    bool durable_fingerprint_equal{true};
+    bool pre_merge_fingerprint_equal{true};
+    bool recovery_fingerprint_equal{true};
 };
 
 struct TrialResult {
@@ -124,12 +167,26 @@ struct TrialResult {
     VectorDatabase::RecallCommitterStatistics committer;
     VectorDatabase::RecallCommitterStatistics timed_committer;
     vdb::RecallCommitPolicyCounters policy;
+    std::string crash_frontier{"terminal-unfenced-suffix"};
+    uint64_t crash_visible_lsn{0};
+    uint64_t crash_durable_lsn{0};
+    int crash_child_status{-1};
+    std::vector<CrashCohortRecord> crash_cohort;
+    std::optional<WriteOp> post_recovery_suffix;
     std::vector<CrashObservation> crash;
+    size_t exposed_weak_records{0};
+    size_t surviving_weak_records{0};
+    size_t lost_weak_records{0};
     size_t stable_losses{0};
     size_t unexpected_weak_survivors{0};
+    bool stable_records_unchanged{true};
+    bool cohort_records_unchanged{true};
+    bool cohort_expectations_ok{true};
+    bool post_recovery_suffix_ok{true};
     bool frontier_ok{true};
     bool strict_ok{true};
     bool recovery_ok{true};
+    bool has_strict_loss_gap{false};
     bool alarmed{false};
     double alarm_latency_ms{-1.0};
 };
@@ -162,6 +219,87 @@ std::vector<std::string> responseKeys(const VectorDatabase::SearchResponse& resp
     keys.reserve(response.results.size());
     for (const auto& result : response.results) keys.push_back(result.key);
     return keys;
+}
+
+std::vector<RankedKey> responseRanks(const VectorDatabase::SearchResponse& response) {
+    std::vector<RankedKey> ranks;
+    ranks.reserve(response.results.size());
+    for (const auto& result : response.results) {
+        ranks.push_back(RankedKey{result.key, result.distance});
+    }
+    return ranks;
+}
+
+std::vector<std::string> rankedKeys(const std::vector<RankedKey>& ranks) {
+    std::vector<std::string> keys;
+    keys.reserve(ranks.size());
+    for (const auto& rank : ranks) keys.push_back(rank.key);
+    return keys;
+}
+
+std::vector<std::string> mergeStableWithCohort(
+    const std::vector<RankedKey>& stable,
+    const Values& query,
+    const std::vector<CrashCohortRecord>& cohort,
+    const std::unordered_set<std::string>& included_cohort,
+    size_t k) {
+    std::vector<RankedKey> candidates = stable;
+    candidates.reserve(stable.size() + included_cohort.size());
+    const EuclideanDistance metric;
+    for (const auto& record : cohort) {
+        if (!included_cohort.contains(record.key)) continue;
+        candidates.push_back(RankedKey{
+            record.key,
+            metric.distance_raw(
+                std::span<const float>(query.data(), query.size()),
+                std::span<const float>(record.values.data(), record.values.size()))});
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+        if (left.distance != right.distance) return left.distance < right.distance;
+        return left.key < right.key;
+    });
+    std::vector<std::string> keys;
+    std::unordered_set<std::string> seen;
+    keys.reserve(std::min(k, candidates.size()));
+    for (const auto& candidate : candidates) {
+        if (!seen.insert(candidate.key).second) continue;
+        keys.push_back(candidate.key);
+        if (keys.size() == k) break;
+    }
+    return keys;
+}
+
+bool vectorEquals(const Vector& actual, const Values& expected) {
+    if (actual.size() != expected.size()) return false;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        if (actual.data_ptr()[i] != expected[i]) return false;
+    }
+    return true;
+}
+
+void writeAll(int fd, std::string_view bytes) {
+    while (!bytes.empty()) {
+        const ssize_t written = ::write(fd, bytes.data(), bytes.size());
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(errno, std::generic_category(), "write crash ledger");
+        }
+        bytes.remove_prefix(static_cast<size_t>(written));
+    }
+}
+
+std::string readAll(int fd) {
+    std::string bytes;
+    char buffer[8192];
+    for (;;) {
+        const ssize_t count = ::read(fd, buffer, sizeof(buffer));
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(errno, std::generic_category(), "read crash ledger");
+        }
+        if (count == 0) return bytes;
+        bytes.append(buffer, static_cast<size_t>(count));
+    }
 }
 
 double overlap(const std::vector<std::string>& left,
@@ -344,16 +482,31 @@ std::vector<std::string> exactTopK(const Values& query,
                                    const std::vector<Values>& tail,
                                    const std::vector<WriteOp>& operations,
                                    uint64_t snapshot_lsn,
-                                   size_t k) {
+                                   size_t k,
+                                   const std::vector<CrashCohortRecord>* crash_cohort = nullptr) {
     std::vector<std::pair<double, std::string>> candidates;
-    candidates.reserve(data.base.size() + tail.size());
+    candidates.reserve(data.base.size() + tail.size() +
+                       (crash_cohort == nullptr ? 0 : crash_cohort->size()));
+    std::unordered_set<std::string> candidate_keys;
+    auto add_candidate = [&](double distance, std::string key) {
+        if (candidate_keys.insert(key).second) {
+            candidates.emplace_back(distance, std::move(key));
+        }
+    };
     for (size_t i = 0; i < data.base.size(); ++i) {
-        candidates.emplace_back(l2(query, data.base[i]), "base-" + std::to_string(i));
+        add_candidate(l2(query, data.base[i]), "base-" + std::to_string(i));
     }
     for (size_t i = 0; i < operations.size(); ++i) {
         const auto& receipt = operations[i].receipt;
         if (receipt.applied && receipt.lsn <= snapshot_lsn) {
-            candidates.emplace_back(l2(query, tail[i]), "tail-" + std::to_string(i));
+            add_candidate(l2(query, tail[i]), "tail-" + std::to_string(i));
+        }
+    }
+    if (crash_cohort != nullptr) {
+        for (const auto& record : *crash_cohort) {
+            if (record.receipt.applied && record.receipt.lsn <= snapshot_lsn) {
+                add_candidate(l2(query, record.values), record.key);
+            }
         }
     }
     std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
@@ -371,8 +524,9 @@ std::filesystem::path buildBaseImage(const DataSet& data,
                                      const Options& options,
                                      const std::filesystem::path& root,
                                      uint32_t seed,
-                                     bool reverse_order) {
-    const auto path = root / (reverse_order ? "changed-seed-base" : "base");
+                                     bool reverse_order,
+                                     const std::string& image_name) {
+    const auto path = root / image_name;
     std::filesystem::remove_all(path);
     CaseSpec stable{"base-build", Workload::Random, vdb::RecallPolicy::Strict,
                     vdb::AckMode::Stable, 0.0};
@@ -413,8 +567,11 @@ std::filesystem::path buildBaseImage(const DataSet& data,
 bool validateChangedSeedControl(const DataSet& data,
                                 const Options& options,
                                 const std::filesystem::path& root,
-                                const std::filesystem::path& production_base) {
-    const auto changed = buildBaseImage(data, options, root, options.seed + 1, true);
+                                const std::filesystem::path& production_base,
+                                uint32_t production_seed) {
+    const uint32_t changed_seed = production_seed + 1009;
+    const auto changed = buildBaseImage(
+        data, options, root, changed_seed, true, "changed-seed-base");
     VectorDatabase production(data.dimensions, VectorDatabase::SearchMode::HNSW,
                               false, false, {}, false, 0, production_base.string(),
                               VectorDatabase::StorageEngine::Segmented,
@@ -423,8 +580,8 @@ bool validateChangedSeedControl(const DataSet& data,
                            false, false, {}, false, 0, changed.string(),
                            VectorDatabase::StorageEngine::Segmented,
                            vdb::OpenMode::ReadOnlyRecovery);
-    production.configureHNSW(16, 100, options.ef, options.seed);
-    control.configureHNSW(16, 100, options.ef, options.seed + 1);
+    production.configureHNSW(16, 100, options.ef, production_seed);
+    control.configureHNSW(16, 100, options.ef, changed_seed);
     production.initialize();
     control.initialize();
     bool answer_drift = false;
@@ -435,11 +592,11 @@ bool validateChangedSeedControl(const DataSet& data,
             Vector(values), options.k, vdb::ReadVisibility::Stable));
         answer_drift = answer_drift || keyFingerprint(left) != keyFingerprint(right);
     }
-    const bool topology_fingerprint_equal = persistedSeed(changed) == options.seed;
+    const bool topology_fingerprint_equal = persistedSeed(changed) == production_seed;
     const bool accepted = topology_fingerprint_equal && !answer_drift;
     production.shutdown();
     control.shutdown();
-    std::cout << "negative_control changed_seed=" << options.seed + 1
+    std::cout << "negative_control changed_seed=" << changed_seed
               << " answer_drift=" << (answer_drift ? 1 : 0)
               << " topology_fingerprint_mismatch="
               << (!topology_fingerprint_equal ? 1 : 0)
@@ -447,29 +604,298 @@ bool validateChangedSeedControl(const DataSet& data,
     return !accepted;
 }
 
+PartialCrashResult runFenceAfterSyncCrash(
+    const DataSet& data,
+    const Options& options,
+    const CaseSpec& spec,
+    const std::filesystem::path& database_path,
+    uint32_t graph_seed,
+    const vdb::RecallCommitConfig& config) {
+    constexpr size_t cohort_size = 2;
+    const size_t crash_queries = std::min<size_t>(12, data.queries.size());
+    int ledger_pipe[2];
+    if (::pipe(ledger_pipe) != 0) {
+        throw std::system_error(errno, std::generic_category(), "pipe crash ledger");
+    }
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        ::close(ledger_pipe[0]);
+        ::close(ledger_pipe[1]);
+        throw std::system_error(errno, std::generic_category(), "fork crash child");
+    }
+    if (child == 0) {
+        ::close(ledger_pipe[0]);
+        try {
+            ::unsetenv("VDB_COMMITTER_FAILPOINT");
+            auto* database = new VectorDatabase(
+                data.dimensions, VectorDatabase::SearchMode::HNSW,
+                false, false, {}, false, 0, database_path.string());
+            database->configureHNSW(16, 100, options.ef, graph_seed);
+            database->configureSegmentedStorage(data.base.size() + options.writes + 128);
+            database->configureRecallCommit(config);
+            database->initialize();
+
+            std::vector<vdb::WriteReceipt> receipts;
+            receipts.reserve(cohort_size);
+            for (size_t i = 0; i < cohort_size; ++i) {
+                receipts.push_back(database->insertWithAck(
+                    Vector(data.queries.front()),
+                    "crash-weak-" + std::to_string(i),
+                    "fence-after-sync-before-publish", vdb::AckMode::Weak));
+            }
+            const auto status = database->durabilityStatus();
+            for (const auto& receipt : receipts) {
+                if (!receipt.applied || receipt.actual_ack != vdb::AckLevel::Weak ||
+                    receipt.lsn <= status.durable_lsn ||
+                    receipt.lsn > status.visible_lsn) {
+                    throw std::runtime_error(
+                        "crash cohort was not entirely weak at the observed frontier");
+                }
+            }
+            if (status.weak_records != cohort_size ||
+                status.visible_lsn <= status.durable_lsn) {
+                throw std::runtime_error("observed U_pre does not equal the crash cohort");
+            }
+
+            std::ostringstream ledger;
+            ledger << std::setprecision(17);
+            ledger << "STATUS " << status.appended_lsn << ' ' << status.visible_lsn
+                   << ' ' << status.durable_lsn << ' ' << status.visible_records
+                   << ' ' << status.durable_records << ' ' << status.weak_records
+                   << ' ' << status.weak_bytes << ' ' << status.policy_record_cap
+                   << ' ' << status.estimated_recall_loss << '\n';
+            for (size_t i = 0; i < receipts.size(); ++i) {
+                const auto& receipt = receipts[i];
+                ledger << "RECEIPT " << i << " crash-weak-" << i << ' '
+                       << receipt.lsn << ' ' << receipt.visible_lsn << ' '
+                       << receipt.durable_lsn << ' ' << receipt.durable_count << ' '
+                       << receipt.weak_count << ' ' << receipt.policy_cap << ' '
+                       << receipt.risk_estimate << ' ' << (receipt.provisional ? 1 : 0)
+                       << '\n';
+            }
+            for (size_t q = 0; q < crash_queries; ++q) {
+                const size_t query_index = spec.workload == Workload::Hot
+                                               ? q % std::min<size_t>(4, data.queries.size())
+                                               : q;
+                const Vector query(data.queries[query_index]);
+                const auto latest = database->similaritySearch(
+                    query, options.k, vdb::ReadVisibility::Latest);
+                const auto stable = database->similaritySearch(
+                    query, options.k, vdb::ReadVisibility::Stable);
+                if (latest.snapshot_lsn != status.visible_lsn ||
+                    stable.snapshot_lsn != status.durable_lsn) {
+                    throw std::runtime_error("crash query did not use the recorded frontier");
+                }
+                ledger << "QUERY " << q << ' ' << query_index << ' '
+                       << latest.snapshot_lsn << ' ' << latest.results.size();
+                for (const auto& result : latest.results) {
+                    ledger << ' ' << result.key << ' ' << result.distance;
+                }
+                ledger << ' ' << stable.results.size();
+                for (const auto& result : stable.results) {
+                    ledger << ' ' << result.key << ' ' << result.distance;
+                }
+                ledger << '\n';
+            }
+            writeAll(ledger_pipe[1], ledger.str());
+            if (::setenv("VDB_COMMITTER_FAILPOINT", "fence-after-sync", 1) != 0) {
+                throw std::system_error(errno, std::generic_category(), "set crash failpoint");
+            }
+            (void)database->durabilityFence();
+            writeAll(ledger_pipe[1], "ERROR fence-after-sync failpoint returned\n");
+            _exit(3);
+        } catch (const std::exception& error) {
+            try {
+                std::string message = error.what();
+                std::replace(message.begin(), message.end(), '\n', ' ');
+                writeAll(ledger_pipe[1], "ERROR " + message + "\n");
+            } catch (...) {
+            }
+            _exit(2);
+        } catch (...) {
+            _exit(2);
+        }
+    }
+
+    ::close(ledger_pipe[1]);
+    const std::string ledger = readAll(ledger_pipe[0]);
+    ::close(ledger_pipe[0]);
+    int wait_status = 0;
+    while (::waitpid(child, &wait_status, 0) < 0) {
+        if (errno != EINTR) {
+            throw std::system_error(errno, std::generic_category(), "wait crash child");
+        }
+    }
+    const int child_status = WIFEXITED(wait_status)
+                                 ? WEXITSTATUS(wait_status)
+                                 : (WIFSIGNALED(wait_status)
+                                        ? 128 + WTERMSIG(wait_status)
+                                        : 255);
+    if (child_status != 86) {
+        throw std::runtime_error(
+            "fence-after-sync child status=" + std::to_string(child_status) +
+            " ledger=" + ledger);
+    }
+
+    PartialCrashResult result;
+    result.child_exit_status = child_status;
+    result.queries.resize(crash_queries);
+    std::vector<bool> saw_query(crash_queries, false);
+    std::vector<bool> saw_receipt(cohort_size, false);
+    bool saw_status = false;
+    std::istringstream input(ledger);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream fields(line);
+        std::string kind;
+        fields >> kind;
+        if (kind == "ERROR") {
+            throw std::runtime_error("crash child reported: " + line.substr(kind.size() + 1));
+        }
+        if (kind == "STATUS") {
+            fields >> result.status.appended_lsn >> result.status.visible_lsn
+                   >> result.status.durable_lsn >> result.status.visible_records
+                   >> result.status.durable_records >> result.status.weak_records
+                   >> result.status.weak_bytes >> result.status.policy_record_cap
+                   >> result.status.estimated_recall_loss;
+            saw_status = true;
+        } else if (kind == "RECEIPT") {
+            size_t ordinal = 0;
+            std::string key;
+            int provisional = 0;
+            vdb::WriteReceipt receipt;
+            fields >> ordinal >> key >> receipt.lsn >> receipt.visible_lsn
+                   >> receipt.durable_lsn >> receipt.durable_count
+                   >> receipt.weak_count >> receipt.policy_cap
+                   >> receipt.risk_estimate >> provisional;
+            if (ordinal >= cohort_size || saw_receipt[ordinal]) {
+                throw std::runtime_error("invalid duplicate crash receipt");
+            }
+            receipt.applied = true;
+            receipt.requested_ack = vdb::AckMode::Weak;
+            receipt.actual_ack = vdb::AckLevel::Weak;
+            receipt.provisional = provisional != 0;
+            result.cohort.push_back(CrashCohortRecord{
+                std::move(key), data.queries.front(),
+                "fence-after-sync-before-publish", receipt, true});
+            saw_receipt[ordinal] = true;
+        } else if (kind == "QUERY") {
+            size_t ordinal = 0;
+            size_t latest_count = 0;
+            fields >> ordinal;
+            if (ordinal >= crash_queries || saw_query[ordinal]) {
+                throw std::runtime_error("invalid duplicate crash query");
+            }
+            auto& query = result.queries[ordinal];
+            fields >> query.query_index >> query.snapshot_lsn >> latest_count;
+            query.latest.resize(latest_count);
+            for (auto& rank : query.latest) fields >> rank.key >> rank.distance;
+            size_t stable_count = 0;
+            fields >> stable_count;
+            query.stable.resize(stable_count);
+            for (auto& rank : query.stable) fields >> rank.key >> rank.distance;
+            saw_query[ordinal] = true;
+        } else if (!kind.empty()) {
+            throw std::runtime_error("unknown crash ledger row: " + kind);
+        }
+        if (!fields) throw std::runtime_error("malformed crash ledger row: " + line);
+    }
+    if (!saw_status ||
+        !std::all_of(saw_receipt.begin(), saw_receipt.end(), [](bool saw) { return saw; }) ||
+        !std::all_of(saw_query.begin(), saw_query.end(), [](bool saw) { return saw; })) {
+        throw std::runtime_error("incomplete crash child ledger");
+    }
+    std::sort(result.cohort.begin(), result.cohort.end(), [](const auto& left, const auto& right) {
+        return left.key < right.key;
+    });
+    return result;
+}
+
+PostRecoverySuffixResult runPostRecoverySuffix(
+    const DataSet& data,
+    const Options& options,
+    const std::filesystem::path& resume_path,
+    uint32_t graph_seed,
+    const vdb::RecallCommitConfig& config,
+    const std::vector<CrashCohortRecord>& crash_cohort) {
+    constexpr std::string_view key = "post-recovery-suffix";
+    constexpr std::string_view metadata = "post-recovery-suffix";
+    const Values& values = data.queries.back();
+
+    VectorDatabase resumed(data.dimensions, VectorDatabase::SearchMode::HNSW,
+                           false, false, {}, false, 0, resume_path.string());
+    resumed.configureHNSW(16, 100, options.ef, graph_seed);
+    resumed.configureSegmentedStorage(data.base.size() + options.writes + 128);
+    resumed.configureRecallCommit(config);
+    resumed.initialize();
+    const auto begin = Clock::now();
+    auto receipt = resumed.insertWithAck(
+        Vector(values), std::string(key), std::string(metadata), vdb::AckMode::Stable);
+    const auto end = Clock::now();
+    const auto immediate = resumed.inspectRecord(
+        std::string(key), vdb::ReadVisibility::Stable);
+    const bool stable_ack = receipt.applied &&
+                            receipt.actual_ack == vdb::AckLevel::Stable &&
+                            receipt.durable_lsn >= receipt.lsn && immediate &&
+                            vectorEquals(immediate->vector, values) &&
+                            immediate->metadata == metadata &&
+                            immediate->lsn == receipt.lsn && !immediate->provisional;
+    resumed.shutdown();
+
+    VectorDatabase verified(data.dimensions, VectorDatabase::SearchMode::HNSW,
+                            false, false, {}, false, 0, resume_path.string(),
+                            VectorDatabase::StorageEngine::Segmented,
+                            vdb::OpenMode::ReadOnlyRecovery);
+    verified.configureHNSW(16, 100, options.ef, graph_seed);
+    verified.configureRecallCommit(config);
+    verified.initialize();
+    const auto reopened = verified.inspectRecord(
+        std::string(key), vdb::ReadVisibility::Stable);
+    const bool persisted = reopened && vectorEquals(reopened->vector, values) &&
+                           reopened->metadata == metadata &&
+                           reopened->lsn == receipt.lsn && !reopened->provisional;
+    bool survivors_intact = true;
+    for (const auto& survivor : crash_cohort) {
+        const auto record = verified.inspectRecord(
+            survivor.key, vdb::ReadVisibility::Stable);
+        survivors_intact = survivors_intact && record &&
+                           vectorEquals(record->vector, survivor.values) &&
+                           record->metadata == survivor.metadata &&
+                           record->lsn == survivor.receipt.lsn &&
+                           !record->provisional;
+    }
+    verified.shutdown();
+    return PostRecoverySuffixResult{
+        WriteOp{0, elapsedUs(begin, end), receipt},
+        stable_ack && persisted && survivors_intact};
+}
+
 TrialResult runTrial(const DataSet& data,
                      const Options& options,
                      const CaseSpec& spec,
                      size_t repetition,
                      const std::filesystem::path& base_image,
+                     uint32_t graph_seed,
                      const std::filesystem::path& root) {
     TrialResult trial;
     trial.case_name = spec.name;
     trial.workload = workloadName(spec.workload);
     trial.repetition = repetition;
-    trial.hnsw_seed = options.seed;
+    trial.hnsw_seed = graph_seed;
     trial.tail_seed = static_cast<uint32_t>(
         (spec.workload == Workload::Hot ? 45001 : 9001) + repetition);
     trial.writer_count = options.writers;
     const auto database_path = root / (spec.name + "-" + std::to_string(repetition));
     const auto crash_path = root / (spec.name + "-" + std::to_string(repetition) + "-crash");
+    const auto resume_path = root / (spec.name + "-" + std::to_string(repetition) + "-resume");
     copyTree(base_image, database_path);
-    const auto config = makeConfig(spec, options, options.seed);
+    const auto config = makeConfig(spec, options, graph_seed);
     const auto tail = makeTail(data, options, spec.workload, repetition);
 
     VectorDatabase database(data.dimensions, VectorDatabase::SearchMode::HNSW,
                             false, false, {}, false, 0, database_path.string());
-    database.configureHNSW(16, 100, options.ef, options.seed);
+    database.configureHNSW(16, 100, options.ef, graph_seed);
     database.configureSegmentedStorage(data.base.size() + options.writes + 128);
     database.configureRecallCommit(config);
     database.initialize();
@@ -543,69 +969,179 @@ TrialResult runTrial(const DataSet& data,
     trial.write_seconds = std::chrono::duration<double>(writers_end - workload_start).count();
     trial.throughput = static_cast<double>(options.writes) / trial.write_seconds;
 
-    auto pre_status = database.durabilityStatus();
-    if (pre_status.correlation_alarm && pre_status.weak_records != 0) {
-        (void)database.waitUntilDurable(pre_status.visible_lsn, std::chrono::seconds(2));
+    const size_t crash_queries = std::min<size_t>(12, data.queries.size());
+    std::vector<CrashPreQuery> pre_queries;
+    vdb::DurabilityStatus pre_status;
+    bool database_shutdown = false;
+    if (spec.partial_survival_frontier) {
+        if (spec.policy != vdb::RecallPolicy::Strict ||
+            std::floor(spec.epsilon * static_cast<double>(options.k)) < 2.0) {
+            throw std::runtime_error(
+                "partial-survival frontier requires a strict cap of at least two records");
+        }
+
+        // Leave a fully fenced timed prefix, then make the crash child the only
+        // process with this image open. Its two weak records are both in U_pre;
+        // the production failpoint exits after syncing their WAL fence but
+        // before publishing the new in-memory durable frontier.
+        const auto fence_begin = Clock::now();
+        (void)database.durabilityFence();
+        trial.fence_latency_us = elapsedUs(fence_begin, Clock::now());
+        trial.committer = database.recallCommitterStatistics();
+        trial.policy = database.recallPolicyStatistics();
+        trial.alarmed = trial.policy.correlation.alarmed;
+        database.shutdown();
+        database_shutdown = true;
+
+        trial.crash_frontier = "fence-after-sync-before-publish";
+        auto partial = runFenceAfterSyncCrash(
+            data, options, spec, database_path, graph_seed, config);
+        pre_status = partial.status;
+        pre_queries = std::move(partial.queries);
+        trial.crash_cohort = std::move(partial.cohort);
+        trial.crash_child_status = partial.child_exit_status;
+        copyTree(database_path, crash_path);
+    } else {
         pre_status = database.durabilityStatus();
+        const bool asynchronous_fence_pending =
+            pre_status.correlation_alarm || spec.age_cap.count() > 0;
+        if (asynchronous_fence_pending && pre_status.weak_records != 0) {
+            if (!database.waitUntilDurable(
+                    pre_status.visible_lsn, std::chrono::seconds(2))) {
+                throw std::runtime_error(
+                    "asynchronous policy fence missed the crash-frontier deadline");
+            }
+            pre_status = database.durabilityStatus();
+        }
+        for (const auto& operation : trial.writes) {
+            if (operation.receipt.applied &&
+                operation.receipt.lsn > pre_status.durable_lsn) {
+                trial.crash_cohort.push_back(CrashCohortRecord{
+                    "tail-" + std::to_string(operation.index),
+                    tail[operation.index], spec.name, operation.receipt, false});
+            }
+        }
+        copyTree(database_path, crash_path);
+        pre_queries.reserve(crash_queries);
+        for (size_t q = 0; q < crash_queries; ++q) {
+            const size_t query_index = spec.workload == Workload::Hot
+                                           ? q % std::min<size_t>(4, data.queries.size())
+                                           : q;
+            const Vector query(data.queries[query_index]);
+            const auto latest = database.similaritySearch(
+                query, options.k, vdb::ReadVisibility::Latest);
+            const auto stable = database.similaritySearch(
+                query, options.k, vdb::ReadVisibility::Stable);
+            pre_queries.push_back(CrashPreQuery{
+                query_index, latest.snapshot_lsn,
+                responseRanks(latest), responseRanks(stable)});
+        }
     }
-    copyTree(database_path, crash_path);
+
+    trial.crash_visible_lsn = pre_status.visible_lsn;
+    trial.crash_durable_lsn = pre_status.durable_lsn;
 
     VectorDatabase recovered(data.dimensions, VectorDatabase::SearchMode::HNSW,
                              false, false, {}, false, 0, crash_path.string(),
                              VectorDatabase::StorageEngine::Segmented,
                              vdb::OpenMode::ReadOnlyRecovery);
-    recovered.configureHNSW(16, 100, options.ef, options.seed);
+    recovered.configureHNSW(16, 100, options.ef, graph_seed);
     recovered.configureRecallCommit(config);
     recovered.initialize();
 
-    std::unordered_set<std::string> weak_at_crash;
-    for (const auto& operation : trial.writes) {
-        if (operation.receipt.lsn > pre_status.durable_lsn) {
-            weak_at_crash.insert("tail-" + std::to_string(operation.index));
-        }
-    }
+    std::unordered_set<std::string> exposed_weak;
+    std::unordered_set<std::string> surviving_weak;
+    std::unordered_set<std::string> lost_weak;
+    trial.exposed_weak_records = trial.crash_cohort.size();
+    for (const auto& record : trial.crash_cohort) exposed_weak.insert(record.key);
     for (size_t i = 0; i < data.base.size(); ++i) {
-        if (!recovered.inspectRecord("base-" + std::to_string(i))) ++trial.stable_losses;
+        const auto record = recovered.inspectRecord(
+            "base-" + std::to_string(i), vdb::ReadVisibility::Stable);
+        if (!record) {
+            ++trial.stable_losses;
+            trial.stable_records_unchanged = false;
+        } else if (!vectorEquals(record->vector, data.base[i]) ||
+                   record->metadata != "base" || record->provisional) {
+            trial.stable_records_unchanged = false;
+        }
     }
     for (const auto& operation : trial.writes) {
+        if (!operation.receipt.applied) continue;
         const std::string key = "tail-" + std::to_string(operation.index);
-        const bool present = recovered.inspectRecord(key).has_value();
-        if (operation.receipt.lsn <= pre_status.durable_lsn && !present) ++trial.stable_losses;
-        if (operation.receipt.lsn > pre_status.durable_lsn && present) {
-            ++trial.unexpected_weak_survivors;
+        if (operation.receipt.lsn <= pre_status.durable_lsn) {
+            const auto record = recovered.inspectRecord(key, vdb::ReadVisibility::Stable);
+            if (!record) {
+                ++trial.stable_losses;
+                trial.stable_records_unchanged = false;
+            } else if (!vectorEquals(record->vector, tail[operation.index]) ||
+                       record->metadata != spec.name ||
+                       record->lsn != operation.receipt.lsn || record->provisional) {
+                trial.stable_records_unchanged = false;
+            }
         }
+    }
+    for (const auto& record : trial.crash_cohort) {
+        const auto latest_record = recovered.inspectRecord(
+            record.key, vdb::ReadVisibility::Latest);
+        const bool present = latest_record.has_value();
+        if (present) {
+            ++trial.surviving_weak_records;
+            surviving_weak.insert(record.key);
+            const auto stable_record = recovered.inspectRecord(
+                record.key, vdb::ReadVisibility::Stable);
+            const auto& inspected = record.expected_to_survive
+                                        ? stable_record
+                                        : latest_record;
+            if (!inspected || !vectorEquals(inspected->vector, record.values) ||
+                inspected->metadata != record.metadata ||
+                inspected->lsn != record.receipt.lsn || inspected->provisional ||
+                (record.expected_to_survive && !stable_record)) {
+                trial.cohort_records_unchanged = false;
+            }
+        } else {
+            ++trial.lost_weak_records;
+            lost_weak.insert(record.key);
+        }
+        if (record.expected_to_survive != present) trial.cohort_expectations_ok = false;
+        if (!record.expected_to_survive && present) ++trial.unexpected_weak_survivors;
     }
 
-    const size_t crash_queries = std::min<size_t>(12, data.queries.size());
     for (size_t q = 0; q < crash_queries; ++q) {
-        const size_t query_index = spec.workload == Workload::Hot
-                                       ? q % std::min<size_t>(4, data.queries.size())
-                                       : q;
+        const auto& pre = pre_queries.at(q);
+        const size_t query_index = pre.query_index;
         const Vector query(data.queries[query_index]);
-        const auto pre = database.similaritySearch(query, options.k,
-                                                   vdb::ReadVisibility::Latest);
-        const auto stable = database.similaritySearch(query, options.k,
-                                                      vdb::ReadVisibility::Stable);
         const auto post = recovered.similaritySearch(query, options.k,
                                                       vdb::ReadVisibility::Latest);
         const auto truth = exactTopK(data.queries[query_index], data, tail,
-                                     trial.writes, pre.snapshot_lsn, options.k);
-        const auto pre_keys = responseKeys(pre);
+                                     trial.writes, pre.snapshot_lsn, options.k,
+                                     &trial.crash_cohort);
+        const auto pre_keys = rankedKeys(pre.latest);
         const auto post_keys = responseKeys(post);
-        const auto stable_keys = responseKeys(stable);
-        size_t weak_truth = 0;
-        for (const auto& key : truth) weak_truth += weak_at_crash.contains(key);
+        const auto stable_keys = rankedKeys(pre.stable);
+        const auto expected_pre = mergeStableWithCohort(
+            pre.stable, data.queries[query_index], trial.crash_cohort,
+            exposed_weak, options.k);
+        const auto expected_recovery = mergeStableWithCohort(
+            pre.stable, data.queries[query_index], trial.crash_cohort,
+            surviving_weak, options.k);
+        size_t exposed_weak_truth = 0;
+        size_t lost_weak_truth = 0;
+        for (const auto& key : truth) {
+            exposed_weak_truth += exposed_weak.contains(key);
+            lost_weak_truth += lost_weak.contains(key);
+        }
         const double denominator = static_cast<double>(std::max<size_t>(1, truth.size()));
         const double pre_recall = overlap(pre_keys, truth, truth.size());
         const double post_recall = overlap(post_keys, truth, truth.size());
         bool subset = true;
         const std::unordered_set<std::string> post_set(post_keys.begin(), post_keys.end());
         for (const auto& key : pre_keys) {
-            if (!post_set.contains(key) && !weak_at_crash.contains(key)) subset = false;
+            if (!post_set.contains(key) && !lost_weak.contains(key)) subset = false;
         }
         CrashObservation observation;
-        observation.membership_risk = static_cast<double>(weak_truth) / denominator;
-        observation.realized_loss = observation.membership_risk;
+        observation.membership_risk =
+            static_cast<double>(exposed_weak_truth) / denominator;
+        observation.realized_loss = static_cast<double>(lost_weak_truth) / denominator;
         observation.positive_delta = std::max(0.0, pre_recall - post_recall);
         observation.amplification = std::max(
             0.0, observation.positive_delta - observation.realized_loss);
@@ -614,8 +1150,13 @@ TrialResult runTrial(const DataSet& data,
         observation.answer_churn = 1.0 - overlap(pre_keys, post_keys, options.k);
         observation.durable_overlap = overlap(stable_keys, post_keys, options.k);
         observation.lost_ids_subset_weak = subset;
-        observation.durable_fingerprint_equal =
-            keyFingerprint(stable_keys) == keyFingerprint(post_keys);
+        observation.pre_merge_fingerprint_equal =
+            keyFingerprint(expected_pre) == keyFingerprint(pre_keys);
+        observation.recovery_fingerprint_equal =
+            keyFingerprint(expected_recovery) == keyFingerprint(post_keys);
+        trial.has_strict_loss_gap = trial.has_strict_loss_gap ||
+                                    observation.realized_loss + 1e-12 <
+                                        observation.membership_risk;
         trial.crash.push_back(observation);
     }
 
@@ -641,20 +1182,34 @@ TrialResult runTrial(const DataSet& data,
     }
     trial.mean_durable /= static_cast<double>(std::max<size_t>(1, trial.writes.size()));
     trial.mean_weak /= static_cast<double>(std::max<size_t>(1, trial.writes.size()));
-    trial.policy = database.recallPolicyStatistics();
-    trial.alarmed = trial.policy.correlation.alarmed;
     if (alarm_us.load() >= 0) trial.alarm_latency_ms = alarm_us.load() / 1000.0;
 
-    const auto fence_begin = Clock::now();
-    (void)database.durabilityFence();
-    trial.fence_latency_us = elapsedUs(fence_begin, Clock::now());
-    trial.committer = database.recallCommitterStatistics();
+    if (!database_shutdown) {
+        trial.policy = database.recallPolicyStatistics();
+        trial.alarmed = trial.policy.correlation.alarmed;
+        const auto fence_begin = Clock::now();
+        (void)database.durabilityFence();
+        trial.fence_latency_us = elapsedUs(fence_begin, Clock::now());
+        trial.committer = database.recallCommitterStatistics();
+    }
     trial.frontier_ok = trial.frontier_ok && pre_status.appended_lsn >= pre_status.visible_lsn &&
-                        pre_status.visible_lsn >= pre_status.durable_lsn;
-    trial.recovery_ok = trial.stable_losses == 0 && trial.unexpected_weak_survivors == 0;
+                        pre_status.visible_lsn >= pre_status.durable_lsn &&
+                        pre_status.weak_records == trial.exposed_weak_records;
+    for (const auto& record : trial.crash_cohort) {
+        trial.frontier_ok = trial.frontier_ok && record.receipt.applied &&
+                            record.receipt.actual_ack == vdb::AckLevel::Weak &&
+                            record.receipt.lsn > pre_status.durable_lsn &&
+                            record.receipt.lsn <= pre_status.visible_lsn;
+    }
+    trial.recovery_ok = trial.stable_losses == 0 &&
+                        trial.unexpected_weak_survivors == 0 &&
+                        trial.stable_records_unchanged &&
+                        trial.cohort_records_unchanged &&
+                        trial.cohort_expectations_ok;
     for (const auto& observation : trial.crash) {
         trial.recovery_ok = trial.recovery_ok && observation.lost_ids_subset_weak &&
-                            observation.durable_fingerprint_equal &&
+                            observation.pre_merge_fingerprint_equal &&
+                            observation.recovery_fingerprint_equal &&
                             observation.amplification <= 1e-12;
         if (spec.policy == vdb::RecallPolicy::Strict) {
             trial.strict_ok = trial.strict_ok &&
@@ -663,12 +1218,26 @@ TrialResult runTrial(const DataSet& data,
                 observation.membership_risk <= spec.epsilon + 1e-12;
         }
     }
+    if (spec.partial_survival_frontier) {
+        trial.recovery_ok = trial.recovery_ok && trial.exposed_weak_records == 2 &&
+                            trial.surviving_weak_records >= 1 &&
+                            trial.crash_child_status == 86 && trial.has_strict_loss_gap;
+    }
     trial.strict_ok = trial.strict_ok && trial.policy.cap_overshoots == 0;
     recovered.shutdown();
-    database.shutdown();
+    if (spec.partial_survival_frontier) {
+        copyTree(crash_path, resume_path);
+        auto suffix = runPostRecoverySuffix(
+            data, options, resume_path, graph_seed, config, trial.crash_cohort);
+        trial.post_recovery_suffix = suffix.operation;
+        trial.post_recovery_suffix_ok = suffix.verified;
+        trial.recovery_ok = trial.recovery_ok && trial.post_recovery_suffix_ok;
+    }
+    if (!database_shutdown) database.shutdown();
     if (!options.keep_images) {
         std::filesystem::remove_all(database_path);
         std::filesystem::remove_all(crash_path);
+        std::filesystem::remove_all(resume_path);
     }
     return trial;
 }
@@ -678,7 +1247,8 @@ void writeRawCsv(const std::filesystem::path& path,
     std::ofstream output(path);
     output << "case,workload,repetition,hnsw_seed,tail_seed,operation,index,ack,latency_us,lsn,"
               "visible_lsn,durable_lsn,durable_records,weak_records,cap,risk,"
-              "snapshot_lsn,exact_recall,tail_evaluations\n";
+              "snapshot_lsn,exact_recall,tail_evaluations,crash_frontier,expected_recovery,"
+              "crash_child_status\n";
     for (const auto& trial : trials) {
         for (const auto& operation : trial.writes) {
             const auto& receipt = operation.receipt;
@@ -689,7 +1259,8 @@ void writeRawCsv(const std::filesystem::path& path,
                    << receipt.lsn << ',' << receipt.visible_lsn << ','
                    << receipt.durable_lsn << ',' << receipt.durable_count << ','
                    << receipt.weak_count << ',' << receipt.policy_cap << ','
-                   << receipt.risk_estimate << ",,,\n";
+                   << receipt.risk_estimate << ",,,," << trial.crash_frontier << ",,"
+                   << trial.crash_child_status << '\n';
         }
         for (size_t i = 0; i < trial.queries.size(); ++i) {
             const auto& query = trial.queries[i];
@@ -701,26 +1272,77 @@ void writeRawCsv(const std::filesystem::path& path,
                    << ',' << query.status.weak_records << ',' << query.status.policy_record_cap
                    << ',' << query.status.estimated_recall_loss << ','
                    << query.response.snapshot_lsn << ',' << query.exact_recall << ','
-                   << query.response.exact_tail_distance_evaluations << '\n';
+                   << query.response.exact_tail_distance_evaluations << ','
+                   << trial.crash_frontier << ",," << trial.crash_child_status << '\n';
         }
-        output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-               << ',' << trial.hnsw_seed << ',' << trial.tail_seed
-               << ",fence,0,stable," << trial.fence_latency_us
-               << ",,,,,,,,,,\n";
+        if (trial.crash_child_status == 86) {
+            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",timed-prefix-fence,0,stable," << trial.fence_latency_us
+                   << ",0,0,0,0,0,0,0,0,0,0," << trial.crash_frontier << ",,"
+                   << trial.crash_child_status << '\n';
+        }
+        if (trial.crash_frontier != "terminal-unfenced-suffix") {
+            for (size_t i = 0; i < trial.crash_cohort.size(); ++i) {
+                const auto& record = trial.crash_cohort[i];
+                const auto& receipt = record.receipt;
+                output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                       << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                       << ",crash-cohort," << i << ',' << ackName(receipt.actual_ack)
+                       << ",0," << receipt.lsn << ',' << receipt.visible_lsn << ','
+                       << receipt.durable_lsn << ',' << receipt.durable_count << ','
+                       << receipt.weak_count << ',' << receipt.policy_cap << ','
+                       << receipt.risk_estimate << ",,,," << trial.crash_frontier << ','
+                       << (record.expected_to_survive ? "survive" : "lost") << ','
+                       << trial.crash_child_status << '\n';
+            }
+            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",crash-fence,0,none,0," << trial.crash_visible_lsn << ','
+                   << trial.crash_visible_lsn << ',' << trial.crash_durable_lsn
+                   << ",0," << trial.exposed_weak_records
+                   << ",0,0,,,," << trial.crash_frontier
+                   << ",child-exit-after-sync," << trial.crash_child_status << '\n';
+            if (!trial.post_recovery_suffix) {
+                throw std::runtime_error("partial workflow has no post-recovery suffix");
+            }
+            const auto& suffix = *trial.post_recovery_suffix;
+            const auto& receipt = suffix.receipt;
+            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",post-recovery-suffix,0," << ackName(receipt.actual_ack) << ','
+                   << suffix.latency_us << ',' << receipt.lsn << ','
+                   << receipt.visible_lsn << ',' << receipt.durable_lsn << ','
+                   << receipt.durable_count << ',' << receipt.weak_count << ','
+                   << receipt.policy_cap << ',' << receipt.risk_estimate
+                   << ",,,," << trial.crash_frontier << ",workflow-resumed,"
+                   << trial.crash_child_status << '\n';
+        }
+        if (trial.crash_child_status != 86) {
+            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",cleanup-fence,0,stable," << trial.fence_latency_us
+                   << ",0,0,0,0,0,0,0,0,0,0," << trial.crash_frontier << ",,"
+                   << trial.crash_child_status << '\n';
+        }
     }
 }
 
 void writeAggregateCsv(const std::filesystem::path& path,
                        const std::vector<TrialResult>& trials) {
     std::ofstream output(path);
-    output << "case,workload,repetition,writers,writes_per_s,weak_p50_us,weak_p95_us,"
+    output << "case,workload,repetition,hnsw_seed,tail_seed,writers,writes_per_s,"
+              "weak_p50_us,weak_p95_us,"
               "weak_p99_us,stable_p50_us,stable_p95_us,stable_p99_us,fence_us,"
               "query_p50_us,query_p95_us,query_p99_us,mean_D,mean_W,max_W,max_cap,"
               "max_risk,timed_sync_successes,total_sync_attempts,total_sync_successes,"
               "total_sync_failures,timed_syncs_per_s,total_records_per_sync,"
               "policy_fences,age_fences,overshoots,enrichment,alarm,alarm_latency_ms,"
-              "M_max,L_max,delta_max,amplification_max,stable_losses,weak_survivors,"
-              "frontier_ok,recovery_ok,strict_ok\n";
+              "crash_frontier,crash_visible_lsn,crash_durable_lsn,crash_child_status,"
+              "exposed_weak_records,surviving_weak_records,lost_weak_records,"
+              "has_L_lt_M,M_max,L_max,delta_max,amplification_max,stable_losses,weak_survivors,"
+              "stable_records_unchanged,cohort_records_unchanged,cohort_expectations_ok,"
+              "post_recovery_suffix_ok,frontier_ok,recovery_ok,strict_ok\n";
     for (const auto& trial : trials) {
         double m = 0.0, l = 0.0, delta = 0.0, amplification = 0.0;
         for (const auto& observation : trial.crash) {
@@ -734,6 +1356,7 @@ void writeAggregateCsv(const std::filesystem::path& path,
                                             : static_cast<double>(trial.committer.records_synced) /
                                                   trial.committer.sync_successes;
         output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+               << ',' << trial.hnsw_seed << ',' << trial.tail_seed
                << ',' << trial.writer_count << ',' << trial.throughput << ','
                << percentile(trial.weak_latencies, .50) << ','
                << percentile(trial.weak_latencies, .95) << ','
@@ -752,9 +1375,19 @@ void writeAggregateCsv(const std::filesystem::path& path,
                << ',' << records_per_sync << ',' << trial.committer.policy_fences << ','
                << trial.committer.age_fences << ',' << trial.policy.cap_overshoots << ','
                << trial.policy.correlation.enrichment << ',' << (trial.alarmed ? 1 : 0)
-               << ',' << trial.alarm_latency_ms << ',' << m << ',' << l << ',' << delta
+               << ',' << trial.alarm_latency_ms << ',' << trial.crash_frontier << ','
+               << trial.crash_visible_lsn << ',' << trial.crash_durable_lsn << ','
+               << trial.crash_child_status << ','
+               << trial.exposed_weak_records << ',' << trial.surviving_weak_records << ','
+               << trial.lost_weak_records << ',' << (trial.has_strict_loss_gap ? 1 : 0)
+               << ',' << m << ',' << l << ',' << delta
                << ',' << amplification << ',' << trial.stable_losses << ','
-               << trial.unexpected_weak_survivors << ',' << (trial.frontier_ok ? 1 : 0)
+               << trial.unexpected_weak_survivors << ','
+               << (trial.stable_records_unchanged ? 1 : 0) << ','
+               << (trial.cohort_records_unchanged ? 1 : 0) << ','
+               << (trial.cohort_expectations_ok ? 1 : 0) << ','
+               << (trial.post_recovery_suffix_ok ? 1 : 0) << ','
+               << (trial.frontier_ok ? 1 : 0)
                << ',' << (trial.recovery_ok ? 1 : 0) << ',' << (trial.strict_ok ? 1 : 0)
                << '\n';
     }
@@ -763,21 +1396,37 @@ void writeAggregateCsv(const std::filesystem::path& path,
 void writeCrashCsv(const std::filesystem::path& path,
                    const std::vector<TrialResult>& trials) {
     std::ofstream output(path);
-    output << "case,workload,repetition,query,M,L,delta_positive,amplification,"
-              "pre_recall,post_recall,answer_churn,durable_overlap,"
-              "lost_ids_subset_weak,durable_fingerprint_equal\n";
+    output << "case,workload,repetition,hnsw_seed,tail_seed,crash_frontier,"
+              "crash_visible_lsn,crash_durable_lsn,crash_child_status,"
+              "exposed_weak_records,surviving_weak_records,lost_weak_records,query,"
+              "M,L,delta_positive,amplification,"
+              "pre_recall,post_recall,answer_churn,pre_stable_overlap,"
+              "lost_ids_subset_weak,pre_merge_fingerprint_equal,"
+              "recovery_fingerprint_equal,stable_records_unchanged,"
+              "cohort_records_unchanged,cohort_expectations_ok,"
+              "post_recovery_suffix_ok\n";
     for (const auto& trial : trials) {
         for (size_t i = 0; i < trial.crash.size(); ++i) {
             const auto& observation = trial.crash[i];
             output << trial.case_name << ',' << trial.workload << ','
-                   << trial.repetition << ',' << i << ','
+                   << trial.repetition << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ',' << trial.crash_frontier << ',' << trial.crash_visible_lsn << ','
+                   << trial.crash_durable_lsn << ',' << trial.crash_child_status << ','
+                   << trial.exposed_weak_records << ','
+                   << trial.surviving_weak_records << ',' << trial.lost_weak_records << ','
+                   << i << ','
                    << observation.membership_risk << ',' << observation.realized_loss
                    << ',' << observation.positive_delta << ','
                    << observation.amplification << ',' << observation.pre_recall << ','
                    << observation.post_recall << ',' << observation.answer_churn << ','
                    << observation.durable_overlap << ','
                    << (observation.lost_ids_subset_weak ? 1 : 0) << ','
-                   << (observation.durable_fingerprint_equal ? 1 : 0) << '\n';
+                   << (observation.pre_merge_fingerprint_equal ? 1 : 0) << ','
+                   << (observation.recovery_fingerprint_equal ? 1 : 0) << ','
+                   << (trial.stable_records_unchanged ? 1 : 0) << ','
+                   << (trial.cohort_records_unchanged ? 1 : 0) << ','
+                   << (trial.cohort_expectations_ok ? 1 : 0) << ','
+                   << (trial.post_recovery_suffix_ok ? 1 : 0) << '\n';
         }
     }
 }
@@ -809,6 +1458,13 @@ Options parseOptions(int argc, char** argv) {
         options.base_records == 0 || options.k == 0 || options.repetitions == 0) {
         throw std::invalid_argument("benchmark counts must be nonzero");
     }
+    if (options.base_records < options.k) {
+        throw std::invalid_argument("base records must be at least k");
+    }
+    if (std::floor(options.strict_epsilon * static_cast<double>(options.k)) < 2.0) {
+        throw std::invalid_argument(
+            "strict epsilon*k must admit two records for partial-survival validation");
+    }
     return options;
 }
 
@@ -830,9 +1486,16 @@ int main(int argc, char** argv) {
                   << " k=" << options.k << " writers=" << options.writers
                   << " repetitions=" << options.repetitions << '\n';
 
-        const auto base = buildBaseImage(data, options, root, options.seed, false);
+        const std::vector<uint32_t> graph_seeds{options.seed, options.seed + 17};
+        std::vector<std::filesystem::path> bases;
+        bases.reserve(graph_seeds.size());
+        for (size_t i = 0; i < graph_seeds.size(); ++i) {
+            bases.push_back(buildBaseImage(
+                data, options, root, graph_seeds[i], false,
+                "base-seed-" + std::to_string(graph_seeds[i])));
+        }
         const bool negative_control_tripped =
-            validateChangedSeedControl(data, options, root, base);
+            validateChangedSeedControl(data, options, root, bases.front(), graph_seeds.front());
         if (!negative_control_tripped) {
             throw std::runtime_error("changed-seed topology control was not rejected");
         }
@@ -848,7 +1511,8 @@ int main(int argc, char** argv) {
             {"strict-random", Workload::Random, vdb::RecallPolicy::Strict,
              vdb::AckMode::Weak, options.strict_epsilon},
             {"strict-hot", Workload::Hot, vdb::RecallPolicy::Strict,
-             vdb::AckMode::Weak, options.strict_epsilon},
+             vdb::AckMode::Weak, options.strict_epsilon,
+             std::numeric_limits<size_t>::max(), std::chrono::milliseconds(0), false, true},
             {"exchange-random", Workload::Random, vdb::RecallPolicy::ExchangeableMean,
              vdb::AckMode::Weak, options.exchange_epsilon},
             {"exchange-hot", Workload::Hot, vdb::RecallPolicy::ExchangeableMean,
@@ -859,6 +1523,11 @@ int main(int argc, char** argv) {
         };
 
         std::vector<TrialResult> trials;
+        std::set<uint32_t> observed_graph_seeds;
+        bool observed_strict_loss_gap = false;
+        bool observed_partial_survival = false;
+        bool terminal_loss_control_tripped = false;
+        size_t post_recovery_suffixes = 0;
         for (size_t repetition = 0; repetition < options.repetitions; ++repetition) {
             std::vector<size_t> case_order(cases.size());
             std::iota(case_order.begin(), case_order.end(), 0);
@@ -867,7 +1536,9 @@ int main(int argc, char** argv) {
             std::shuffle(case_order.begin(), case_order.end(), case_order_rng);
             for (const size_t case_index : case_order) {
                 const auto& spec = cases[case_index];
-                auto trial = runTrial(data, options, spec, repetition, base, root);
+                const size_t graph_index = (repetition + case_index) % bases.size();
+                auto trial = runTrial(data, options, spec, repetition,
+                                      bases[graph_index], graph_seeds[graph_index], root);
                 double max_m = 0.0, max_l = 0.0, max_delta = 0.0, max_amp = 0.0;
                 for (const auto& observation : trial.crash) {
                     max_m = std::max(max_m, observation.membership_risk);
@@ -887,7 +1558,23 @@ int main(int argc, char** argv) {
                           << trial.committer.sync_successes << " alarm="
                           << (trial.alarmed ? 1 : 0) << " strict_ok="
                           << (trial.strict_ok ? 1 : 0) << " recovery_ok="
-                          << (trial.recovery_ok ? 1 : 0) << '\n';
+                          << (trial.recovery_ok ? 1 : 0) << " suffix_ok="
+                          << (trial.post_recovery_suffix_ok ? 1 : 0) << '\n';
+                observed_graph_seeds.insert(trial.hnsw_seed);
+                observed_strict_loss_gap = observed_strict_loss_gap ||
+                                           trial.has_strict_loss_gap;
+                observed_partial_survival = observed_partial_survival ||
+                    (spec.partial_survival_frontier &&
+                     trial.surviving_weak_records > 0 && trial.has_strict_loss_gap);
+                terminal_loss_control_tripped = terminal_loss_control_tripped ||
+                    (!spec.partial_survival_frontier &&
+                     trial.exposed_weak_records > 0 &&
+                     trial.surviving_weak_records == 0 &&
+                     trial.lost_weak_records == trial.exposed_weak_records);
+                if (spec.partial_survival_frontier &&
+                    trial.post_recovery_suffix && trial.post_recovery_suffix_ok) {
+                    ++post_recovery_suffixes;
+                }
                 trials.push_back(std::move(trial));
             }
         }
@@ -899,7 +1586,10 @@ int main(int argc, char** argv) {
         writeCrashCsv(crash_path, trials);
         writeAggregateCsv(aggregate_path, trials);
 
-        bool all_ok = negative_control_tripped;
+        bool all_ok = negative_control_tripped && observed_graph_seeds.size() >= 2 &&
+                      observed_strict_loss_gap && observed_partial_survival &&
+                      terminal_loss_control_tripped &&
+                      post_recovery_suffixes == options.repetitions;
         std::cout << "\nindependent-image min/median/max (no query-row bootstrap)\n";
         for (const auto& spec : cases) {
             std::vector<double> throughputs;
@@ -931,6 +1621,13 @@ int main(int argc, char** argv) {
         std::cout << "raw_csv=" << raw_path << " crash_csv=" << crash_path
                   << " aggregate_csv=" << aggregate_path
                   << " changed_seed_control_tripped=" << (negative_control_tripped ? 1 : 0)
+                  << " terminal_loss_control_tripped="
+                  << (terminal_loss_control_tripped ? 1 : 0)
+                  << " graph_seed_count=" << observed_graph_seeds.size()
+                  << " partial_survival_observed="
+                  << (observed_partial_survival ? 1 : 0)
+                  << " post_recovery_suffixes=" << post_recovery_suffixes
+                  << " observed_L_lt_M=" << (observed_strict_loss_gap ? 1 : 0)
                   << " invariants_ok=" << (all_ok ? 1 : 0) << '\n';
         if (!options.keep_images) std::filesystem::remove_all(root);
         return all_ok ? 0 : 2;

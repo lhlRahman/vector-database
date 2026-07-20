@@ -24,6 +24,7 @@ public:
         size_t arena_initial_size{1024 * 1024};
         std::shared_ptr<const DistanceMetric> metric{std::make_shared<EuclideanDistance>()};
         uint32_t hnsw_seed{100};
+        uint64_t sequence_reservation_block{1ull << 20};
     };
 
     struct SearchResult {
@@ -138,8 +139,6 @@ private:
     bool initialized_{false};
     bool read_only_recovery_{false};
     bool maintenance_active_{false};
-
-    static constexpr uint64_t kSequenceReservationBlock = 1ull << 20;
 
     VectorSegment::Config segmentConfig() const;
     std::shared_ptr<VectorSegment> createSegment(VectorSegment::State state);

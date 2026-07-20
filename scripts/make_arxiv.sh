@@ -21,9 +21,14 @@ done
 echo "Referenced figures:"; echo "$figs" | sed 's/^/  /'
 
 # PGFPlots reads these files at TeX compile time, so they must accompany source.
-data_files=$(grep -oE 'data/[A-Za-z0-9_.-]+\.csv' "$SRC/honest-durability.tex" | sort -u)
+data_files=$(grep -oE 'data/[A-Za-z0-9_./-]+\.csv' "$SRC/honest-durability.tex" | sort -u)
 for f in $data_files; do
-  if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$OUT/$f"; else echo "WARNING: missing $SRC/$f"; fi
+  if [ -f "$SRC/$f" ]; then
+    mkdir -p "$OUT/$(dirname "$f")"
+    cp -L "$SRC/$f" "$OUT/$f"
+  else
+    echo "WARNING: missing $SRC/$f"
+  fi
 done
 echo "Referenced data:"; echo "$data_files" | sed 's/^/  /'
 

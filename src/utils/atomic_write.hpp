@@ -63,16 +63,22 @@ inline std::atomic<FileSyncCallOverride>& file_sync_call_override() {
     return override_call;
 }
 
+inline std::atomic<bool>& force_full_fsync_for_testing() {
+    static std::atomic<bool> force{false};
+    return force;
+}
+
 template <typename SyncCall>
 inline void run_sync_call(int fd,
                           const std::filesystem::path& path,
+                          const char* helper,
                           const char* operation,
                           SyncCall&& sync_call) {
     for (;;) {
         if (sync_call(fd) == 0) return;
         const int error = errno;
         if (error == EINTR) continue;
-        throw std::runtime_error(std::string("fsync_file: ") + operation +
+        throw std::runtime_error(std::string(helper) + ": " + operation +
                                  " failed on " + path.string() + ": " +
                                  std::strerror(error));
     }
@@ -86,16 +92,19 @@ inline FileSyncMode sync_descriptor_with_calls(
     const std::filesystem::path& path,
     bool request_full_fsync,
     PlainSync&& plain_sync,
-    FullSync&& full_sync) {
+    FullSync&& full_sync,
+    const char* helper = "fsync_file") {
     if (request_full_fsync) {
-        run_sync_call(fd, path, "F_FULLFSYNC", std::forward<FullSync>(full_sync));
+        run_sync_call(
+            fd, path, helper, "F_FULLFSYNC", std::forward<FullSync>(full_sync));
         return FileSyncMode::FullFsync;
     }
-    run_sync_call(fd, path, "fsync", std::forward<PlainSync>(plain_sync));
+    run_sync_call(fd, path, helper, "fsync", std::forward<PlainSync>(plain_sync));
     return FileSyncMode::Fsync;
 }
 
 inline bool request_full_fsync_on_this_platform() {
+    if (force_full_fsync_for_testing().load(std::memory_order_relaxed)) return true;
 #if defined(__APPLE__)
     return full_fsync_enabled().load(std::memory_order_relaxed);
 #else
@@ -157,6 +166,10 @@ inline void set_file_sync_call_override(detail::FileSyncCallOverride override_ca
     detail::file_sync_call_override().store(override_call, std::memory_order_relaxed);
 }
 
+inline void set_force_full_fsync_for_testing(bool force) {
+    detail::force_full_fsync_for_testing().store(force, std::memory_order_relaxed);
+}
+
 }  // namespace testing
 
 // Durability contract: these helpers now FAIL LOUDLY. Previously they swallowed
@@ -165,12 +178,14 @@ inline void set_file_sync_call_override(detail::FileSyncCallOverride override_ca
 // durability guarantee. They now throw std::runtime_error if the data cannot be
 // made durable.
 
-inline FileSyncMode sync_file_descriptor(int fd, const std::filesystem::path& path) {
+inline FileSyncMode sync_file_descriptor(int fd,
+                                         const std::filesystem::path& path,
+                                         bool request_full_fsync) {
     try {
         const FileSyncMode mode = detail::sync_descriptor_with_calls(
             fd,
             path,
-            detail::request_full_fsync_on_this_platform(),
+            request_full_fsync,
             detail::call_plain_fsync,
             detail::call_full_fsync);
         detail::record_file_sync_success(mode);
@@ -181,7 +196,13 @@ inline FileSyncMode sync_file_descriptor(int fd, const std::filesystem::path& pa
     }
 }
 
-inline FileSyncMode fsync_file(const std::filesystem::path& path) {
+inline FileSyncMode sync_file_descriptor(int fd, const std::filesystem::path& path) {
+    return sync_file_descriptor(
+        fd, path, detail::request_full_fsync_on_this_platform());
+}
+
+inline FileSyncMode fsync_file(const std::filesystem::path& path,
+                               bool request_full_fsync) {
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         detail::record_file_sync_failure();
@@ -189,7 +210,7 @@ inline FileSyncMode fsync_file(const std::filesystem::path& path) {
                                  ": " + std::strerror(errno));
     }
     try {
-        const FileSyncMode mode = sync_file_descriptor(fd, path);
+        const FileSyncMode mode = sync_file_descriptor(fd, path, request_full_fsync);
         ::close(fd);
         return mode;
     } catch (...) {
@@ -198,27 +219,44 @@ inline FileSyncMode fsync_file(const std::filesystem::path& path) {
     }
 }
 
-// fsync a directory so that prior rename/create/unlink operations within it
-// are durable. POSIX requires this — without it, a rename can be lost on
-// power failure even after the file itself was fsynced.
-inline void fsync_dir(const std::filesystem::path& dir) {
+inline FileSyncMode fsync_file(const std::filesystem::path& path) {
+    return fsync_file(path, detail::request_full_fsync_on_this_platform());
+}
+
+// Synchronize a directory so that prior rename/create/unlink operations within
+// it are durable. Plain mode retains the POSIX portability allowance for file
+// systems that reject directory fsync. Requested strong mode is fail-closed:
+// F_FULLFSYNC must succeed and is never replaced by or downgraded to fsync.
+inline void fsync_dir(const std::filesystem::path& dir,
+                      bool request_full_fsync) {
     int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) {
         throw std::runtime_error("fsync_dir: cannot open " + dir.string() +
                                  ": " + std::strerror(errno));
     }
-    while (::fsync(fd) != 0) {
-        if (errno == EINTR) continue;
-        // Some filesystems legitimately do not support fsync on a directory
-        // handle. Tolerate only those specific cases; every other error means
-        // the directory metadata may not be durable, which we must surface.
-        if (errno == EINVAL || errno == ENOTSUP) break;
-        int e = errno;
+
+    auto portable_plain_sync = [](int directory_fd) {
+        const int result = detail::call_plain_fsync(directory_fd);
+        if (result != 0 && (errno == EINVAL || errno == ENOTSUP)) return 0;
+        return result;
+    };
+    try {
+        (void)detail::sync_descriptor_with_calls(
+            fd,
+            dir,
+            request_full_fsync,
+            portable_plain_sync,
+            detail::call_full_fsync,
+            "fsync_dir");
+    } catch (...) {
         ::close(fd);
-        throw std::runtime_error("fsync_dir: fsync failed on " + dir.string() +
-                                 ": " + std::strerror(e));
+        throw;
     }
     ::close(fd);
+}
+
+inline void fsync_dir(const std::filesystem::path& dir) {
+    fsync_dir(dir, detail::request_full_fsync_on_this_platform());
 }
 
 // Build a temp path that is unique per process and per call, so two concurrent
@@ -234,13 +272,15 @@ inline std::filesystem::path make_temp_path(const std::filesystem::path& path) {
 }
 
 // Write `path` atomically: stream to a unique "path.tmp.<pid>.<n>", flush+fsync,
-// rename onto `path`, then fsync the parent directory. After this returns, the
-// file content is durable under power loss; either the new content is visible
-// or the old content is (no torn intermediate state).
+// rename onto `path`, then synchronize the parent directory. In requested Apple
+// strong mode, the parent-directory operation is F_FULLFSYNC so the rename is
+// included in the drive-cache barrier. Portable/default mode retains the prior
+// regular-file fsync plus portable directory-fsync behavior.
 inline void atomic_write(const std::filesystem::path& path,
                          const std::function<void(std::ostream&)>& writer) {
     std::filesystem::create_directories(path.parent_path());
     auto temp_path = make_temp_path(path);
+    const bool request_full_fsync = detail::request_full_fsync_on_this_platform();
 
     {
         std::ofstream os(temp_path, std::ios::binary | std::ios::trunc);
@@ -256,9 +296,9 @@ inline void atomic_write(const std::filesystem::path& path,
         }
     }
 
-    fsync_file(temp_path);
+    fsync_file(temp_path, request_full_fsync);
     std::filesystem::rename(temp_path, path);
-    fsync_dir(path.parent_path());
+    fsync_dir(path.parent_path(), request_full_fsync);
 }
 
 } // namespace vdb::io
