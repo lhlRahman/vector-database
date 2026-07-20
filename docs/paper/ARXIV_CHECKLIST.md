@@ -1,35 +1,54 @@
-# arXiv / camera-ready checklist — "Honest Durability for Graph ANN"
+# ADMS / arXiv submission checklist
 
-Build the submission tarball: `scripts/make_arxiv.sh --verify`
--> `build/honest-durability-arxiv.tar.gz` (honest-durability.tex + 3 figure PDFs).
+Build and compile the self-contained package from the repository root:
 
-## Must decide (needs you)
-- [ ] **Author block.** The .tex has `\author{Anonymous\\ \small \texttt{Under submission}}`.
-  - For **arXiv**: arXiv is NOT anonymous — replace with real name(s) + affiliation + email.
-  - For a **double-blind venue** submission: keep anonymous (do not upload the deanonymized version to arXiv before the anonymity deadline if the venue forbids it — check the CFP).
-- [ ] **Public code URL.** The paper says "all code ... open" but prints no repository link.
-  Add a URL (make the repo public first) to the Reproducibility section, or drop the "open" claim.
-- [ ] **arXiv license.** Pick one at submission (default arXiv non-exclusive is fine; CC-BY if you want reuse).
-- [ ] **arXiv categories.** Suggested: primary **cs.DB**; cross-list **cs.IR**, **cs.DC**.
+```sh
+scripts/make_arxiv.sh --verify
+```
 
-## Verified (this session)
-- [x] Compiles clean with tectonic (pdflatex-compatible packages only: geometry, amsmath,
-      booktabs, graphicx, textcomp, microtype, hyperref). 0 overfull hboxes, 0 undefined refs.
-- [x] Self-contained: standard `article` class, inline `thebibliography` (no external .bbl/.bib),
-      figures are local PDFs under `figs/`.
-- [x] All 16 citations web-verified; no `[unverified]` tags remain.
-- [x] Every durability number is median-of-7 with min–max ranges; all cross-references resolve.
-- [x] Passed two no-context 10-reviewer rounds (final: 10/10 >= weak-accept, 0 blocking issues).
-- [x] Code: `make test` 50/50; ThreadSanitizer clean (0 races) on e2e; ASan+UBSan fuzz clean (WAL, sealed-segment).
+The command creates `build/honest-durability-arxiv.tar.gz` with the manuscript,
+the vendored official ADMS/PVLDB `acmart.cls`, and both canonical summary CSVs.
+Missing assets or a missing Tectonic executable are fatal in verification mode.
+
+## Must decide before submission
+
+- [ ] Replace the anonymous author and affiliation for arXiv or a camera-ready
+  version; retain anonymity if the active venue requires it.
+- [ ] Set the artifact URL when a stable public repository/archive exists.
+- [ ] Replace the PVLDB DOI, issue, and page placeholders when assigned.
+- [ ] Select the arXiv license and categories (suggested primary `cs.DB`, with
+  `cs.IR` or `cs.DC` as appropriate).
+
+## Verified for round 4
+
+- [x] Uses the ADMS 2026 call's linked PVLDB Volume 19 template:
+  `acmart` commit `bc9fcacbdc559a577816812cb46c6d41d8bced2b`.
+- [x] Tectonic produces an 8-page PDF with no undefined references or overfull
+  boxes, below ADMS's 12 content-page limit.
+- [x] The inline bibliography needs no external `.bib` or `.bbl` file.
+- [x] The canonical bundle is run `20260720T044019Z-889559979de0` from clean
+  relevant-source commit `889559979de0519a30de04e9aefbf67a3770e69f`.
+- [x] The main evidence has 240 images, 2,880 recovery rows, and 14,040 operation
+  rows; the paired sweep has 480 images and 30,720 write rows.
+- [x] Tests pass at 77/77 general, 30/30 end-to-end, 20/20 TCP, 24/24 committer,
+  15/15 process-crash frontiers, and 661/661 WAL byte prefixes.
+- [x] The exact published `.artifacts/recall-committer-evidence` recipe ran and
+  the tracked canonical bundle revalidates byte-for-byte.
+- [x] The physical `dm-log-writes` experiment was not run and is not claimed.
 
 ## Before posting
-- [ ] Re-run `scripts/make_arxiv.sh --verify` after any .tex edit.
-- [ ] Fold in GIST1M results (see `GIST_INTEGRATION.md`) if the queued run finished.
-- [ ] Sanity-check the PDF renders on a clean machine (arXiv uses its own TeX Live).
-- [ ] Title/abstract for the arXiv web form match the paper's.
 
-## Honest scope to keep in the abstract/threats (do NOT overclaim)
-- Single macOS/APFS host; the ~155x fsync-floor gap is a platform artifact (smaller on Linux/NVMe).
-- Durability numbers are synthetic-vector unless the real-SIFT run is folded in.
-- Fork-and-crash validates post-fsync death, not true power loss (needs Linux dm-log-writes).
-- Positioned as a measurement/methodology paper (DaMoN/ADMS scope), not a systems-novelty claim.
+- [ ] Re-run `scripts/make_arxiv.sh --verify` after any manuscript edit.
+- [ ] Verify a clean `git archive` compile and inspect the final PDF visually.
+- [ ] Ensure the title and abstract in the submission form match the PDF.
+
+## Scope that must remain explicit
+
+- The new committer timings are from one Apple/APFS host and a small synthetic
+  workload with one query set and two fixed HNSW graphs.
+- The legacy tax/recovery study spans Apple and AWS Linux but lacks full modern
+  provenance parity; it is labeled as pre-committer evidence.
+- Process death, logical image recovery, and byte cuts are not physical power
+  loss. The destructive Linux block-replay run remains pending.
+- The implementation is single-node and insert-only. The root lock assumes
+  cooperating processes and local filesystem `flock` semantics.

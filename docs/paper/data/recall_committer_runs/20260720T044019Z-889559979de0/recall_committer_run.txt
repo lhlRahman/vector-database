@@ -1,0 +1,755 @@
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/bench_recall_commit.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/bench_recall_commit
+recall-committer benchmark dataset=clustered-synthetic base=160 writes=25 queries=32 dim=12 k=10 writers=4 repetitions=30
+negative_control changed_seed=1109 answer_drift=0 topology_fingerprint_mismatch=1 validator_rejected=1
+stable-group         rep=0 writes/s=238.2 weak_p95_us=0.0 query_p95_us=6195.0 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=0 writes/s=238.7 weak_p95_us=17793.6 query_p95_us=15823.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=0 writes/s=403.5 weak_p95_us=13393.4 query_p95_us=6732.2 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=0 writes/s=182.9 weak_p95_us=23192.4 query_p95_us=21086.0 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=0 writes/s=265.5 weak_p95_us=18794.3 query_p95_us=13668.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=0 writes/s=84.9 weak_p95_us=10245.0 query_p95_us=20295.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=0 writes/s=135.6 weak_p95_us=35149.6 query_p95_us=6896.7 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=0 writes/s=187.9 weak_p95_us=30294.6 query_p95_us=194.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=1 writes/s=78.8 weak_p95_us=9977.5 query_p95_us=25091.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=1 writes/s=153.6 weak_p95_us=30705.9 query_p95_us=26389.2 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=1 writes/s=156.1 weak_p95_us=32153.7 query_p95_us=24342.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=1 writes/s=264.4 weak_p95_us=22974.9 query_p95_us=16273.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=1 writes/s=151.5 weak_p95_us=0.0 query_p95_us=27375.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=1 writes/s=181.1 weak_p95_us=29695.4 query_p95_us=107.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=1 writes/s=187.0 weak_p95_us=27156.2 query_p95_us=21086.7 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=1 writes/s=278.7 weak_p95_us=23716.6 query_p95_us=6574.9 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=2 writes/s=223.1 weak_p95_us=0.0 query_p95_us=15680.0 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=2 writes/s=121.3 weak_p95_us=41029.1 query_p95_us=34586.9 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=2 writes/s=201.1 weak_p95_us=24248.7 query_p95_us=18048.1 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=2 writes/s=223.8 weak_p95_us=25971.6 query_p95_us=18975.5 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=2 writes/s=72.4 weak_p95_us=10581.9 query_p95_us=53771.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=2 writes/s=203.1 weak_p95_us=26543.9 query_p95_us=92.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=2 writes/s=132.6 weak_p95_us=37592.0 query_p95_us=7251.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=2 writes/s=247.2 weak_p95_us=28573.6 query_p95_us=15117.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=3 writes/s=91.6 weak_p95_us=10519.2 query_p95_us=47252.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=3 writes/s=179.7 weak_p95_us=29179.9 query_p95_us=129.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=3 writes/s=233.9 weak_p95_us=27082.8 query_p95_us=170.0 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=3 writes/s=241.4 weak_p95_us=24207.6 query_p95_us=17942.6 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=3 writes/s=187.2 weak_p95_us=36604.7 query_p95_us=3915.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=3 writes/s=148.7 weak_p95_us=0.0 query_p95_us=14587.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=3 writes/s=235.5 weak_p95_us=19715.3 query_p95_us=13829.8 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=3 writes/s=144.7 weak_p95_us=41838.9 query_p95_us=27729.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=4 writes/s=280.1 weak_p95_us=19762.7 query_p95_us=14860.4 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=4 writes/s=229.8 weak_p95_us=26495.1 query_p95_us=135.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=4 writes/s=169.7 weak_p95_us=28402.8 query_p95_us=21848.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=4 writes/s=232.9 weak_p95_us=28103.5 query_p95_us=12872.2 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=4 writes/s=181.3 weak_p95_us=29143.3 query_p95_us=21617.7 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=4 writes/s=83.3 weak_p95_us=10487.5 query_p95_us=48948.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=4 writes/s=209.8 weak_p95_us=0.0 query_p95_us=12544.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=4 writes/s=202.5 weak_p95_us=22049.4 query_p95_us=18889.2 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=5 writes/s=183.6 weak_p95_us=0.0 query_p95_us=18525.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=5 writes/s=289.4 weak_p95_us=19512.7 query_p95_us=10781.5 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=5 writes/s=128.5 weak_p95_us=38194.3 query_p95_us=28717.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=5 writes/s=96.8 weak_p95_us=8906.6 query_p95_us=48241.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=5 writes/s=139.2 weak_p95_us=34212.1 query_p95_us=28759.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=5 writes/s=332.3 weak_p95_us=17796.4 query_p95_us=8239.0 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=5 writes/s=261.7 weak_p95_us=19484.6 query_p95_us=9701.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=5 writes/s=199.3 weak_p95_us=27895.7 query_p95_us=127.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=6 writes/s=289.7 weak_p95_us=19206.9 query_p95_us=5467.4 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=6 writes/s=162.5 weak_p95_us=28201.3 query_p95_us=22973.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=6 writes/s=212.7 weak_p95_us=20538.9 query_p95_us=18684.7 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=6 writes/s=93.6 weak_p95_us=8651.2 query_p95_us=48633.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=6 writes/s=144.6 weak_p95_us=34877.9 query_p95_us=28087.2 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=6 writes/s=180.2 weak_p95_us=28875.4 query_p95_us=175.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=6 writes/s=240.9 weak_p95_us=24696.4 query_p95_us=11919.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=6 writes/s=189.5 weak_p95_us=0.0 query_p95_us=17790.8 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=7 writes/s=265.1 weak_p95_us=24320.3 query_p95_us=15388.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=7 writes/s=228.3 weak_p95_us=20314.1 query_p95_us=16886.6 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=7 writes/s=145.6 weak_p95_us=34520.7 query_p95_us=27595.9 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=7 writes/s=199.7 weak_p95_us=0.0 query_p95_us=17809.0 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=7 writes/s=184.4 weak_p95_us=29594.5 query_p95_us=116.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=7 writes/s=154.2 weak_p95_us=36259.2 query_p95_us=7484.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=7 writes/s=302.1 weak_p95_us=17390.3 query_p95_us=12370.1 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=7 writes/s=92.3 weak_p95_us=8992.9 query_p95_us=20570.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=8 writes/s=148.0 weak_p95_us=34580.4 query_p95_us=23965.2 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=8 writes/s=245.9 weak_p95_us=23361.4 query_p95_us=130.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=8 writes/s=256.2 weak_p95_us=31702.0 query_p95_us=9617.5 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=8 writes/s=246.4 weak_p95_us=21253.5 query_p95_us=13528.7 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=8 writes/s=130.1 weak_p95_us=41308.4 query_p95_us=25411.3 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=8 writes/s=86.8 weak_p95_us=8813.6 query_p95_us=48856.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=8 writes/s=164.1 weak_p95_us=0.0 query_p95_us=23175.9 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=8 writes/s=249.5 weak_p95_us=21378.5 query_p95_us=10197.6 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=9 writes/s=312.7 weak_p95_us=17536.5 query_p95_us=12659.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=9 writes/s=182.5 weak_p95_us=0.0 query_p95_us=4364.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=9 writes/s=83.9 weak_p95_us=9798.3 query_p95_us=54201.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=9 writes/s=119.2 weak_p95_us=44678.1 query_p95_us=28847.1 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=9 writes/s=280.2 weak_p95_us=21078.8 query_p95_us=79.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=9 writes/s=185.6 weak_p95_us=27953.9 query_p95_us=20694.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=9 writes/s=250.7 weak_p95_us=23002.0 query_p95_us=10939.3 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=9 writes/s=127.8 weak_p95_us=38125.8 query_p95_us=30751.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=10 writes/s=196.6 weak_p95_us=0.0 query_p95_us=17339.8 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=10 writes/s=128.3 weak_p95_us=40429.7 query_p95_us=30951.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=10 writes/s=77.5 weak_p95_us=1689.2 query_p95_us=19507.4 maxW=1 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=25 total_syncs=25 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=10 writes/s=202.4 weak_p95_us=28442.0 query_p95_us=18026.1 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=10 writes/s=200.0 weak_p95_us=26459.7 query_p95_us=261.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=10 writes/s=282.1 weak_p95_us=19382.2 query_p95_us=14507.6 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=10 writes/s=307.4 weak_p95_us=20646.0 query_p95_us=5713.5 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=10 writes/s=144.2 weak_p95_us=34097.3 query_p95_us=26766.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=11 writes/s=124.5 weak_p95_us=43957.7 query_p95_us=15528.5 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=11 writes/s=323.9 weak_p95_us=17777.3 query_p95_us=9865.3 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=11 writes/s=487.1 weak_p95_us=13178.5 query_p95_us=7946.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=11 writes/s=149.4 weak_p95_us=5015.6 query_p95_us=26760.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=11 writes/s=316.3 weak_p95_us=17454.4 query_p95_us=99.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=11 writes/s=308.3 weak_p95_us=0.0 query_p95_us=10518.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=11 writes/s=283.9 weak_p95_us=14462.6 query_p95_us=13332.0 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=11 writes/s=160.1 weak_p95_us=28298.4 query_p95_us=24035.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=12 writes/s=119.9 weak_p95_us=45556.0 query_p95_us=34186.2 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=12 writes/s=176.2 weak_p95_us=0.0 query_p95_us=22072.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=12 writes/s=186.9 weak_p95_us=29908.9 query_p95_us=101.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=12 writes/s=241.6 weak_p95_us=22727.9 query_p95_us=14870.5 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=12 writes/s=157.3 weak_p95_us=32646.5 query_p95_us=18769.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=12 writes/s=205.1 weak_p95_us=23993.4 query_p95_us=217.2 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=12 writes/s=86.4 weak_p95_us=10514.2 query_p95_us=27380.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=12 writes/s=257.9 weak_p95_us=27894.3 query_p95_us=14902.2 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=13 writes/s=303.8 weak_p95_us=17711.8 query_p95_us=10134.4 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=13 writes/s=184.5 weak_p95_us=0.0 query_p95_us=267.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=13 writes/s=152.9 weak_p95_us=29162.4 query_p95_us=24497.5 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=13 writes/s=310.2 weak_p95_us=16428.8 query_p95_us=11383.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=13 writes/s=223.1 weak_p95_us=34043.4 query_p95_us=93.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=13 writes/s=90.5 weak_p95_us=9587.3 query_p95_us=50166.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=13 writes/s=301.7 weak_p95_us=17674.2 query_p95_us=11756.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=13 writes/s=136.9 weak_p95_us=42901.8 query_p95_us=21597.0 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=14 writes/s=175.9 weak_p95_us=35203.1 query_p95_us=88.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=14 writes/s=149.0 weak_p95_us=32833.1 query_p95_us=27205.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=14 writes/s=222.0 weak_p95_us=19801.0 query_p95_us=12994.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=14 writes/s=252.8 weak_p95_us=21614.6 query_p95_us=11859.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=14 writes/s=91.8 weak_p95_us=9214.0 query_p95_us=47472.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=14 writes/s=275.0 weak_p95_us=23430.0 query_p95_us=13283.2 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=14 writes/s=145.6 weak_p95_us=36387.7 query_p95_us=26970.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=14 writes/s=186.7 weak_p95_us=0.0 query_p95_us=18610.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=15 writes/s=197.8 weak_p95_us=27206.5 query_p95_us=119.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=15 writes/s=151.8 weak_p95_us=33539.6 query_p95_us=23530.1 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=15 writes/s=159.7 weak_p95_us=39314.5 query_p95_us=20638.1 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=15 writes/s=125.3 weak_p95_us=39367.2 query_p95_us=34164.2 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=15 writes/s=108.6 weak_p95_us=9841.7 query_p95_us=36281.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=15 writes/s=177.4 weak_p95_us=0.0 query_p95_us=19902.9 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=15 writes/s=295.2 weak_p95_us=19667.5 query_p95_us=11412.2 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=15 writes/s=340.5 weak_p95_us=17008.2 query_p95_us=11232.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=16 writes/s=297.3 weak_p95_us=18661.0 query_p95_us=10313.2 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=16 writes/s=126.4 weak_p95_us=40775.2 query_p95_us=33221.1 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=16 writes/s=203.8 weak_p95_us=31077.1 query_p95_us=19866.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=16 writes/s=169.2 weak_p95_us=33142.6 query_p95_us=13481.8 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=16 writes/s=179.1 weak_p95_us=29973.5 query_p95_us=298.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=16 writes/s=83.5 weak_p95_us=9087.6 query_p95_us=30487.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=16 writes/s=170.5 weak_p95_us=26448.7 query_p95_us=21989.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=16 writes/s=184.8 weak_p95_us=0.0 query_p95_us=18389.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=17 writes/s=258.8 weak_p95_us=19581.1 query_p95_us=11231.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=17 writes/s=287.2 weak_p95_us=17727.1 query_p95_us=10788.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=17 writes/s=197.7 weak_p95_us=26693.6 query_p95_us=94.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=17 writes/s=242.1 weak_p95_us=18452.2 query_p95_us=14355.7 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=17 writes/s=94.2 weak_p95_us=7100.3 query_p95_us=21502.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=17 writes/s=198.0 weak_p95_us=0.0 query_p95_us=8055.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=17 writes/s=108.4 weak_p95_us=50789.1 query_p95_us=32893.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=17 writes/s=255.1 weak_p95_us=21974.3 query_p95_us=14167.2 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=18 writes/s=265.4 weak_p95_us=0.0 query_p95_us=12667.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=18 writes/s=150.7 weak_p95_us=34796.4 query_p95_us=250.4 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=18 writes/s=98.0 weak_p95_us=8529.3 query_p95_us=3513.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=18 writes/s=272.0 weak_p95_us=19501.1 query_p95_us=14117.4 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=18 writes/s=248.8 weak_p95_us=21968.3 query_p95_us=6349.6 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=18 writes/s=166.6 weak_p95_us=35279.3 query_p95_us=179.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=18 writes/s=199.7 weak_p95_us=22061.9 query_p95_us=18468.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=18 writes/s=144.1 weak_p95_us=33293.9 query_p95_us=26036.6 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=19 writes/s=252.2 weak_p95_us=21126.6 query_p95_us=167.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=19 writes/s=152.5 weak_p95_us=35628.6 query_p95_us=25528.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=19 writes/s=145.1 weak_p95_us=43362.2 query_p95_us=11101.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=19 writes/s=291.0 weak_p95_us=19178.3 query_p95_us=13713.4 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=19 writes/s=320.9 weak_p95_us=20517.4 query_p95_us=8962.6 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=19 writes/s=206.2 weak_p95_us=0.0 query_p95_us=13651.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=19 writes/s=109.6 weak_p95_us=11925.4 query_p95_us=28073.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=19 writes/s=323.9 weak_p95_us=13998.4 query_p95_us=11444.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=20 writes/s=102.2 weak_p95_us=8748.0 query_p95_us=202.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=20 writes/s=191.0 weak_p95_us=25495.5 query_p95_us=19154.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=20 writes/s=116.1 weak_p95_us=47338.0 query_p95_us=35312.5 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=20 writes/s=171.6 weak_p95_us=34231.2 query_p95_us=4469.0 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=20 writes/s=199.2 weak_p95_us=27017.2 query_p95_us=122.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=20 writes/s=342.4 weak_p95_us=16200.0 query_p95_us=3889.5 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=20 writes/s=278.4 weak_p95_us=21834.3 query_p95_us=6941.7 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=20 writes/s=167.7 weak_p95_us=0.0 query_p95_us=17324.5 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=21 writes/s=199.0 weak_p95_us=27273.1 query_p95_us=87.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=21 writes/s=375.0 weak_p95_us=17430.2 query_p95_us=6488.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=21 writes/s=187.9 weak_p95_us=0.0 query_p95_us=9433.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=21 writes/s=83.3 weak_p95_us=8316.5 query_p95_us=46962.6 maxW=3 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=23 total_syncs=23 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=21 writes/s=317.7 weak_p95_us=16357.6 query_p95_us=11862.2 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=21 writes/s=153.6 weak_p95_us=28896.5 query_p95_us=25141.7 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=21 writes/s=121.5 weak_p95_us=44768.7 query_p95_us=35615.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=21 writes/s=220.6 weak_p95_us=20261.8 query_p95_us=12561.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=22 writes/s=87.1 weak_p95_us=8314.3 query_p95_us=51589.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=22 writes/s=121.0 weak_p95_us=46211.3 query_p95_us=30136.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=22 writes/s=117.5 weak_p95_us=54354.6 query_p95_us=37344.5 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=22 writes/s=185.0 weak_p95_us=0.0 query_p95_us=18186.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=22 writes/s=293.1 weak_p95_us=18482.2 query_p95_us=14455.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=22 writes/s=295.7 weak_p95_us=21909.9 query_p95_us=9676.1 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=22 writes/s=182.9 weak_p95_us=34359.6 query_p95_us=86.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=22 writes/s=196.7 weak_p95_us=27579.6 query_p95_us=18064.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=23 writes/s=336.8 weak_p95_us=18117.0 query_p95_us=8584.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=23 writes/s=209.6 weak_p95_us=0.0 query_p95_us=5476.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=23 writes/s=128.8 weak_p95_us=43907.7 query_p95_us=19868.9 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=23 writes/s=89.8 weak_p95_us=8119.9 query_p95_us=51820.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=23 writes/s=153.5 weak_p95_us=37851.8 query_p95_us=27997.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=23 writes/s=121.8 weak_p95_us=47083.1 query_p95_us=31028.3 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=23 writes/s=263.6 weak_p95_us=19722.4 query_p95_us=7107.1 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=23 writes/s=199.3 weak_p95_us=26560.5 query_p95_us=122.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=24 writes/s=262.4 weak_p95_us=19771.1 query_p95_us=6828.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=24 writes/s=195.7 weak_p95_us=35669.2 query_p95_us=24573.6 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=24 writes/s=123.9 weak_p95_us=43903.8 query_p95_us=32403.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=24 writes/s=196.7 weak_p95_us=25947.3 query_p95_us=22004.6 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=24 writes/s=359.2 weak_p95_us=15694.8 query_p95_us=38.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=24 writes/s=177.9 weak_p95_us=27140.8 query_p95_us=19954.5 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=24 writes/s=185.3 weak_p95_us=0.0 query_p95_us=19408.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=24 writes/s=97.6 weak_p95_us=6533.5 query_p95_us=15536.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=25 writes/s=429.2 weak_p95_us=13935.6 query_p95_us=9867.2 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=25 writes/s=407.3 weak_p95_us=15555.5 query_p95_us=6965.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=25 writes/s=149.9 weak_p95_us=35037.5 query_p95_us=22531.4 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=25 writes/s=187.6 weak_p95_us=34578.6 query_p95_us=18147.6 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=25 writes/s=124.2 weak_p95_us=40534.8 query_p95_us=23774.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=25 writes/s=163.9 weak_p95_us=34119.2 query_p95_us=144.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=8 total_syncs=9 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=25 writes/s=162.2 weak_p95_us=0.0 query_p95_us=22040.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=25 writes/s=109.1 weak_p95_us=6925.0 query_p95_us=9548.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=26 writes/s=217.8 weak_p95_us=25094.5 query_p95_us=19437.6 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=26 writes/s=212.7 weak_p95_us=26810.2 query_p95_us=16729.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=26 writes/s=280.1 weak_p95_us=15270.4 query_p95_us=13294.8 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=26 writes/s=198.3 weak_p95_us=0.0 query_p95_us=155.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=26 writes/s=140.9 weak_p95_us=37864.7 query_p95_us=24707.9 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=26 writes/s=304.9 weak_p95_us=18637.8 query_p95_us=9882.4 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=26 writes/s=93.3 weak_p95_us=8694.6 query_p95_us=25042.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=26 writes/s=327.2 weak_p95_us=17386.7 query_p95_us=67.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=27 writes/s=204.2 weak_p95_us=27203.4 query_p95_us=8937.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=27 writes/s=255.7 weak_p95_us=19734.5 query_p95_us=8506.6 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=27 writes/s=122.7 weak_p95_us=42477.7 query_p95_us=34191.3 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=27 writes/s=104.6 weak_p95_us=7829.4 query_p95_us=38698.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=27 writes/s=193.5 weak_p95_us=28793.3 query_p95_us=109.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=27 writes/s=335.1 weak_p95_us=15879.8 query_p95_us=7662.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=27 writes/s=117.2 weak_p95_us=46823.5 query_p95_us=34619.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=27 writes/s=215.8 weak_p95_us=0.0 query_p95_us=15621.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=28 writes/s=267.9 weak_p95_us=24300.4 query_p95_us=90.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=28 writes/s=115.1 weak_p95_us=54996.9 query_p95_us=36114.3 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=28 writes/s=85.4 weak_p95_us=8002.3 query_p95_us=49711.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=28 writes/s=272.2 weak_p95_us=24848.7 query_p95_us=11015.7 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=28 writes/s=184.0 weak_p95_us=0.0 query_p95_us=18025.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=28 writes/s=175.1 weak_p95_us=37843.5 query_p95_us=13929.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=28 writes/s=246.4 weak_p95_us=31392.5 query_p95_us=5026.3 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=28 writes/s=116.4 weak_p95_us=45946.8 query_p95_us=38202.1 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot-guard   rep=29 writes/s=79.1 weak_p95_us=9874.7 query_p95_us=58891.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-count          rep=29 writes/s=164.9 weak_p95_us=30075.0 query_p95_us=13401.1 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+fixed-time           rep=29 writes/s=220.7 weak_p95_us=27559.2 query_p95_us=88.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-random        rep=29 writes/s=132.2 weak_p95_us=42986.3 query_p95_us=27958.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-random      rep=29 writes/s=145.8 weak_p95_us=65538.4 query_p95_us=12009.1 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+stable-group         rep=29 writes/s=150.6 weak_p95_us=0.0 query_p95_us=19535.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+exchange-hot         rep=29 writes/s=242.8 weak_p95_us=23722.1 query_p95_us=10513.2 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+strict-hot           rep=29 writes/s=117.9 weak_p95_us=42830.2 query_p95_us=36377.0 maxW=2 M=0.2 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1 suffix_ok=1
+
+independent-image min/median/max (no query-row bootstrap)
+stable-group         writes/s=[148.7,186.0,308.3] image_mean_Delta+=[0.0,0.0,0.0]
+fixed-count          writes/s=[151.8,201.7,323.9] image_mean_Delta+=[0.0,0.0,0.0]
+fixed-time           writes/s=[163.9,199.1,359.2] image_mean_Delta+=[0.0,0.0,0.0]
+strict-random        writes/s=[108.4,144.1,212.7] image_mean_Delta+=[0.0,0.0,0.0]
+strict-hot           writes/s=[115.1,140.1,242.1] image_mean_Delta+=[0.0,0.0,0.0]
+exchange-random      writes/s=[145.8,278.6,429.2] image_mean_Delta+=[0.0,0.0,0.1]
+exchange-hot         writes/s=[203.8,268.7,487.1] image_mean_Delta+=[0.2,0.2,0.2]
+exchange-hot-guard   writes/s=[72.4,91.1,149.4] image_mean_Delta+=[0.0,0.0,0.0]
+raw_csv="/private/var/folders/7k/stqjpld93pv589yzq9_hvdgm0000gn/T/vdb-recall-committer-evidence/run.PDbuAF/bundle/recall_committer_operations.csv" crash_csv="/private/var/folders/7k/stqjpld93pv589yzq9_hvdgm0000gn/T/vdb-recall-committer-evidence/run.PDbuAF/bundle/recall_committer_crash.csv" aggregate_csv="/private/var/folders/7k/stqjpld93pv589yzq9_hvdgm0000gn/T/vdb-recall-committer-evidence/run.PDbuAF/bundle/recall_committer.csv" changed_seed_control_tripped=1 terminal_loss_control_tripped=1 graph_seed_count=2 partial_survival_observed=1 post_recovery_suffixes=30 observed_L_lt_M=1 invariants_ok=1
+recall-committer benchmark dataset=clustered-synthetic base=160 writes=64 queries=64 dim=12 k=10 writers=4 repetitions=30
+stable-random-k10-for-e200000-g750-w4  rep=0 writes/s=243.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=0 writes/s=126.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=0 writes/s=152.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=0 writes/s=177.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=0 writes/s=240.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=0 writes/s=297.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=0 writes/s=173.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=0 writes/s=286.8 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=0 writes/s=203.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=0 writes/s=300.2 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=0 writes/s=299.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=0 writes/s=300.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=0 writes/s=261.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=0 writes/s=168.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=0 writes/s=177.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=0 writes/s=196.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=1 writes/s=158.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=1 writes/s=280.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=1 writes/s=201.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=1 writes/s=227.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=1 writes/s=205.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=1 writes/s=162.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=1 writes/s=174.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=1 writes/s=460.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=1 writes/s=118.2 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=1 writes/s=184.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=1 writes/s=165.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=1 writes/s=181.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=1 writes/s=156.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=1 writes/s=125.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=1 writes/s=180.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=1 writes/s=260.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=2 writes/s=132.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=2 writes/s=179.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=2 writes/s=197.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=2 writes/s=259.5 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=2 writes/s=116.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=2 writes/s=167.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=2 writes/s=191.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=2 writes/s=404.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=2 writes/s=338.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=2 writes/s=199.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=2 writes/s=207.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=2 writes/s=176.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=2 writes/s=251.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=2 writes/s=297.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=2 writes/s=221.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=2 writes/s=367.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=3 writes/s=180.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=3 writes/s=307.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k20-e200000-g750-w4      rep=3 writes/s=219.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=3 writes/s=169.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=3 writes/s=200.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=3 writes/s=232.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=3 writes/s=286.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=3 writes/s=186.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=3 writes/s=159.5 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=3 writes/s=192.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=3 writes/s=133.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=3 writes/s=188.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=3 writes/s=250.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=3 writes/s=222.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=3 writes/s=206.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=3 writes/s=221.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=4 writes/s=166.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=4 writes/s=290.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=4 writes/s=193.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=4 writes/s=300.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=4 writes/s=193.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=4 writes/s=288.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=4 writes/s=274.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=4 writes/s=367.1 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=4 writes/s=168.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=4 writes/s=243.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=4 writes/s=327.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=4 writes/s=242.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=4 writes/s=139.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=4 writes/s=275.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=4 writes/s=294.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=4 writes/s=211.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=5 writes/s=224.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=5 writes/s=153.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=5 writes/s=253.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=5 writes/s=246.2 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=5 writes/s=178.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=5 writes/s=179.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=5 writes/s=251.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=5 writes/s=219.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=5 writes/s=203.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=5 writes/s=425.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k50-e200000-g750-w4         rep=5 writes/s=249.5 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=5 writes/s=176.7 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=5 writes/s=145.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=5 writes/s=193.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=5 writes/s=223.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=5 writes/s=227.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=6 writes/s=268.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=6 writes/s=167.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=6 writes/s=190.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=6 writes/s=207.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=6 writes/s=250.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=6 writes/s=140.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=6 writes/s=236.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=6 writes/s=475.3 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=6 writes/s=404.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=6 writes/s=264.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=6 writes/s=220.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=6 writes/s=292.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=6 writes/s=235.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=6 writes/s=273.6 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=6 writes/s=209.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=6 writes/s=136.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=7 writes/s=194.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=7 writes/s=303.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=7 writes/s=151.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=7 writes/s=268.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=7 writes/s=205.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=7 writes/s=235.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=7 writes/s=195.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=7 writes/s=133.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=7 writes/s=185.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=7 writes/s=178.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=7 writes/s=290.2 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=7 writes/s=217.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=7 writes/s=410.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=7 writes/s=377.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=7 writes/s=311.5 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=7 writes/s=169.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=8 writes/s=224.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=8 writes/s=233.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=8 writes/s=237.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=8 writes/s=214.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=8 writes/s=176.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=8 writes/s=306.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=8 writes/s=180.2 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=8 writes/s=164.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=8 writes/s=263.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=8 writes/s=321.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=8 writes/s=191.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=8 writes/s=287.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=8 writes/s=139.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=8 writes/s=188.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=8 writes/s=243.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=8 writes/s=400.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=9 writes/s=362.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=9 writes/s=159.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=9 writes/s=177.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=9 writes/s=157.5 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=9 writes/s=316.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=9 writes/s=193.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=9 writes/s=176.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=9 writes/s=190.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=9 writes/s=196.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=9 writes/s=356.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=9 writes/s=166.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=9 writes/s=196.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=9 writes/s=216.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=9 writes/s=297.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=9 writes/s=247.7 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=9 writes/s=188.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=10 writes/s=172.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=10 writes/s=123.8 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=10 writes/s=255.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=10 writes/s=248.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=10 writes/s=213.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=10 writes/s=256.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=10 writes/s=155.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=10 writes/s=187.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=10 writes/s=185.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=10 writes/s=234.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k50-e200000-g750-w4         rep=10 writes/s=302.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=10 writes/s=175.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=10 writes/s=287.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=10 writes/s=256.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=10 writes/s=189.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=10 writes/s=278.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=11 writes/s=165.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=11 writes/s=441.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=11 writes/s=271.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=11 writes/s=296.6 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=11 writes/s=162.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=11 writes/s=292.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=11 writes/s=267.2 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=11 writes/s=170.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=11 writes/s=207.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=11 writes/s=191.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=11 writes/s=152.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=11 writes/s=235.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=11 writes/s=196.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=11 writes/s=126.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=11 writes/s=179.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=11 writes/s=224.6 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=12 writes/s=164.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=12 writes/s=270.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=12 writes/s=122.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=12 writes/s=190.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=12 writes/s=213.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=12 writes/s=233.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=12 writes/s=163.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=12 writes/s=249.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=12 writes/s=225.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=12 writes/s=213.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=12 writes/s=172.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=12 writes/s=113.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=12 writes/s=165.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=12 writes/s=268.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=12 writes/s=291.7 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=12 writes/s=152.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=13 writes/s=199.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=13 writes/s=148.4 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=13 writes/s=108.5 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=13 writes/s=198.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=13 writes/s=166.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=13 writes/s=239.2 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=13 writes/s=105.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=13 writes/s=156.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=13 writes/s=162.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=13 writes/s=202.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=13 writes/s=496.1 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=13 writes/s=144.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=13 writes/s=184.0 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=13 writes/s=374.7 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=13 writes/s=162.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=13 writes/s=181.1 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=14 writes/s=176.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=14 writes/s=156.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=14 writes/s=377.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=14 writes/s=320.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=14 writes/s=169.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=14 writes/s=164.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=14 writes/s=370.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=14 writes/s=147.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=14 writes/s=386.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=14 writes/s=259.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=14 writes/s=213.5 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=14 writes/s=344.9 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=14 writes/s=150.4 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=14 writes/s=178.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=14 writes/s=233.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=14 writes/s=125.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-random-k20-e200000-g750-w4      rep=15 writes/s=153.0 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=15 writes/s=161.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=15 writes/s=135.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=15 writes/s=296.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=15 writes/s=396.9 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=15 writes/s=281.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=15 writes/s=207.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=15 writes/s=168.1 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=15 writes/s=168.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=15 writes/s=293.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=15 writes/s=158.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=15 writes/s=134.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k50-e200000-g750-w4         rep=15 writes/s=237.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=15 writes/s=180.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=15 writes/s=316.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=15 writes/s=200.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=16 writes/s=348.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=16 writes/s=197.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=16 writes/s=254.9 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=16 writes/s=212.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=16 writes/s=543.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=16 writes/s=256.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=16 writes/s=135.2 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=16 writes/s=266.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=16 writes/s=208.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=16 writes/s=372.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=16 writes/s=292.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=16 writes/s=421.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=16 writes/s=219.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=16 writes/s=326.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=16 writes/s=164.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=16 writes/s=214.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=17 writes/s=308.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=17 writes/s=199.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=17 writes/s=144.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=17 writes/s=210.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=17 writes/s=204.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=17 writes/s=224.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=17 writes/s=279.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=17 writes/s=289.5 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=17 writes/s=294.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=17 writes/s=223.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=17 writes/s=154.5 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=17 writes/s=244.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=17 writes/s=198.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=17 writes/s=244.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=17 writes/s=270.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=17 writes/s=471.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=18 writes/s=159.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=18 writes/s=194.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=18 writes/s=209.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=18 writes/s=313.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=18 writes/s=211.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=18 writes/s=318.7 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=18 writes/s=244.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=18 writes/s=302.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=18 writes/s=222.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=18 writes/s=280.7 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k20-e200000-g750-w4      rep=18 writes/s=321.6 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=18 writes/s=214.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=18 writes/s=142.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=18 writes/s=200.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=18 writes/s=190.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=18 writes/s=336.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=19 writes/s=262.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=19 writes/s=368.9 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=19 writes/s=319.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=19 writes/s=292.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=19 writes/s=182.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=19 writes/s=419.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=19 writes/s=200.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=19 writes/s=416.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=19 writes/s=201.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=19 writes/s=402.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=19 writes/s=187.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=19 writes/s=116.2 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=19 writes/s=201.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=19 writes/s=351.3 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=19 writes/s=135.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=19 writes/s=213.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=20 writes/s=283.8 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=20 writes/s=168.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=20 writes/s=131.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=20 writes/s=205.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=20 writes/s=242.2 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=20 writes/s=175.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=20 writes/s=264.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=20 writes/s=189.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=20 writes/s=205.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=20 writes/s=195.0 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=20 writes/s=279.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=20 writes/s=199.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=20 writes/s=253.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=20 writes/s=259.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=20 writes/s=137.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=20 writes/s=201.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=21 writes/s=188.8 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=21 writes/s=212.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=21 writes/s=180.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=21 writes/s=344.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=21 writes/s=202.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=21 writes/s=163.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=21 writes/s=204.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=21 writes/s=313.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=21 writes/s=188.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=21 writes/s=373.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=21 writes/s=247.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=21 writes/s=289.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=21 writes/s=197.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=21 writes/s=207.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=21 writes/s=306.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=21 writes/s=131.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=22 writes/s=271.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=22 writes/s=171.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=22 writes/s=245.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=22 writes/s=211.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=22 writes/s=184.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=22 writes/s=293.9 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k10-e200000-g750-w4      rep=22 writes/s=134.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=22 writes/s=207.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=22 writes/s=163.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=22 writes/s=301.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=22 writes/s=209.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=22 writes/s=254.7 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=22 writes/s=176.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=22 writes/s=185.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=22 writes/s=137.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=22 writes/s=174.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=23 writes/s=282.3 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=23 writes/s=229.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=23 writes/s=198.0 cap=0 weak=0 stable=64 maxW=0 syncs=17 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=23 writes/s=151.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=23 writes/s=249.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=23 writes/s=183.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=23 writes/s=290.2 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=23 writes/s=176.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=23 writes/s=174.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=23 writes/s=176.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=23 writes/s=202.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=23 writes/s=211.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=23 writes/s=224.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=23 writes/s=259.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k20-e200000-g750-w4      rep=23 writes/s=165.3 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=23 writes/s=172.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=24 writes/s=172.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=24 writes/s=352.5 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=24 writes/s=176.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=24 writes/s=271.8 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=24 writes/s=220.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=24 writes/s=278.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=24 writes/s=139.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=24 writes/s=241.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=24 writes/s=259.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=24 writes/s=209.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=24 writes/s=165.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=24 writes/s=235.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=24 writes/s=186.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=24 writes/s=119.5 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=24 writes/s=318.7 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=24 writes/s=237.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=25 writes/s=182.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=25 writes/s=299.3 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k100-e200000-g750-w4     rep=25 writes/s=257.7 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=25 writes/s=249.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=25 writes/s=342.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=25 writes/s=180.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=25 writes/s=215.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=25 writes/s=126.3 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=25 writes/s=220.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=25 writes/s=269.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=25 writes/s=188.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=25 writes/s=346.0 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=25 writes/s=309.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=25 writes/s=126.0 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=25 writes/s=236.5 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=25 writes/s=186.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=26 writes/s=370.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=26 writes/s=207.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=26 writes/s=164.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=26 writes/s=298.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=26 writes/s=125.8 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=26 writes/s=171.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=26 writes/s=245.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=26 writes/s=133.9 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=26 writes/s=222.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=26 writes/s=250.0 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=26 writes/s=171.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=26 writes/s=280.7 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-hot-k100-e200000-g750-w4        rep=26 writes/s=407.0 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=26 writes/s=204.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=26 writes/s=201.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=26 writes/s=238.2 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=27 writes/s=157.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=27 writes/s=297.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=27 writes/s=210.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=27 writes/s=256.5 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=27 writes/s=299.5 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=27 writes/s=181.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=27 writes/s=284.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=27 writes/s=195.4 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=27 writes/s=215.6 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=27 writes/s=230.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=27 writes/s=262.6 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=27 writes/s=202.5 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=27 writes/s=162.5 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=27 writes/s=198.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=27 writes/s=124.4 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=27 writes/s=188.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=28 writes/s=177.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=28 writes/s=188.1 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+strict-random-k50-e200000-g750-w4      rep=28 writes/s=267.4 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=28 writes/s=203.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=28 writes/s=323.1 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=28 writes/s=211.2 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=28 writes/s=328.7 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=28 writes/s=172.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=28 writes/s=135.1 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=28 writes/s=198.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=28 writes/s=196.7 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k10-e200000-g750-w4         rep=28 writes/s=154.7 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=28 writes/s=215.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=28 writes/s=326.9 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k20-e200000-g750-w4         rep=28 writes/s=246.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=28 writes/s=298.0 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-hot-k100-for-e200000-g750-w4    rep=29 writes/s=222.8 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k100-e200000-g750-w4        rep=29 writes/s=335.5 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+strict-hot-k10-e200000-g750-w4         rep=29 writes/s=124.2 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-hot-k10-for-e200000-g750-w4     rep=29 writes/s=203.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k20-e200000-g750-w4      rep=29 writes/s=191.7 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-random-k20-for-e200000-g750-w4  rep=29 writes/s=229.1 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k20-e200000-g750-w4         rep=29 writes/s=188.4 cap=4 weak=64 stable=0 maxW=4 syncs=15 binding=1 ok=1
+stable-hot-k20-for-e200000-g750-w4     rep=29 writes/s=189.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-hot-k50-e200000-g750-w4         rep=29 writes/s=259.6 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+stable-hot-k50-for-e200000-g750-w4     rep=29 writes/s=243.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k10-e200000-g750-w4      rep=29 writes/s=122.6 cap=2 weak=64 stable=0 maxW=2 syncs=31 binding=1 ok=1
+stable-random-k10-for-e200000-g750-w4  rep=29 writes/s=217.6 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k100-e200000-g750-w4     rep=29 writes/s=436.4 cap=20 weak=64 stable=0 maxW=20 syncs=3 binding=1 ok=1
+stable-random-k100-for-e200000-g750-w4 rep=29 writes/s=223.9 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+stable-random-k50-for-e200000-g750-w4  rep=29 writes/s=182.3 cap=0 weak=0 stable=64 maxW=0 syncs=16 binding=0 ok=1
+strict-random-k50-e200000-g750-w4      rep=29 writes/s=255.1 cap=10 weak=64 stable=0 maxW=10 syncs=6 binding=1 ok=1
+
+paired independent-image min/median/max
+stable-random-k10-for-e200000-g750-w4 writes/s=[158.7,198.2,309.5]
+strict-random-k10-e200000-g750-w4  writes/s=[108.5,134.0,164.3]
+stable-hot-k10-for-e200000-g750-w4 writes/s=[156.4,196.8,306.0]
+strict-hot-k10-e200000-g750-w4     writes/s=[105.7,139.9,180.2]
+stable-random-k20-for-e200000-g750-w4 writes/s=[161.8,195.0,372.2]
+strict-random-k20-e200000-g750-w4  writes/s=[153.0,211.5,368.9]
+stable-hot-k20-for-e200000-g750-w4 writes/s=[150.4,201.5,336.5]
+strict-hot-k20-e200000-g750-w4     writes/s=[162.5,224.4,326.2]
+stable-random-k50-for-e200000-g750-w4 writes/s=[164.4,202.7,321.5]
+strict-random-k50-e200000-g750-w4  writes/s=[227.8,269.1,441.1]
+stable-hot-k50-for-e200000-g750-w4 writes/s=[148.4,199.0,410.9]
+strict-hot-k50-e200000-g750-w4     writes/s=[199.0,285.6,471.0]
+stable-random-k100-for-e200000-g750-w4 writes/s=[147.4,201.0,274.2]
+strict-random-k100-e200000-g750-w4 writes/s=[246.2,312.5,543.6]
+stable-hot-k100-for-e200000-g750-w4 writes/s=[144.3,200.6,299.1]
+strict-hot-k100-e200000-g750-w4    writes/s=[236.5,309.7,496.1]
+aggregate_csv="/private/var/folders/7k/stqjpld93pv589yzq9_hvdgm0000gn/T/vdb-recall-committer-evidence/run.PDbuAF/bundle/recall_committer_throughput_sweep.csv" operations_csv="/private/var/folders/7k/stqjpld93pv589yzq9_hvdgm0000gn/T/vdb-recall-committer-evidence/run.PDbuAF/bundle/recall_committer_throughput_sweep_operations.csv" sweep_invariants_ok=1

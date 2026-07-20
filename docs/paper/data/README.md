@@ -67,18 +67,23 @@ scripts/run_recall_committer_evidence.sh \
 ## Canonical recall-committer evidence
 
 `recall_committer_canonical` points to
-`recall_committer_runs/20260719-round3-ea62d9f`. The canonical v2 bundle was
+`recall_committer_runs/20260720T044019Z-889559979de0`. The canonical v2 bundle was
 produced from source commit
-`ea62d9fecfde4539070d6667f3c28e7320b1f34e` and is the current paper evidence.
+`889559979de0519a30de04e9aefbf67a3770e69f` and is the current paper evidence.
 It contains:
 
 - 240 aggregate images: 30 executions for each of eight cases.
 - 2,880 recovered-query observations: 12 per image.
 - 14,040 write, query, fence, crash-cohort, and resumed-suffix operations.
-- 60 exposed weak records, all 60 recovered, with 0 lost.
+- 60 weak records exposed at the post-sync frontier, all 60 recovered, with 0
+  lost; the terminal-frontier controls remain separately accounted.
 - 90 `L < M` query observations across all 30 strict-hot images.
 - 30 stable post-recovery suffixes verified through a second recovery.
-- 76 general tests, 24 committer tests, 15/15 process-crash frontiers, and
+- 480 paired strict/stable sweep images and 30,720 raw sweep write rows. All 240
+  strict images bind and all 15,360 strict requests return weak ACKs.
+- At `epsilon=.2`, the paired strict/stable median ratio is 1.39/1.43 at
+  `k_min=50` and 1.62/1.55 at `k_min=100` for random/hot workloads.
+- 77 general tests, 24 committer tests, 15/15 process-crash frontiers, and
   661/661 WAL byte cuts.
 
 Schema v2 alternates two fixed HNSW base images (seeds 100 and 117) 15 times per
@@ -89,27 +94,29 @@ terminal-suffix control.
 
 The statistical unit is one tail/write live image. Recovery queries are
 averaged within an image; summaries report min, median, and max across images
-without bootstrapping correlated query rows. The query set and two base graphs
-remain fixed, so repetitions are not independent graph builds. Fixed-count and
-fixed-time controls remain in raw invariant totals but are omitted from the six
-displayed summary rows.
+without bootstrapping correlated query rows. The throughput sweep uses adjacent
+stable/strict pairs with randomized within-pair order and reports paired ratios.
+The query set and two base graphs remain fixed, so repetitions are not
+independent graph builds. Fixed-count and fixed-time controls remain in raw
+invariant totals but are omitted from the six displayed main-summary rows.
 
 Run a new portable evidence bundle without rebinding the paper's tracked
 canonical evidence with:
 
 ```sh
 scripts/run_recall_committer_evidence.sh --repetitions 30 \
-  --output build/recall-committer-evidence
+  --output .artifacts/recall-committer-evidence
 ```
 
 The runner requires clean relevant sources, snapshots HEAD and a complete source
 hash manifest, runs `make clean`, and verifies the commit, cleanliness, and
-source hashes again after execution. It stages all test and benchmark logs, raw
-CSVs, environment, regenerated summary, and SHA-256 manifest outside `build/`,
-then validates exact schemas, counts, seeds, and recovery invariants. Files and
-directories are synced before a same-filesystem rename publishes the complete
-version, and parent directories are synced around the atomic canonical-symlink
-replacement. Unrelated and legacy data are not rewritten.
+source hashes again after execution. It stages all test and benchmark logs, both
+raw benchmark families, environment, regenerated summaries, and the SHA-256
+manifest outside `build/`, then validates exact schemas, counts, pairs, seeds,
+and recovery invariants. Files and directories are synced before a
+same-filesystem rename publishes the complete version, and parent directories
+are synced around the atomic canonical-symlink replacement. Unrelated and legacy
+data are not rewritten.
 
 Audit the canonical bundle without running or installing evidence with:
 
@@ -121,10 +128,11 @@ scripts/run_recall_committer_evidence.sh \
 ```
 
 An audit resolves the canonical link once, verifies the original manifest, and
-independently regenerates the summary and manifest for byte-for-byte comparison.
+independently regenerates both summaries and the manifest for byte-for-byte
+comparison.
 The paper should be compiled only after this tracked-canonical audit; a fresh
-timing run is deliberately installed under `build/` and is not silently mixed
-with the archived numbers in the prose and tables.
+timing run is deliberately installed under the ignored `.artifacts/` directory
+and is not silently mixed with the archived numbers in the prose and tables.
 The runner exercises logical crash images and production read-only recovery; it
 never invokes `scripts/powerloss_committer.sh`. The Linux `dm-log-writes`
 harness has not been executed, so no physical block-replay result is present.

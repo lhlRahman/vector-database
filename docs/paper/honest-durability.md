@@ -1,5 +1,10 @@
 # Honest Durability for Graph ANN — paper plan (merges theses #1 + #3 + #5)
 
+> **Archived planning memo.** This file predates the recall-committer paper and
+> intentionally preserves obsolete preliminary numbers. The authoritative
+> submission is `honest-durability.tex`; current evidence and commands are in
+> `data/README.md`.
+
 Status: experiment plan + outline. Backbone = #1 (durability tax) with #3 (recovery)
 and #5 (honest-benchmarking methodology) folded in. Upgrade path: promote #2
 (recall-aware commit) to headline IF the live-web novelty check clears.
