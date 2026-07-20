@@ -1,0 +1,40 @@
+Legacy durability table provenance
+==================================
+
+The full commit IDs below pin the earliest repository revision that archives
+each table. An archival revision is not, by itself, proof that its clean tree
+was the exact tree used to produce a result. The old runner did not record a
+source commit, working-tree diff, command line, stdout, or environment manifest
+inside these CSVs.
+
+Tables                                                       First archived revision
+durability_plain_d128.csv                                    048117fac38acf50d378258567812ad3a1ee09e2
+durability_full_d128.csv                                     048117fac38acf50d378258567812ad3a1ee09e2
+durability_plain_real_d128.csv                               56da3baf44092265fc51580b5a9090b7514d0cda
+durability_full_real_d128.csv                                56da3baf44092265fc51580b5a9090b7514d0cda
+durability_plain_nsweep_d128.csv                             2e36d9e3ebd8e9bd92a701285a2f1ef13358ea5d
+durability_linux_plain_d128.csv                              f67fb94bf982e4f172692f7aa3994546ec7c6058
+durability_plain_n10000_d128.csv                             a630de2ce4cd360e0c4237bfe61b80825c411f01
+durability_full_n10000_d128.csv                              a630de2ce4cd360e0c4237bfe61b80825c411f01
+durability_plain_n30000_d128.csv                             a630de2ce4cd360e0c4237bfe61b80825c411f01
+durability_full_n30000_d128.csv                              a630de2ce4cd360e0c4237bfe61b80825c411f01
+durability_plain_sealcost_d128.csv                           a630de2ce4cd360e0c4237bfe61b80825c411f01
+
+The N=10,000, N=30,000, and seal-cost tables were first committed later than
+the harness feature that generated their shape. The best pinned source-harness
+revision is 3f8d2cce53d4c4966f996969cf1a8cfaa282cf85 (2026-07-15), which added
+the durability N sweep, sealing-cost measurement, and queue script. The files'
+local chronology is consistent with that revision, but no embedded run metadata
+or preserved raw trials can prove the exact producing tree or dirty state.
+
+Scope and limitations
+---------------------
+
+* The CSVs contain aggregate median/min/max values, not the individual trials.
+* The Apple scale and seal runs have no archived command, stdout, or host record.
+* The Linux table identifies the broad AWS/Linux/ext4/NVMe setting in the paper,
+  but exact instance, kernel, mount, and device details were not captured here.
+* These tables predate commit 4017fa7e92e and its raw mutable-delta design. The
+  current durability benchmark is not a behavioral reproducer for these tables.
+* legacy_durability_sha256.txt authenticates the archived bytes, not their
+  experimental lineage.

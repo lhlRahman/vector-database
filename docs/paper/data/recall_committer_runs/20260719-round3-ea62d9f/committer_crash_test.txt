@@ -1,0 +1,51 @@
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/verify_committer_image.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/verify_committer_image
+read-only committer verification API available
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/committer_crash_test.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/committer_crash_test
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=w0 ledger="build/committer-crash-matrix/w0.ledger"
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=w1 ledger="build/committer-crash-matrix/w1.ledger"
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=wcap ledger="build/committer-crash-matrix/wcap.ledger"
+OK frontier=crash durable_lsn=18 allow_through=crash
+OK frontier=crash durable_lsn=18 allow_through=crash
+PASS: process crash frontier=cap-plus-one ledger="build/committer-crash-matrix/cap-plus-one.ledger"
+OK frontier=crash durable_lsn=18 allow_through=crash
+OK frontier=crash durable_lsn=18 allow_through=crash
+PASS: process crash frontier=after-fence ledger="build/committer-crash-matrix/after-fence.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-before-append ledger="build/committer-crash-matrix/fence-before-append.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-append ledger="build/committer-crash-matrix/fence-after-append.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-before-sync ledger="build/committer-crash-matrix/fence-before-sync.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-sync ledger="build/committer-crash-matrix/fence-after-sync.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-publish ledger="build/committer-crash-matrix/fence-after-publish.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-prepare ledger="build/committer-crash-matrix/seal-after-prepare.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-new-mutable ledger="build/committer-crash-matrix/seal-after-new-mutable.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-manifest ledger="build/committer-crash-matrix/seal-after-manifest.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-publish ledger="build/committer-crash-matrix/seal-after-publish.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-retire ledger="build/committer-crash-matrix/seal-after-retire.ledger"
+PASS: recall-committer process crash matrix 15/15

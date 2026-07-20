@@ -1,0 +1,157 @@
+rm -rf build
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/core/vector_database.cpp -o build/core/vector_database.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/core/vector.cpp -o build/core/vector.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/features/query_cache.cpp -o build/features/query_cache.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/features/atomic_batch_insert.cpp -o build/features/atomic_batch_insert.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/features/atomic_persistence.cpp -o build/features/atomic_persistence.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/features/commit_log.cpp -o build/features/commit_log.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/features/recall_commit_policy.cpp -o build/features/recall_commit_policy.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/algorithms/hnsw_index.cpp -o build/algorithms/hnsw_index.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/utils/distance_metrics.cpp -o build/utils/distance_metrics.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/utils/random_generator.cpp -o build/utils/random_generator.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/optimizations/simd_operations.cpp -o build/optimizations/simd_operations.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/optimizations/parallel_processing.cpp -o build/optimizations/parallel_processing.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -fobjc-arc -c src/optimizations/gpu_operations.mm -o build/optimizations/gpu_operations.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/storage/mmap_storage.cpp -o build/storage/mmap_storage.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/storage/segment.cpp -o build/storage/segment.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c src/storage/segmented_vector_store.cpp -o build/storage/segmented_vector_store.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -c test/unit_tests.cpp -o build/unit_tests.o
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread build/unit_tests.o build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/unit_tests
+Running unit tests...
+========================================
+ Vector Database Unit Tests
+========================================
+
+[Vector]
+  PASS: construction
+  PASS: access and bounds
+  PASS: dot product
+  PASS: equality
+  PASS: data_ptr
+  PASS: iterators
+  PASS: serialization
+  PASS: hash
+  PASS: default construction
+
+[Distance Metrics]
+  PASS: euclidean distance
+  PASS: euclidean self-distance
+  PASS: manhattan distance
+  PASS: cosine similarity
+  PASS: cosine parallel vectors
+
+[Flat Exact Index]
+  PASS: flat index metric policy
+
+[HNSW Index]
+  PASS: insert and search
+  PASS: remove
+  PASS: many vectors
+  PASS: fixed seed reproduces topology
+
+[Query Cache]
+  PASS: hit and miss
+  PASS: invalidation
+  PASS: eviction
+  PASS: statistics
+  PASS: clear
+  PASS: k-aware hit/miss
+  PASS: zero capacity no-op
+
+[VectorDatabase]
+  PASS: insert and get
+  PASS: insert duplicate
+  PASS: insert dimension mismatch
+  PASS: update
+  PASS: update nonexistent
+  PASS: remove
+  PASS: remove nonexistent
+  PASS: metadata
+  PASS: metadata empty
+  PASS: vector count
+  PASS: not initialized throws
+  PASS: similarity search exact
+  PASS: similarity search empty
+  PASS: search with metadata
+  PASS: distance metric switch
+  PASS: NaN rejection
+  PASS: statistics
+  PASS: get all vectors
+  PASS: segmented persistence recovery
+  PASS: default segmented single-op crash recovery
+  PASS: group commit crash recovery
+
+[Protocol]
+  PASS: buffer roundtrip
+  PASS: buffer underflow throws
+  PASS: string too long throws
+  PASS: short buffer reads throw
+
+[Commit Log]
+  PASS: entry roundtrip
+  PASS: checksum detects tamper
+  PASS: oversize payload guard
+
+[MMap Storage]
+  PASS: basic CRUD + reopen
+  PASS: dimension mismatch on reopen
+
+[Segmented Vector Store]
+  PASS: insert/search/recover
+  PASS: staged tail frontiers and exact search
+  PASS: staged insert recovery drops tail
+  PASS: manifest role is authoritative
+  PASS: WAL v2 discards unfenced tail
+  PASS: WAL v2 replays fenced generation
+  PASS: WAL v2 rejects inconsistent fence
+  PASS: WAL v1 migrates and rejects bad suffix
+  PASS: WAL recovery bounds corrupt lengths
+  PASS: sequence high-water skips restart range
+  PASS: sequence rollover barrier rejects weak write
+  PASS: HNSW seed persists across reopen
+
+[Scalar Quantizer]
+  PASS: train and quantize
+
+[RWLock]
+  PASS: readers can share
+  PASS: writer excludes readers
+
+[Atomic Write]
+  PASS: creates file with content
+  PASS: overwrites existing
+  PASS: full sync failure does not fall back
+  PASS: full sync retries EINTR
+  PASS: sync failure cannot report stable ACK
+
+========================================
+ Results: 76/76 passed
+========================================
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/committer_unit_tests.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/committer_unit_tests
+Running recall-committer unit tests...
+PASS config validation
+PASS stable and disabled requests
+PASS strict boundary and retry
+PASS strict zero window
+PASS exchangeable boundary
+PASS operational caps and overflow
+PASS hypergeometric tail
+PASS correlation guard and fallback
+PASS correlation null workload
+PASS correlation input validation
+PASS durability frontier
+PASS concurrent policy counters
+PASS receipt and status
+PASS real weak visibility and fence
+PASS fence preserves exact representation
+PASS read-only recovery rejects mutations
+PASS invalid payload keeps committer healthy
+PASS k_min fallback and batch correlation
+PASS batch-only hot queries trip guard
+PASS age fence preempts group delay
+PASS strict zero cap auto-stable
+PASS real exchangeable admission
+PASS concurrent admission cap
+PASS stable grouping and age fence
+All committer policy tests passed
