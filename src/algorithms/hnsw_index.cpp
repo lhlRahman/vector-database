@@ -83,7 +83,8 @@ const std::pmr::vector<float>& HNSWIndex::HNSWNode::getNeighborDists(size_t at_l
 // HNSWIndex implementation
 HNSWIndex::HNSWIndex(size_t dims, size_t M, size_t ef_construction, size_t ef_search,
                      std::shared_ptr<const DistanceMetric> metric, VectorAccessor accessor,
-                     AllocationStrategy allocation_strategy, size_t arena_initial_size)
+                     AllocationStrategy allocation_strategy, size_t arena_initial_size,
+                     uint32_t seed)
     : max_connections(M),
       max_connections_zero(M * 2),
       ef_construction(ef_construction),
@@ -101,7 +102,7 @@ HNSWIndex::HNSWIndex(size_t dims, size_t M, size_t ef_construction, size_t ef_se
       dimensions(dims),
       distance_metric(metric ? std::move(metric) : std::make_shared<EuclideanDistance>()),
       accessor_(std::move(accessor)),
-      rng(std::random_device{}()),
+      rng(seed),
       uniform_dist(0.0f, 1.0f) {
     (void)arena_initial_size;  // pool self-sizes; param retained for API compatibility
     // Resolve the concrete metric once (mirrors exactSearch's dynamic_cast) so

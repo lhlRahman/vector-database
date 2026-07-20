@@ -23,12 +23,27 @@ public:
         HNSWIndex::AllocationStrategy allocation_strategy{HNSWIndex::AllocationStrategy::Arena};
         size_t arena_initial_size{1024 * 1024};
         std::shared_ptr<const DistanceMetric> metric{std::make_shared<EuclideanDistance>()};
+        uint32_t hnsw_seed{100};
     };
 
     struct SearchResult {
         std::string key;
         float distance;
         std::string metadata;
+        bool provisional{false};
+    };
+
+    struct StagedInsertResult {
+        bool applied{false};
+        uint64_t lsn{0};
+    };
+
+    struct RecordSnapshot {
+        std::string key;
+        Vector vector;
+        std::string metadata;
+        uint64_t lsn{0};
+        bool provisional{false};
     };
 
     struct Statistics {
@@ -46,14 +61,19 @@ public:
         size_t hnsw_deallocation_calls;
         size_t hnsw_peak_bytes;
         uint64_t latest_sequence;
+        uint64_t visible_lsn;
+        uint64_t durable_lsn;
+        size_t volatile_records;
     };
 
     SegmentedVectorStore(std::filesystem::path root, Config config);
 
-    void initialize();
+    void initialize(bool read_only_recovery = false);
     void shutdown();
 
     [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
+    [[nodiscard]] StagedInsertResult stageInsert(
+        const Vector& vector, const std::string& key, const std::string& metadata = "");
     // Group-commit batch insert: appends all WAL records, then a single fsync for
     // the whole batch. Returns the number inserted (skips dim-mismatch/duplicate).
     size_t insertBatch(const std::vector<std::string>& keys,
@@ -63,19 +83,36 @@ public:
     [[nodiscard]] bool remove(const std::string& key);
     [[nodiscard]] std::optional<Vector> get(const std::string& key) const;
     [[nodiscard]] std::string getMetadata(const std::string& key) const;
+    [[nodiscard]] std::optional<RecordSnapshot> inspectRecord(
+        const std::string& key, bool durable_only) const;
+    [[nodiscard]] std::vector<RecordSnapshot> inspectRecords(bool durable_only) const;
     [[nodiscard]] std::vector<std::pair<std::string, float>> search(const Vector& query, size_t k) const;
+    [[nodiscard]] std::vector<std::pair<std::string, float>> searchStable(
+        const Vector& query, size_t k) const;
     [[nodiscard]] std::vector<SearchResult> searchWithMetadata(const Vector& query, size_t k) const;
 
     void flush();
+    uint64_t commitThrough(uint64_t target_lsn, bool run_maintenance = true);
     void compact();
     void sealMutableSegment();
 
     size_t vectorCount() const { return key_locations_.size(); }
+    uint64_t visibleLsn() const { return visible_lsn_; }
+    uint64_t durableLsn() const { return durable_lsn_; }
+    uint64_t manifestGeneration() const { return manifest_generation_; }
+    size_t volatileCount() const {
+        return mutable_segment_ ? mutable_segment_->volatileCount() : 0;
+    }
+    size_t volatileBytes() const {
+        return mutable_segment_ ? mutable_segment_->volatileBytes() : 0;
+    }
+    bool isVolatile(const std::string& key) const;
     Statistics getStatistics() const;
     std::unordered_map<std::string, Vector> getAllVectors() const;
 
     void setMetric(std::shared_ptr<const DistanceMetric> metric);
-    void configureHNSW(size_t M, size_t ef_construction, size_t ef_search);
+    void configureHNSW(size_t M, size_t ef_construction, size_t ef_search,
+                       uint32_t seed = 100);
     void configureAllocator(HNSWIndex::AllocationStrategy strategy, size_t arena_initial_size);
     void configureSegmentation(size_t max_mutable_segment_records,
                                size_t max_sealed_segments,
@@ -94,21 +131,37 @@ private:
     std::unordered_map<std::string, Location> key_locations_;
     uint64_t next_segment_id_{1};
     uint64_t latest_sequence_{0};
+    uint64_t reserved_sequence_hi_{0};
+    uint64_t visible_lsn_{0};
+    uint64_t durable_lsn_{0};
+    uint64_t manifest_generation_{0};
     bool initialized_{false};
+    bool read_only_recovery_{false};
+    bool maintenance_active_{false};
+
+    static constexpr uint64_t kSequenceReservationBlock = 1ull << 20;
 
     VectorSegment::Config segmentConfig() const;
     std::shared_ptr<VectorSegment> createSegment(VectorSegment::State state);
-    std::shared_ptr<VectorSegment> loadSegment(const std::string& id, VectorSegment::State state);
+    std::shared_ptr<VectorSegment> loadSegment(
+        const std::string& id, VectorSegment::State state, bool read_only_recovery = false);
     void rebuildKeyLocations();
     void maybeSealMutableSegment();
     void maybeCompact();
     uint64_t nextSequence();
+    void reserveSequenceBlock();
+    uint64_t readSequenceHighwater() const;
+    void writeSequenceHighwater(uint64_t highwater) const;
 
-    void writeManifest() const;
+    void writeManifest();
+    void writeManifest(
+        const std::shared_ptr<VectorSegment>& mutable_segment,
+        const std::vector<std::shared_ptr<VectorSegment>>& sealed_segments);
     bool readManifest(std::string& mutable_id, std::vector<std::string>& sealed_ids);
     std::string makeSegmentId(uint64_t id) const;
     std::filesystem::path segmentsDir() const;
     std::filesystem::path segmentDir(const std::string& id) const;
     std::filesystem::path manifestPath() const;
+    std::filesystem::path sequenceHighwaterPath() const;
     size_t diskBytes() const;
 };

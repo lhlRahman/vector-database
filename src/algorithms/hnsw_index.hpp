@@ -136,7 +136,8 @@ public:
               size_t ef_search = 50, std::shared_ptr<const DistanceMetric> metric = nullptr,
               VectorAccessor accessor = nullptr,
               AllocationStrategy allocation_strategy = AllocationStrategy::Standard,
-              size_t arena_initial_size = 1024 * 1024);
+              size_t arena_initial_size = 1024 * 1024,
+              uint32_t seed = 100);
 
     void insert(uint64_t slot_id, const std::string& key);
     void remove(const std::string& key);

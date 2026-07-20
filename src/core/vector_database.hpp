@@ -14,10 +14,14 @@
 #include "../features/atomic_batch_insert.hpp"
 #include "../features/atomic_persistence.hpp"
 #include "../features/query_cache.hpp"
+#include "../features/recall_commit_policy.hpp"
 #include "../optimizations/rw_lock.hpp"
 #include "../optimizations/scalar_quantization.hpp"
 #include "../storage/mmap_storage.hpp"
 #include "../storage/segmented_vector_store.hpp"
+
+#define VDB_HAS_RECALL_COMMITTER_API 1
+#define VDB_HAS_COMMITTER_IMAGE_VERIFY_API 1
 
 /**
  * Vector Database facade over two storage engines.
@@ -56,6 +60,37 @@ public:
         std::string metadata;
     };
 
+    struct SearchResponse {
+        std::vector<SearchResult> results;
+        uint64_t snapshot_lsn{0};
+        uint64_t durable_lsn{0};
+        uint64_t manifest_generation{0};
+        size_t exact_tail_distance_evaluations{0};
+    };
+
+    struct RecordSnapshot {
+        std::string key;
+        Vector vector;
+        std::string metadata;
+        uint64_t lsn{0};
+        bool provisional{false};
+    };
+
+    struct RecallCommitterStatistics {
+        uint64_t sync_attempts{0};
+        uint64_t sync_successes{0};
+        uint64_t sync_failures{0};
+        uint64_t records_synced{0};
+        uint64_t weak_acks{0};
+        uint64_t stable_acks{0};
+        uint64_t auto_stable{0};
+        uint64_t follower_requests{0};
+        uint64_t max_weak_records{0};
+        uint64_t age_fences{0};
+        uint64_t policy_fences{0};
+        uint64_t explicit_fences{0};
+    };
+
     struct DatabaseStatistics {
         uint64_t total_vectors;
         uint64_t total_inserts;
@@ -72,6 +107,9 @@ public:
         AtomicBatchInsert::Statistics batch_stats;
         QueryCache::Statistics cache_stats;
         SegmentedVectorStore::Statistics segmented_stats;
+        vdb::DurabilityStatus durability_status;
+        RecallCommitterStatistics committer_stats;
+        vdb::RecallCommitPolicyCounters policy_stats;
     };
 
 private:
@@ -81,6 +119,7 @@ private:
     std::unordered_map<std::string, uint64_t> key_to_slot_;
     std::string storage_path_;
     StorageEngine storage_engine{StorageEngine::Segmented};
+    vdb::OpenMode open_mode_{vdb::OpenMode::ReadWrite};
 
     // Vector accessor — indexes use this to read vector data from mmap
     VectorAccessor vec_accessor_;
@@ -95,6 +134,7 @@ private:
     size_t hnsw_M{kDefaultHNSW_M};
     size_t hnsw_ef_construction{kDefaultHNSW_EfConstruction};
     size_t hnsw_ef_search{kDefaultHNSW_EfSearch};
+    uint32_t hnsw_seed{100};
     HNSWIndex::AllocationStrategy hnsw_allocation_strategy{HNSWIndex::AllocationStrategy::Standard};
     size_t hnsw_arena_initial_size{1024 * 1024};
 
@@ -137,11 +177,20 @@ private:
     std::atomic<uint64_t> total_deletes{0};
     std::atomic<uint64_t> batch_transaction_counter{0};
 
+    struct RecallCommitterState;
+    std::unique_ptr<RecallCommitterState> recall_committer_;
+
     // Private
     void initializeAtomicPersistence();
     void loadExistingData();
     void rebuildIndexes();
     void rebuildQuantizer();
+    void startRecallCommitter();
+    void stopRecallCommitter(bool fence);
+    void recallCommitterLoop();
+    void requestAsyncFence();
+    void syncRecallFrontierFromStore();
+    void requireWritable() const;
 
 public:
     VectorDatabase(size_t dimensions,
@@ -152,7 +201,8 @@ public:
                    bool enable_query_cache = true,
                    size_t cache_capacity = kDefaultCacheCapacity,
                    const std::string& storage_path = "",
-                   StorageEngine storage_engine = StorageEngine::Segmented);
+                   StorageEngine storage_engine = StorageEngine::Segmented,
+                   vdb::OpenMode open_mode = vdb::OpenMode::ReadWrite);
 
     ~VectorDatabase() noexcept;
 
@@ -168,7 +218,8 @@ public:
 
     void setSearchMode(SearchMode mode);
     SearchMode getSearchMode() const;
-    void configureHNSW(size_t M, size_t ef_construction, size_t ef_search);
+    void configureHNSW(size_t M, size_t ef_construction, size_t ef_search,
+                       uint32_t seed = 100);
     void configureHNSWAllocator(HNSWIndex::AllocationStrategy strategy,
                                 size_t arena_initial_size = 1024 * 1024);
     void configureSegmentedStorage(size_t max_mutable_segment_records,
@@ -176,6 +227,24 @@ public:
                                    double max_tombstone_ratio = 0.25);
     void sealMutableSegment();
     void compactSegments();
+
+    void configureRecallCommit(const vdb::RecallCommitConfig& config);
+    [[nodiscard]] vdb::WriteReceipt insertWithAck(
+        const Vector& vector,
+        const std::string& key,
+        const std::string& metadata,
+        vdb::AckMode ack_mode);
+    [[nodiscard]] vdb::WriteReceipt insertWithAck(
+        const Vector& vector,
+        const std::string& key,
+        vdb::AckMode ack_mode) {
+        return insertWithAck(vector, key, "", ack_mode);
+    }
+    uint64_t durabilityFence();
+    bool waitUntilDurable(uint64_t lsn, std::chrono::milliseconds timeout);
+    [[nodiscard]] vdb::DurabilityStatus durabilityStatus() const;
+    [[nodiscard]] RecallCommitterStatistics recallCommitterStatistics() const;
+    [[nodiscard]] vdb::RecallCommitPolicyCounters recallPolicyStatistics() const;
 
     [[nodiscard]] bool insert(const Vector& vector, const std::string& key, const std::string& metadata = "");
 
@@ -186,6 +255,11 @@ public:
     [[nodiscard]] std::optional<Vector> get(const std::string& key) const;
 
     std::string getMetadata(const std::string& key) const;
+    [[nodiscard]] std::optional<RecordSnapshot> inspectRecord(
+        const std::string& key,
+        vdb::ReadVisibility visibility = vdb::ReadVisibility::Latest) const;
+    [[nodiscard]] std::vector<RecordSnapshot> inspectRecords(
+        vdb::ReadVisibility visibility = vdb::ReadVisibility::Latest) const;
 
     AtomicBatchInsert::BatchResult batchInsert(const std::vector<std::string>& keys,
                                                const std::vector<Vector>& vectors,
@@ -196,6 +270,8 @@ public:
     AtomicBatchInsert::BatchResult batchDelete(const std::vector<std::string>& keys);
 
     std::vector<std::pair<std::string, float>> similaritySearch(const Vector& query, size_t k);
+    SearchResponse similaritySearch(
+        const Vector& query, size_t k, vdb::ReadVisibility visibility);
 
     std::vector<SearchResult> similaritySearchWithMetadata(const Vector& query, size_t k);
 

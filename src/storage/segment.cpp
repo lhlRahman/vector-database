@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <sys/stat.h>
 #include <system_error>
 #include <fcntl.h>
@@ -21,6 +24,10 @@ constexpr uint32_t kVectorMagic = 0x31434556;   // "VEC1"
 constexpr uint32_t kTombstoneMagic = 0x31424d54; // "TMB1"
 constexpr uint32_t kHnswMagic = 0x31575348;     // "HSW1"
 constexpr uint32_t kFormatVersion = 1;
+constexpr uint16_t kWalLegacyVersion = 1;
+constexpr uint16_t kWalFencedVersion = 2;
+constexpr uint32_t kMaxWalKeyBytes = 1u << 20;
+constexpr uint32_t kMaxWalMetadataBytes = 16u << 20;
 
 struct WalRecordHeader {
     uint32_t magic;
@@ -33,6 +40,24 @@ struct WalRecordHeader {
     uint32_t vector_bytes;
     uint32_t crc32;
 };
+
+struct WalFencePayload {
+    uint64_t generation;
+    uint64_t first_lsn;
+    uint64_t last_lsn;
+    uint64_t mutation_count;
+    uint32_t rolling_crc;
+    uint32_t reserved;
+};
+
+static_assert(std::is_trivially_copyable_v<WalFencePayload>);
+
+void committer_fence_failpoint(const char* name) {
+    const char* configured = std::getenv("VDB_COMMITTER_FAILPOINT");
+    if (configured != nullptr && std::string_view(configured) == name) {
+        _exit(86);
+    }
+}
 
 // Standard CRC-32 (IEEE 802.3, reflected poly 0xEDB88320). The old checksum was
 // named crc32 but was actually FNV-1a and covered ONLY the payload — a corrupt
@@ -54,6 +79,35 @@ uint32_t wal_record_crc(const WalRecordHeader& h, const uint8_t* payload, size_t
     crc = crc32_update(crc, reinterpret_cast<const uint8_t*>(&h), offsetof(WalRecordHeader, crc32));
     crc = crc32_update(crc, payload, payload_len);
     return ~crc;
+}
+
+uint32_t rolling_crc_update(uint32_t rolling_crc, uint32_t record_crc) {
+    return crc32_update(
+        rolling_crc,
+        reinterpret_cast<const uint8_t*>(&record_crc),
+        sizeof(record_crc));
+}
+
+bool checked_add(size_t a, size_t b, size_t& out) {
+    if (a > std::numeric_limits<size_t>::max() - b) return false;
+    out = a + b;
+    return true;
+}
+
+void validate_wal_payload(const std::string& key,
+                          const std::string& metadata,
+                          size_t dimensions,
+                          size_t vector_dimensions) {
+    if (key.size() > kMaxWalKeyBytes) {
+        throw std::length_error("WAL key exceeds maximum encoded length");
+    }
+    if (metadata.size() > kMaxWalMetadataBytes) {
+        throw std::length_error("WAL metadata exceeds maximum encoded length");
+    }
+    if (dimensions > std::numeric_limits<uint32_t>::max() / sizeof(float) ||
+        vector_dimensions != dimensions) {
+        throw std::invalid_argument("segment vector dimension mismatch");
+    }
 }
 
 template <typename T>
@@ -125,13 +179,16 @@ void VectorSegment::initializeNew() {
     writeMetadata();
 }
 
-void VectorSegment::load() {
+void VectorSegment::load(bool read_only_recovery) {
     readMetadata();
     records_.clear();
     key_to_slot_.clear();
     live_count_ = 0;
     tombstone_count_ = 0;
     max_sequence_ = 0;
+    visible_lsn_ = 0;
+    durable_lsn_ = 0;
+    seal_prepared_ = false;
 
     if (state_ == State::Sealed) {
         readVectorsFile();
@@ -145,17 +202,38 @@ void VectorSegment::load() {
             }
         }
         readTombstonesFile();
+        visible_lsn_ = max_sequence_;
+        durable_lsn_ = max_sequence_;
     } else {
         rebuildIndex();
-        replayWal();
+        replayWal(read_only_recovery);
     }
 }
 
 bool VectorSegment::insert(const Vector& vector, const std::string& key, const std::string& metadata, uint64_t sequence) {
+    if (!stageInsert(vector, key, metadata, sequence)) return false;
+    if (!defer_sync_) commitThrough(sequence);
+    return true;
+}
+
+bool VectorSegment::stageInsert(const Vector& vector,
+                                const std::string& key,
+                                const std::string& metadata,
+                                uint64_t sequence) {
     if (state_ != State::Mutable) return false;
     if (contains(key)) return false;
+    validate_wal_payload(key, metadata, config_.dimensions, vector.size());
+    if (sequence == 0 || sequence <= max_sequence_) {
+        throw std::invalid_argument("WAL LSN must increase monotonically");
+    }
+    if (generation_fence_appended_) {
+        throw std::runtime_error("cannot append after an unresolved WAL fence failure");
+    }
+    seal_prepared_ = false;
     appendWalInsert(vector, key, metadata, sequence);
-    return applyInsert(vector, key, metadata, sequence);
+    if (!applyInsert(vector, key, metadata, sequence)) return false;
+    visible_lsn_ = sequence;
+    return true;
 }
 
 bool VectorSegment::update(const Vector& vector,
@@ -163,8 +241,19 @@ bool VectorSegment::update(const Vector& vector,
                            const std::string& metadata,
                            uint64_t sequence) {
     if (state_ != State::Mutable) return false;
+    validate_wal_payload(key, metadata, config_.dimensions, vector.size());
+    if (sequence == 0 || sequence <= max_sequence_) {
+        throw std::invalid_argument("WAL LSN must increase monotonically");
+    }
+    if (generation_fence_appended_) {
+        throw std::runtime_error("cannot append after an unresolved WAL fence failure");
+    }
+    seal_prepared_ = false;
     appendWalUpdate(vector, key, metadata, sequence);
-    return applyUpdate(vector, key, metadata, sequence);
+    if (!applyUpdate(vector, key, metadata, sequence)) return false;
+    visible_lsn_ = sequence;
+    if (!defer_sync_) commitThrough(sequence);
+    return true;
 }
 
 bool VectorSegment::insertRecovered(const Vector& vector,
@@ -172,11 +261,24 @@ bool VectorSegment::insertRecovered(const Vector& vector,
                                     const std::string& metadata,
                                     uint64_t sequence) {
     if (contains(key)) return false;
-    return applyInsert(vector, key, metadata, sequence);
+    if (!applyInsert(vector, key, metadata, sequence)) return false;
+    visible_lsn_ = std::max(visible_lsn_, sequence);
+    durable_lsn_ = std::max(durable_lsn_, sequence);
+    return true;
 }
 
 bool VectorSegment::remove(const std::string& key, uint64_t sequence) {
     if (!contains(key)) return false;
+    if (key.size() > kMaxWalKeyBytes) {
+        throw std::length_error("WAL key exceeds maximum encoded length");
+    }
+    if (sequence == 0 || sequence <= max_sequence_) {
+        throw std::invalid_argument("mutation LSN must increase monotonically");
+    }
+    if (state_ == State::Mutable && generation_fence_appended_) {
+        throw std::runtime_error("cannot append after an unresolved WAL fence failure");
+    }
+    if (state_ == State::Mutable) seal_prepared_ = false;
 
     if (state_ == State::Mutable) {
         appendWalDelete(key, sequence);
@@ -186,6 +288,14 @@ bool VectorSegment::remove(const std::string& key, uint64_t sequence) {
 
     bool removed = applyDelete(key, sequence);
     max_sequence_ = std::max(max_sequence_, sequence);
+    if (removed) {
+        visible_lsn_ = sequence;
+        if (state_ == State::Mutable) {
+            if (!defer_sync_) commitThrough(sequence);
+        } else {
+            durable_lsn_ = sequence;
+        }
+    }
     return removed;
 }
 
@@ -206,8 +316,16 @@ std::string VectorSegment::getMetadata(const std::string& key) const {
     return records_[it->second].metadata;
 }
 
+bool VectorSegment::isVolatile(const std::string& key) const {
+    auto it = key_to_slot_.find(key);
+    return it != key_to_slot_.end() && records_[it->second].sequence > durable_lsn_;
+}
+
 std::vector<VectorSegment::SearchResult> VectorSegment::search(const Vector& query, size_t k) const {
-    if (!hnsw_ || live_count_ == 0) return {};
+    if (state_ == State::Mutable) {
+        return searchExact(query, k, visible_lsn_);
+    }
+    if (!hnsw_ || live_count_ == 0 || k == 0) return {};
 
     auto raw = hnsw_->search(query, k);
     std::vector<SearchResult> results;
@@ -221,6 +339,47 @@ std::vector<VectorSegment::SearchResult> VectorSegment::search(const Vector& que
         results.push_back(SearchResult{key, distance, record.metadata, record.sequence});
     }
 
+    std::ranges::sort(results, [](const SearchResult& left, const SearchResult& right) {
+        if (left.distance != right.distance) return left.distance < right.distance;
+        return left.key < right.key;
+    });
+    return results;
+}
+
+std::vector<VectorSegment::SearchResult>
+VectorSegment::searchStable(const Vector& query, size_t k) const {
+    if (state_ == State::Mutable) {
+        return searchExact(query, k, durable_lsn_);
+    }
+    return search(query, k);
+}
+
+std::vector<VectorSegment::SearchResult>
+VectorSegment::searchExact(const Vector& query, size_t k, uint64_t max_lsn) const {
+    if (query.size() != config_.dimensions) {
+        throw std::invalid_argument("query dimension mismatch");
+    }
+    if (k == 0 || live_count_ == 0) return {};
+
+    std::vector<SearchResult> results;
+    results.reserve(live_count_);
+    const std::span<const float> query_values(query.data_ptr(), query.size());
+    for (const auto& record : records_) {
+        if (!record.active || record.sequence > max_lsn) continue;
+        const std::span<const float> values(record.values.data(), record.values.size());
+        results.push_back(SearchResult{
+            record.key,
+            config_.metric->distance_raw(query_values, values),
+            record.metadata,
+            record.sequence,
+        });
+    }
+
+    std::ranges::sort(results, [](const SearchResult& left, const SearchResult& right) {
+        if (left.distance != right.distance) return left.distance < right.distance;
+        return left.key < right.key;
+    });
+    if (results.size() > k) results.resize(k);
     return results;
 }
 
@@ -245,17 +404,48 @@ void VectorSegment::forEachRecord(const std::function<void(const RecordView&)>& 
 
 void VectorSegment::seal() {
     if (state_ == State::Sealed) return;
+    commitThrough(visible_lsn_);
+    prepareSeal();
+    activateSeal();
+    retireWal();
+}
+
+void VectorSegment::prepareSeal() {
+    if (state_ == State::Sealed || seal_prepared_) return;
+    if (visible_lsn_ != durable_lsn_ || generation_mutation_count_ != 0) {
+        throw std::logic_error("cannot prepare a segment with an unfenced WAL tail");
+    }
+
+    // Mutable segments are flat-scanned and never mutate HNSW. Build the
+    // immutable graph only after every visible record is behind the fence.
+    rebuildIndex();
+    for (size_t slot = 0; slot < records_.size(); ++slot) {
+        if (records_[slot].active) hnsw_->insert(slot, records_[slot].key);
+    }
     writeVectorsFile();
     writeTombstonesFile();
     writeHNSWSnapshot();
+    writeSealReady();
+    seal_prepared_ = true;
+}
+
+void VectorSegment::activateSeal() noexcept {
+    if (state_ == State::Sealed) return;
+    if (!seal_prepared_) return;
     state_ = State::Sealed;
+}
+
+void VectorSegment::retireWal() {
+    if (state_ != State::Sealed) {
+        throw std::logic_error("cannot retire WAL before sealed activation");
+    }
     writeMetadata();
-    // The WAL is now redundant: a sealed segment loads from vectors.bin/hnsw
-    // snapshot, never the WAL. Remove it so it doesn't linger and accumulate
-    // disk across seal cycles. Done last so a crash beforehand leaves only
-    // harmless leftover bytes (segment.meta already records State::Sealed).
     std::error_code ec;
     std::filesystem::remove(walPath(), ec);
+    if (ec) {
+        throw std::runtime_error("cannot retire sealed WAL: " + ec.message());
+    }
+    fsync_dir(directory_);
 }
 
 void VectorSegment::flush() {
@@ -264,17 +454,38 @@ void VectorSegment::flush() {
         writeMetadata();
         return;
     }
-    fsync_file(walPath());
+    commitThrough(visible_lsn_);
     writeMetadata();
+}
+
+uint64_t VectorSegment::commitThrough(uint64_t target_lsn) {
+    if (state_ != State::Mutable) return durable_lsn_;
+    if (target_lsn <= durable_lsn_) return durable_lsn_;
+    if (target_lsn != visible_lsn_ || generation_mutation_count_ == 0 ||
+        generation_last_lsn_ != target_lsn) {
+        throw std::invalid_argument("WAL fence target must equal the visible frontier");
+    }
+
+    committer_fence_failpoint("fence-before-append");
+    if (!generation_fence_appended_) {
+        appendWalFence(target_lsn);
+        generation_fence_appended_ = true;
+    }
+    committer_fence_failpoint("fence-after-append");
+    committer_fence_failpoint("fence-before-sync");
+    fsync_file(walPath());
+    committer_fence_failpoint("fence-after-sync");
+    resetWalGeneration();
+    durable_lsn_ = target_lsn;
+    committer_fence_failpoint("fence-after-publish");
+    return durable_lsn_;
 }
 
 void VectorSegment::beginDeferredSync() { defer_sync_ = true; }
 
 void VectorSegment::commitDeferredSync() {
     defer_sync_ = false;
-    // One fsync for the whole batch (group commit). fsync both the WAL and, if a
-    // tombstone file exists, the tombstone file.
-    if (std::filesystem::exists(walPath())) fsync_file(walPath());
+    commitThrough(visible_lsn_);
     if (std::filesystem::exists(tombstonesPath())) fsync_file(tombstonesPath());
 }
 
@@ -311,7 +522,8 @@ void VectorSegment::rebuildIndex() {
         config_.metric,
         accessor,
         config_.allocation_strategy,
-        config_.arena_initial_size);
+        config_.arena_initial_size,
+        config_.hnsw_seed);
 }
 
 bool VectorSegment::applyInsert(const Vector& vector,
@@ -336,7 +548,7 @@ bool VectorSegment::applyInsert(const Vector& vector,
     ++live_count_;
     max_sequence_ = std::max(max_sequence_, sequence);
 
-    hnsw_->insert(slot_id, key);
+    if (state_ == State::Sealed) hnsw_->insert(slot_id, key);
     return true;
 }
 
@@ -369,7 +581,7 @@ bool VectorSegment::applyDelete(const std::string& key, uint64_t sequence) {
     key_to_slot_.erase(it);
     --live_count_;
     ++tombstone_count_;
-    hnsw_->removeSlot(slot_id);
+    if (state_ == State::Sealed) hnsw_->removeSlot(slot_id);
     return true;
 }
 
@@ -389,7 +601,7 @@ void VectorSegment::appendWalInsert(const Vector& vector,
 
     WalRecordHeader header{
         kWalMagic,
-        static_cast<uint16_t>(kFormatVersion),
+        kWalFencedVersion,
         static_cast<uint16_t>(WalEntry::Op::Insert),
         sequence,
         static_cast<uint32_t>(key.size()),
@@ -408,10 +620,7 @@ void VectorSegment::appendWalInsert(const Vector& vector,
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL insert");
-    // Per-record durability by default ("the call doesn't return until the WAL
-    // record is on disk"); a group-commit batch defers this to one fsync in
-    // commitDeferredSync().
-    if (!defer_sync_) fsync_file(walPath());
+    noteWalMutation(sequence, header.crc32, sizeof(header) + payload.size());
 }
 
 void VectorSegment::appendWalUpdate(const Vector& vector,
@@ -429,7 +638,7 @@ void VectorSegment::appendWalUpdate(const Vector& vector,
 
     WalRecordHeader header{
         kWalMagic,
-        static_cast<uint16_t>(kFormatVersion),
+        kWalFencedVersion,
         static_cast<uint16_t>(WalEntry::Op::Update),
         sequence,
         static_cast<uint32_t>(key.size()),
@@ -448,14 +657,14 @@ void VectorSegment::appendWalUpdate(const Vector& vector,
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL update");
-    if (!defer_sync_) fsync_file(walPath());
+    noteWalMutation(sequence, header.crc32, sizeof(header) + payload.size());
 }
 
 void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
     std::vector<uint8_t> payload(key.begin(), key.end());
     WalRecordHeader header{
         kWalMagic,
-        static_cast<uint16_t>(kFormatVersion),
+        kWalFencedVersion,
         static_cast<uint16_t>(WalEntry::Op::Delete),
         sequence,
         static_cast<uint32_t>(key.size()),
@@ -474,7 +683,7 @@ void VectorSegment::appendWalDelete(const std::string& key, uint64_t sequence) {
     }
     os.flush();
     if (!os.good()) throw std::runtime_error("failed writing WAL delete");
-    if (!defer_sync_) fsync_file(walPath());
+    noteWalMutation(sequence, header.crc32, sizeof(header) + payload.size());
 }
 
 void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t sequence) {
@@ -499,58 +708,242 @@ void VectorSegment::appendSealedTombstone(const std::string& key, uint64_t seque
     }
 }
 
-std::vector<VectorSegment::WalEntry> VectorSegment::readWal() const {
-    std::vector<WalEntry> entries;
-    std::ifstream is(walPath(), std::ios::binary);
-    if (!is.is_open()) return entries;
+void VectorSegment::noteWalMutation(uint64_t sequence, uint32_t record_crc,
+                                    size_t frame_bytes) {
+    if (generation_mutation_count_ == 0) {
+        generation_first_lsn_ = sequence;
+        generation_rolling_crc_ = 0xFFFFFFFFu;
+    }
+    generation_last_lsn_ = sequence;
+    ++generation_mutation_count_;
+    generation_rolling_crc_ = rolling_crc_update(generation_rolling_crc_, record_crc);
+    generation_bytes_ += frame_bytes;
+}
 
-    while (true) {
+void VectorSegment::resetWalGeneration() {
+    ++wal_generation_;
+    generation_first_lsn_ = 0;
+    generation_last_lsn_ = 0;
+    generation_mutation_count_ = 0;
+    generation_rolling_crc_ = 0xFFFFFFFFu;
+    generation_bytes_ = 0;
+    generation_fence_appended_ = false;
+}
+
+void VectorSegment::appendWalFence(uint64_t sequence) {
+    WalFencePayload fence{
+        wal_generation_,
+        generation_first_lsn_,
+        sequence,
+        generation_mutation_count_,
+        ~generation_rolling_crc_,
+        0,
+    };
+    std::vector<uint8_t> payload(sizeof(fence));
+    std::memcpy(payload.data(), &fence, sizeof(fence));
+
+    WalRecordHeader header{
+        kWalMagic,
+        kWalFencedVersion,
+        static_cast<uint16_t>(WalEntry::Op::Fence),
+        sequence,
+        0,
+        0,
+        static_cast<uint32_t>(config_.dimensions),
+        static_cast<uint32_t>(payload.size()),
+        0,
+    };
+    header.crc32 = wal_record_crc(header, payload.data(), payload.size());
+
+    std::ofstream os(walPath(), std::ios::binary | std::ios::app);
+    if (!os.is_open()) throw std::runtime_error("cannot append WAL fence: " + walPath().string());
+    write_pod(os, header);
+    os.write(reinterpret_cast<const char*>(payload.data()),
+             static_cast<std::streamsize>(payload.size()));
+    os.flush();
+    if (!os.good()) throw std::runtime_error("failed writing WAL fence");
+}
+
+VectorSegment::WalScanResult VectorSegment::scanWal() const {
+    WalScanResult result;
+    std::ifstream is(walPath(), std::ios::binary);
+    if (!is.is_open()) return result;
+
+    const uint64_t file_size = static_cast<uint64_t>(file_size_or_zero(walPath()));
+    uint64_t offset = 0;
+    uint64_t last_generation = 0;
+    bool v2_started = false;
+    std::vector<WalEntry> pending;
+    uint64_t pending_first_lsn = 0;
+    uint64_t pending_last_lsn = 0;
+    uint64_t pending_count = 0;
+    uint32_t pending_rolling_crc = 0xFFFFFFFFu;
+    uint64_t last_mutation_lsn = 0;
+    bool have_last_mutation_lsn = false;
+
+    if (config_.dimensions > std::numeric_limits<uint32_t>::max() / sizeof(float)) {
+        throw std::runtime_error("segment dimensions exceed WAL format limits");
+    }
+    const size_t expected_vector_bytes = config_.dimensions * sizeof(float);
+
+    auto decode_mutation = [&](const WalRecordHeader& header,
+                               const std::vector<uint8_t>& payload) {
+        WalEntry entry;
+        entry.op = static_cast<WalEntry::Op>(header.op);
+        entry.sequence = header.sequence;
+        size_t payload_offset = 0;
+        if (header.key_bytes > 0) {
+            entry.key.assign(reinterpret_cast<const char*>(payload.data()), header.key_bytes);
+        }
+        payload_offset += header.key_bytes;
+        if (header.metadata_bytes > 0) {
+            entry.metadata.assign(
+                reinterpret_cast<const char*>(payload.data() + payload_offset),
+                header.metadata_bytes);
+        }
+        payload_offset += header.metadata_bytes;
+        if (entry.op == WalEntry::Op::Insert || entry.op == WalEntry::Op::Update) {
+            entry.values.resize(config_.dimensions);
+            std::memcpy(entry.values.data(), payload.data() + payload_offset, header.vector_bytes);
+        }
+        return entry;
+    };
+
+    while (offset < file_size) {
+        if (file_size - offset < sizeof(WalRecordHeader)) break;
         WalRecordHeader header{};
         if (!read_pod(is, header)) break;
-        if (header.magic != kWalMagic || header.version != kFormatVersion ||
-            header.dimensions != config_.dimensions) {
-            break;
-        }
+        offset += sizeof(WalRecordHeader);
+        if (header.magic != kWalMagic ||
+            (header.version != kWalLegacyVersion && header.version != kWalFencedVersion) ||
+            header.dimensions != config_.dimensions ||
+            header.key_bytes > kMaxWalKeyBytes ||
+            header.metadata_bytes > kMaxWalMetadataBytes) break;
 
-        size_t payload_size = static_cast<size_t>(header.key_bytes) +
-                              static_cast<size_t>(header.metadata_bytes) +
-                              static_cast<size_t>(header.vector_bytes);
+        const auto op = static_cast<WalEntry::Op>(header.op);
+        const bool mutation = op == WalEntry::Op::Insert ||
+                              op == WalEntry::Op::Update ||
+                              op == WalEntry::Op::Delete;
+        const bool fence_frame = op == WalEntry::Op::Fence;
+        if (!mutation && !fence_frame) break;
+        if (mutation && header.sequence == 0) break;
+        if (header.version == kWalLegacyVersion && fence_frame) break;
+        if ((op == WalEntry::Op::Insert || op == WalEntry::Op::Update) &&
+            header.vector_bytes != expected_vector_bytes) break;
+        if (op == WalEntry::Op::Delete &&
+            (header.metadata_bytes != 0 || header.vector_bytes != 0)) break;
+        if (fence_frame &&
+            (header.key_bytes != 0 || header.metadata_bytes != 0 ||
+             header.vector_bytes != sizeof(WalFencePayload))) break;
+
+        size_t payload_size = 0;
+        if (!checked_add(static_cast<size_t>(header.key_bytes),
+                         static_cast<size_t>(header.metadata_bytes), payload_size) ||
+            !checked_add(payload_size, static_cast<size_t>(header.vector_bytes), payload_size) ||
+            payload_size > file_size - offset) break;
         std::vector<uint8_t> payload(payload_size);
         if (payload_size > 0) {
             is.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload_size));
             if (!is.good()) break;
         }
+        offset += payload_size;
         if (wal_record_crc(header, payload.data(), payload.size()) != header.crc32) break;
 
-        WalEntry entry;
-        entry.op = static_cast<WalEntry::Op>(header.op);
-        entry.sequence = header.sequence;
-        if (entry.op != WalEntry::Op::Insert &&
-            entry.op != WalEntry::Op::Delete &&
-            entry.op != WalEntry::Op::Update) {
-            break;
+        if (header.version == kWalLegacyVersion) {
+            if (v2_started ||
+                (have_last_mutation_lsn && header.sequence <= last_mutation_lsn)) break;
+            WalEntry entry = decode_mutation(header, payload);
+            result.saw_legacy = true;
+            last_mutation_lsn = header.sequence;
+            have_last_mutation_lsn = true;
+            result.durable_lsn = std::max(result.durable_lsn, entry.sequence);
+            result.committed_entries.push_back(std::move(entry));
+            result.committed_bytes = offset;
+            continue;
         }
 
-        size_t offset = 0;
-        entry.key.assign(reinterpret_cast<const char*>(payload.data() + offset), header.key_bytes);
-        offset += header.key_bytes;
-        entry.metadata.assign(reinterpret_cast<const char*>(payload.data() + offset), header.metadata_bytes);
-        offset += header.metadata_bytes;
-
-        if (entry.op == WalEntry::Op::Insert || entry.op == WalEntry::Op::Update) {
-            if (header.vector_bytes != config_.dimensions * sizeof(float)) break;
-            entry.values.resize(config_.dimensions);
-            std::memcpy(entry.values.data(), payload.data() + offset, header.vector_bytes);
+        v2_started = true;
+        if (mutation) {
+            if (have_last_mutation_lsn && header.sequence <= last_mutation_lsn) break;
+            if (pending_count == 0) pending_first_lsn = header.sequence;
+            pending_last_lsn = header.sequence;
+            last_mutation_lsn = header.sequence;
+            have_last_mutation_lsn = true;
+            ++pending_count;
+            pending_rolling_crc = rolling_crc_update(pending_rolling_crc, header.crc32);
+            pending.push_back(decode_mutation(header, payload));
+            continue;
         }
 
-        entries.push_back(std::move(entry));
+        WalFencePayload fence{};
+        std::memcpy(&fence, payload.data(), sizeof(fence));
+        const bool legacy_baseline = pending_count == 0 &&
+                                     result.saw_legacy &&
+                                     last_generation == 0 &&
+                                     fence.mutation_count == 0 &&
+                                     fence.first_lsn == 0 &&
+                                     fence.last_lsn == result.durable_lsn;
+        if (fence.reserved != 0 || fence.generation != last_generation + 1 ||
+            fence.mutation_count != pending_count ||
+            fence.last_lsn != header.sequence ||
+            (pending_count == 0 && !legacy_baseline) ||
+            (!legacy_baseline &&
+             (fence.first_lsn != pending_first_lsn ||
+              fence.last_lsn != pending_last_lsn)) ||
+            fence.rolling_crc != ~pending_rolling_crc) break;
+
+        result.committed_entries.insert(
+            result.committed_entries.end(),
+            std::make_move_iterator(pending.begin()),
+            std::make_move_iterator(pending.end()));
+        result.committed_bytes = offset;
+        result.durable_lsn = std::max(result.durable_lsn, fence.last_lsn);
+        result.saw_v2 = true;
+        last_generation = fence.generation;
+        pending.clear();
+        pending_first_lsn = 0;
+        pending_last_lsn = 0;
+        pending_count = 0;
+        pending_rolling_crc = 0xFFFFFFFFu;
     }
 
-    return entries;
+    result.next_generation = last_generation + 1;
+    return result;
 }
 
-void VectorSegment::replayWal() {
-    for (const auto& entry : readWal()) {
+void VectorSegment::truncateWal(uint64_t bytes) const {
+    const uint64_t current_size = static_cast<uint64_t>(file_size_or_zero(walPath()));
+    if (bytes >= current_size) return;
+    if (bytes > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
+        throw std::runtime_error("WAL truncate offset is out of range");
+    }
+    int fd = ::open(walPath().c_str(), O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        throw std::runtime_error("cannot open WAL for truncation: " +
+                                 std::string(std::strerror(errno)));
+    }
+    if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+        int error = errno;
+        ::close(fd);
+        throw std::runtime_error("cannot truncate rejected WAL tail: " +
+                                 std::string(std::strerror(error)));
+    }
+    ::close(fd);
+    fsync_file(walPath());
+}
+
+void VectorSegment::replayWal(bool read_only_recovery) {
+    WalScanResult scan = scanWal();
+    if (!read_only_recovery) truncateWal(scan.committed_bytes);
+    wal_generation_ = scan.next_generation;
+    generation_first_lsn_ = 0;
+    generation_last_lsn_ = 0;
+    generation_mutation_count_ = 0;
+    generation_rolling_crc_ = 0xFFFFFFFFu;
+    generation_bytes_ = 0;
+    generation_fence_appended_ = false;
+
+    for (const auto& entry : scan.committed_entries) {
         if (entry.op == WalEntry::Op::Insert) {
             Vector vector(entry.values);
             applyInsert(vector, entry.key, entry.metadata, entry.sequence);
@@ -561,6 +954,18 @@ void VectorSegment::replayWal() {
             applyDelete(entry.key, entry.sequence);
             max_sequence_ = std::max(max_sequence_, entry.sequence);
         }
+    }
+    max_sequence_ = std::max(max_sequence_, scan.durable_lsn);
+    visible_lsn_ = scan.durable_lsn;
+    durable_lsn_ = scan.durable_lsn;
+
+    // Version-1 records were individually synced by the legacy writer. Add one
+    // synced v2 baseline so all subsequent generations use explicit fences.
+    if (!read_only_recovery && scan.saw_legacy && !scan.saw_v2) {
+        appendWalFence(scan.durable_lsn);
+        generation_fence_appended_ = true;
+        fsync_file(walPath());
+        resetWalGeneration();
     }
 }
 
@@ -715,6 +1120,18 @@ void VectorSegment::writeHNSWSnapshot() const {
     });
 }
 
+void VectorSegment::writeSealReady() const {
+    // Written last: observing this durable marker means every immutable
+    // artifact for the same max LSN completed its own atomic_write first.
+    atomic_write(sealReadyPath(), [&](std::ostream& os) {
+        os << "version=1\n";
+        os << "id=" << id_ << "\n";
+        os << "max_sequence=" << max_sequence_ << "\n";
+        os << "records=" << records_.size() << "\n";
+        if (!os.good()) throw std::runtime_error("failed writing seal-ready marker");
+    });
+}
+
 bool VectorSegment::readHNSWSnapshot() {
     std::ifstream is(hnswPath(), std::ios::binary);
     if (!is.is_open()) return false;
@@ -818,6 +1235,9 @@ void VectorSegment::writeMetadata() const {
         os << "live_records=" << live_count_ << "\n";
         os << "tombstones=" << tombstone_count_ << "\n";
         os << "max_sequence=" << max_sequence_ << "\n";
+        os << "visible_lsn=" << visible_lsn_ << "\n";
+        os << "durable_lsn=" << durable_lsn_ << "\n";
+        os << "hnsw_seed=" << config_.hnsw_seed << "\n";
     });
 }
 
@@ -831,10 +1251,16 @@ void VectorSegment::readMetadata() {
         if (pos == std::string::npos) continue;
         std::string key = line.substr(0, pos);
         std::string value = line.substr(pos + 1);
-        if (key == "state") {
-            state_ = (value == "sealed") ? State::Sealed : State::Mutable;
-        } else if (key == "max_sequence") {
+        // The manifest is the transaction root and therefore authoritative for
+        // a segment's role. `state` remains diagnostic metadata only.
+        if (key == "max_sequence") {
             max_sequence_ = std::stoull(value);
+        } else if (key == "hnsw_seed") {
+            const uint64_t seed = std::stoull(value);
+            if (seed > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("segment HNSW seed is out of range");
+            }
+            config_.hnsw_seed = static_cast<uint32_t>(seed);
         }
     }
 }
@@ -864,4 +1290,8 @@ std::filesystem::path VectorSegment::hnswPath() const {
 
 std::filesystem::path VectorSegment::metadataPath() const {
     return directory_ / "segment.meta";
+}
+
+std::filesystem::path VectorSegment::sealReadyPath() const {
+    return directory_ / "seal.ready";
 }

@@ -4,9 +4,13 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -350,6 +354,49 @@ void test_hnsw_many_vectors() {
     auto results = hnsw.search(query, 3);
     ASSERT_TRUE(results.size() >= 1);
     ASSERT_EQ(results[0].first, "v50");
+}
+
+void test_hnsw_fixed_seed_reproduces_topology() {
+    auto metric = std::make_shared<EuclideanDistance>();
+    TestVectorStore store;
+    for (int i = 0; i < 64; ++i) {
+        float f = static_cast<float>(i);
+        store.add(Vector(std::vector<float>{f, f * 0.5f, f * 0.25f, f * 0.125f}));
+    }
+
+    HNSWIndex first(4, 8, 50, 50, metric, store.accessor(),
+                    HNSWIndex::AllocationStrategy::Standard, 1024 * 1024, 77);
+    HNSWIndex second(4, 8, 50, 50, metric, store.accessor(),
+                     HNSWIndex::AllocationStrategy::Standard, 1024 * 1024, 77);
+    HNSWIndex changed(4, 8, 50, 50, metric, store.accessor(),
+                      HNSWIndex::AllocationStrategy::Standard, 1024 * 1024, 78);
+    for (uint64_t id = 0; id < 64; ++id) {
+        const std::string key = "v" + std::to_string(id);
+        first.insert(id, key);
+        second.insert(id, key);
+        changed.insert(id, key);
+    }
+
+    auto a = first.exportGraph();
+    auto b = second.exportGraph();
+    ASSERT_EQ(a.max_level, b.max_level);
+    ASSERT_TRUE(a.entry_points == b.entry_points);
+    ASSERT_EQ(a.nodes.size(), b.nodes.size());
+    for (size_t i = 0; i < a.nodes.size(); ++i) {
+        ASSERT_EQ(a.nodes[i].slot_id, b.nodes[i].slot_id);
+        ASSERT_EQ(a.nodes[i].key, b.nodes[i].key);
+        ASSERT_EQ(a.nodes[i].level, b.nodes[i].level);
+        ASSERT_TRUE(a.nodes[i].neighbors == b.nodes[i].neighbors);
+        ASSERT_TRUE(a.nodes[i].neighbor_dists == b.nodes[i].neighbor_dists);
+    }
+
+    auto c = changed.exportGraph();
+    bool differs = a.max_level != c.max_level || a.entry_points != c.entry_points;
+    for (size_t i = 0; !differs && i < a.nodes.size(); ++i) {
+        differs = a.nodes[i].level != c.nodes[i].level ||
+                  a.nodes[i].neighbors != c.nodes[i].neighbors;
+    }
+    ASSERT_TRUE(differs);
 }
 
 // =====================================================================
@@ -739,7 +786,6 @@ void test_db_default_segmented_single_op_crash_recovery() {
     ASSERT_TRUE(pid >= 0);
 
     if (pid == 0) {
-        bool ok = true;
         try {
             VectorDatabase db(2,
                               VectorDatabase::SearchMode::HNSW,
@@ -751,15 +797,16 @@ void test_db_default_segmented_single_op_crash_recovery() {
                               path.string());
             db.configureSegmentedStorage(1, 16, 0.25);
             db.initialize();
+            bool ok = true;
             ok = ok && db.getStatistics().storage_engine == VectorDatabase::StorageEngine::Segmented;
             ok = ok && db.insert(Vector(std::vector<float>{1.0f, 0.0f}), "a", "old");
             ok = ok && db.insert(Vector(std::vector<float>{0.0f, 1.0f}), "b", "delete-me");
             ok = ok && db.update(Vector(std::vector<float>{0.25f, 0.75f}), "a", "new");
             ok = ok && db.remove("b");
+            _exit(ok ? 0 : 1);  // db is still alive: no destructor or shutdown
         } catch (...) {
-            ok = false;
+            _exit(1);
         }
-        _exit(ok ? 0 : 1);
     }
 
     int status = 0;
@@ -805,7 +852,6 @@ void test_db_group_commit_crash_recovery() {
     pid_t pid = fork();
     ASSERT_TRUE(pid >= 0);
     if (pid == 0) {
-        bool ok = true;
         try {
             VectorDatabase db(4, VectorDatabase::SearchMode::HNSW, false, /*batch=*/true,
                               {}, false, 0, path.string());
@@ -817,11 +863,10 @@ void test_db_group_commit_crash_recovery() {
                 vecs.push_back(Vector(std::vector<float>{static_cast<float>(i), 1.0f, 2.0f, 3.0f}));
             }
             auto r = db.batchInsert(keys, vecs);  // group commit: one fsync for all N
-            ok = (r.operations_committed == N);
+            _exit(r.operations_committed == N ? 0 : 1);  // db is still alive
         } catch (...) {
-            ok = false;
+            _exit(1);
         }
-        _exit(ok ? 0 : 1);  // NO shutdown() — simulate a crash right after the batch's fsync
     }
 
     int status = 0;
@@ -996,6 +1041,79 @@ void test_mmap_storage_dimension_mismatch_on_reopen() {
 //  SEGMENTED VECTOR STORE (direct API)
 // =====================================================================
 
+struct TestWalRecordHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t op;
+    uint64_t sequence;
+    uint32_t key_bytes;
+    uint32_t metadata_bytes;
+    uint32_t dimensions;
+    uint32_t vector_bytes;
+    uint32_t crc32;
+};
+
+struct TestWalFencePayload {
+    uint64_t generation;
+    uint64_t first_lsn;
+    uint64_t last_lsn;
+    uint64_t mutation_count;
+    uint32_t rolling_crc;
+    uint32_t reserved;
+};
+
+uint32_t test_wal_crc32_update(uint32_t crc, const uint8_t* data, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc;
+}
+
+uint32_t test_wal_record_crc(const TestWalRecordHeader& header,
+                             const std::vector<uint8_t>& payload) {
+    uint32_t crc = test_wal_crc32_update(
+        0xFFFFFFFFu,
+        reinterpret_cast<const uint8_t*>(&header),
+        offsetof(TestWalRecordHeader, crc32));
+    crc = test_wal_crc32_update(crc, payload.data(), payload.size());
+    return ~crc;
+}
+
+void append_legacy_insert(const std::filesystem::path& wal,
+                          uint64_t sequence,
+                          const std::string& key,
+                          const std::string& metadata,
+                          const std::vector<float>& values) {
+    std::vector<uint8_t> payload;
+    payload.insert(payload.end(), key.begin(), key.end());
+    payload.insert(payload.end(), metadata.begin(), metadata.end());
+    const auto* vector_bytes = reinterpret_cast<const uint8_t*>(values.data());
+    payload.insert(payload.end(), vector_bytes,
+                   vector_bytes + values.size() * sizeof(float));
+
+    TestWalRecordHeader header{
+        0x314c5756u,
+        1,
+        1,
+        sequence,
+        static_cast<uint32_t>(key.size()),
+        static_cast<uint32_t>(metadata.size()),
+        static_cast<uint32_t>(values.size()),
+        static_cast<uint32_t>(values.size() * sizeof(float)),
+        0,
+    };
+    header.crc32 = test_wal_record_crc(header, payload);
+
+    std::ofstream os(wal, std::ios::binary | std::ios::app);
+    os.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    os.write(reinterpret_cast<const char*>(payload.data()),
+             static_cast<std::streamsize>(payload.size()));
+    if (!os.good()) throw std::runtime_error("failed writing test WAL record");
+}
+
 void test_segmented_store_insert_search_recover() {
     auto root = std::filesystem::temp_directory_path() /
                 ("segstore_" + std::to_string(::getpid()));
@@ -1036,6 +1154,411 @@ void test_segmented_store_insert_search_recover() {
         s.shutdown();
     }
 
+    std::filesystem::remove_all(root);
+}
+
+void test_segment_staged_tail_frontiers_and_exact_search() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("segment_staged_tail_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+    segment.initializeNew();
+
+    ASSERT_TRUE(segment.stageInsert(
+        Vector(std::vector<float>{1.0f, 0.0f}), "b", "weak-b", 1));
+    ASSERT_TRUE(segment.stageInsert(
+        Vector(std::vector<float>{-1.0f, 0.0f}), "a", "weak-a", 2));
+    ASSERT_EQ(segment.visibleLsn(), 2u);
+    ASSERT_EQ(segment.durableLsn(), 0u);
+    ASSERT_EQ(segment.volatileCount(), 2u);
+    ASSERT_TRUE(segment.volatileBytes() > 0);
+    ASSERT_TRUE(segment.isVolatile("a"));
+
+    auto latest = segment.search(Vector(std::vector<float>{0.0f, 0.0f}), 2);
+    ASSERT_EQ(latest.size(), 2u);
+    ASSERT_EQ(latest[0].key, std::string{"a"});
+    ASSERT_EQ(latest[1].key, std::string{"b"});
+    ASSERT_TRUE(segment.searchStable(Vector(std::vector<float>{0.0f, 0.0f}), 2).empty());
+
+    ASSERT_EQ(segment.commitThrough(2), 2u);
+    ASSERT_EQ(segment.durableLsn(), 2u);
+    ASSERT_EQ(segment.volatileCount(), 0u);
+    ASSERT_EQ(segment.volatileBytes(), 0u);
+    ASSERT_FALSE(segment.isVolatile("a"));
+    ASSERT_EQ(segment.searchStable(Vector(std::vector<float>{0.0f, 0.0f}), 2).size(), 2u);
+
+    segment.prepareSeal();
+    ASSERT_TRUE(std::filesystem::exists(root / "seal.ready"));
+    ASSERT_TRUE(std::filesystem::exists(root / "wal.log"));
+    ASSERT_TRUE(segment.state() == VectorSegment::State::Mutable);
+    segment.activateSeal();
+    segment.retireWal();
+    ASSERT_FALSE(std::filesystem::exists(root / "wal.log"));
+
+    std::filesystem::remove_all(root);
+}
+
+void test_store_staged_insert_recovery_drops_tail() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("store_staged_recovery_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    SegmentedVectorStore::Config cfg;
+    cfg.dimensions = 2;
+    uint64_t stable_lsn = 0;
+    uintmax_t stable_wal_bytes = 0;
+    {
+        SegmentedVectorStore store(root, cfg);
+        store.initialize();
+        ASSERT_TRUE(store.insert(Vector(std::vector<float>{10.0f, 0.0f}), "stable"));
+        stable_lsn = store.durableLsn();
+        stable_wal_bytes = std::filesystem::file_size(
+            root / "segments" / "seg_00000001" / "wal.log");
+
+        auto staged = store.stageInsert(
+            Vector(std::vector<float>{0.0f, 0.0f}), "weak", "provisional");
+        ASSERT_TRUE(staged.applied);
+        ASSERT_TRUE(staged.lsn > stable_lsn);
+        ASSERT_EQ(store.visibleLsn(), staged.lsn);
+        ASSERT_EQ(store.durableLsn(), stable_lsn);
+        ASSERT_EQ(store.volatileCount(), 1u);
+        ASSERT_TRUE(store.volatileBytes() > 0);
+        ASSERT_TRUE(store.isVolatile("weak"));
+        ASSERT_TRUE(std::filesystem::file_size(
+                        root / "segments" / "seg_00000001" / "wal.log") >
+                    stable_wal_bytes);
+
+        auto latest = store.search(Vector(std::vector<float>{0.0f, 0.0f}), 1);
+        ASSERT_EQ(latest.size(), 1u);
+        ASSERT_EQ(latest[0].first, std::string{"weak"});
+        auto stable = store.searchStable(Vector(std::vector<float>{0.0f, 0.0f}), 1);
+        ASSERT_EQ(stable.size(), 1u);
+        ASSERT_EQ(stable[0].first, std::string{"stable"});
+        // No shutdown: the staged generation deliberately remains unfenced.
+    }
+
+    {
+        SegmentedVectorStore recovered(root, cfg);
+        recovered.initialize();
+        ASSERT_TRUE(recovered.get("stable").has_value());
+        ASSERT_FALSE(recovered.get("weak").has_value());
+        ASSERT_EQ(recovered.visibleLsn(), recovered.durableLsn());
+        ASSERT_TRUE(recovered.durableLsn() >= stable_lsn);
+        ASSERT_EQ(recovered.volatileCount(), 0u);
+        ASSERT_EQ(std::filesystem::file_size(
+                      root / "segments" / "seg_00000001" / "wal.log"),
+                  stable_wal_bytes);
+        recovered.shutdown();
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+void test_store_manifest_role_is_authoritative() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("store_manifest_role_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    SegmentedVectorStore::Config cfg;
+    cfg.dimensions = 2;
+    cfg.max_mutable_segment_records = 2;
+    {
+        SegmentedVectorStore store(root, cfg);
+        store.initialize();
+        ASSERT_TRUE(store.insert(Vector(std::vector<float>{1.0f, 0.0f}), "a"));
+        ASSERT_TRUE(store.insert(Vector(std::vector<float>{2.0f, 0.0f}), "b"));
+    }
+
+    const auto sealed_dir = root / "segments" / "seg_00000001";
+    ASSERT_TRUE(std::filesystem::exists(sealed_dir / "seal.ready"));
+    ASSERT_FALSE(std::filesystem::exists(sealed_dir / "wal.log"));
+
+    // Segment metadata is diagnostic. Even stale metadata from a crash must not
+    // override the role installed atomically in the manifest.
+    const auto metadata_path = sealed_dir / "segment.meta";
+    std::ifstream metadata_in(metadata_path);
+    std::string metadata(std::istreambuf_iterator<char>(metadata_in), {});
+    const auto state_pos = metadata.find("state=sealed\n");
+    ASSERT_TRUE(state_pos != std::string::npos);
+    metadata.replace(state_pos, std::string("state=sealed\n").size(), "state=mutable\n");
+    {
+        std::ofstream metadata_out(metadata_path, std::ios::trunc);
+        metadata_out << metadata;
+        ASSERT_TRUE(metadata_out.good());
+    }
+
+    {
+        SegmentedVectorStore recovered(root, cfg);
+        recovered.initialize();
+        ASSERT_TRUE(recovered.get("a").has_value());
+        ASSERT_TRUE(recovered.get("b").has_value());
+        ASSERT_TRUE(recovered.insert(Vector(std::vector<float>{3.0f, 0.0f}), "c"));
+        recovered.shutdown();
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+void test_wal_v2_discards_unfenced_tail() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("wal_v2_unfenced_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    {
+        VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+        segment.initializeNew();
+        segment.beginDeferredSync();
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{1.0f, 2.0f}), "weak", "", 1));
+        ASSERT_EQ(segment.recordCount(), 1u);
+        // Deliberately omit commitDeferredSync(): this models an open weak generation.
+    }
+    ASSERT_TRUE(std::filesystem::file_size(root / "wal.log") > 0);
+
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_EQ(recovered.recordCount(), 0u);
+        ASSERT_EQ(std::filesystem::file_size(root / "wal.log"), 0u);
+    }
+    std::filesystem::remove_all(root);
+}
+
+void test_wal_v2_replays_fenced_generation() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("wal_v2_fenced_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    {
+        VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+        segment.initializeNew();
+        segment.beginDeferredSync();
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{1.0f, 2.0f}), "a", "", 1));
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{3.0f, 4.0f}), "b", "", 2));
+        segment.commitDeferredSync();
+    }
+
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_EQ(recovered.recordCount(), 2u);
+        ASSERT_TRUE(recovered.contains("a"));
+        ASSERT_TRUE(recovered.contains("b"));
+        ASSERT_EQ(recovered.maxSequence(), 2u);
+    }
+    std::filesystem::remove_all(root);
+}
+
+void test_wal_v2_rejects_inconsistent_fence() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("wal_v2_bad_fence_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    {
+        VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+        segment.initializeNew();
+        segment.beginDeferredSync();
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{1.0f, 2.0f}), "a", "", 1));
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{3.0f, 4.0f}), "b", "", 2));
+        segment.commitDeferredSync();
+    }
+
+    const auto wal = root / "wal.log";
+    const auto fence_offset = std::filesystem::file_size(wal) -
+                              sizeof(TestWalRecordHeader) - sizeof(TestWalFencePayload);
+    {
+        std::fstream io(wal, std::ios::binary | std::ios::in | std::ios::out);
+        io.seekg(static_cast<std::streamoff>(fence_offset));
+        TestWalRecordHeader header{};
+        TestWalFencePayload fence{};
+        io.read(reinterpret_cast<char*>(&header), sizeof(header));
+        io.read(reinterpret_cast<char*>(&fence), sizeof(fence));
+        ASSERT_TRUE(io.good());
+
+        ++fence.mutation_count;
+        std::vector<uint8_t> payload(sizeof(fence));
+        std::memcpy(payload.data(), &fence, sizeof(fence));
+        header.crc32 = test_wal_record_crc(header, payload);
+
+        io.seekp(static_cast<std::streamoff>(fence_offset));
+        io.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        io.write(reinterpret_cast<const char*>(payload.data()),
+                 static_cast<std::streamsize>(payload.size()));
+        io.flush();
+        ASSERT_TRUE(io.good());
+    }
+
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_EQ(recovered.recordCount(), 0u);
+    }
+    ASSERT_EQ(std::filesystem::file_size(wal), 0u);
+    std::filesystem::remove_all(root);
+}
+
+void test_wal_v1_migrates_and_rejects_bad_suffix() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("wal_v1_migration_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    {
+        VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+        segment.initializeNew();
+    }
+
+    const auto wal = root / "wal.log";
+    append_legacy_insert(wal, 7, "legacy", "v1", {1.0f, 2.0f});
+    append_legacy_insert(wal, 6, "stale", "bad", {3.0f, 4.0f});
+
+    uintmax_t migrated_size = 0;
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_TRUE(recovered.contains("legacy"));
+        ASSERT_FALSE(recovered.contains("stale"));
+        ASSERT_EQ(recovered.maxSequence(), 7u);
+        ASSERT_EQ(recovered.getMetadata("legacy"), std::string{"v1"});
+
+        migrated_size = std::filesystem::file_size(wal);
+        std::string oversized((1u << 20) + 1, 'x');
+        ASSERT_THROWS(
+            (void)recovered.insert(Vector(std::vector<float>{5.0f, 6.0f}),
+                                   oversized, "", 8),
+            std::length_error);
+        ASSERT_EQ(std::filesystem::file_size(wal), migrated_size);
+    }
+
+    // A second open accepts the baseline fence and does not append another one.
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_TRUE(recovered.contains("legacy"));
+        ASSERT_FALSE(recovered.contains("stale"));
+    }
+    ASSERT_EQ(std::filesystem::file_size(wal), migrated_size);
+    std::filesystem::remove_all(root);
+}
+
+void test_wal_recovery_bounds_corrupt_lengths() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("wal_v2_lengths_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    VectorSegment::Config cfg;
+    cfg.dimensions = 2;
+    {
+        VectorSegment segment("seg", root, cfg, VectorSegment::State::Mutable);
+        segment.initializeNew();
+        ASSERT_TRUE(segment.insert(Vector(std::vector<float>{1.0f, 2.0f}), "safe", "", 1));
+    }
+
+    const auto wal = root / "wal.log";
+    const auto committed_size = std::filesystem::file_size(wal);
+    TestWalRecordHeader corrupt{
+        0x314c5756u,
+        2,
+        1,
+        2,
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max(),
+        2,
+        2 * sizeof(float),
+        0,
+    };
+    {
+        std::ofstream os(wal, std::ios::binary | std::ios::app);
+        os.write(reinterpret_cast<const char*>(&corrupt), sizeof(corrupt));
+    }
+    ASSERT_TRUE(std::filesystem::file_size(wal) > committed_size);
+
+    {
+        VectorSegment recovered("seg", root, cfg, VectorSegment::State::Mutable);
+        recovered.load();
+        ASSERT_EQ(recovered.recordCount(), 1u);
+        ASSERT_TRUE(recovered.contains("safe"));
+    }
+    ASSERT_EQ(std::filesystem::file_size(wal), committed_size);
+    std::filesystem::remove_all(root);
+}
+
+void test_sequence_highwater_skips_restart_range() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("lsn_highwater_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    SegmentedVectorStore::Config cfg;
+    cfg.dimensions = 2;
+
+    pid_t pid = fork();
+    ASSERT_TRUE(pid >= 0);
+    if (pid == 0) {
+        try {
+            SegmentedVectorStore store(root, cfg);
+            store.initialize();
+            const bool inserted = store.insert(
+                Vector(std::vector<float>{1.0f, 0.0f}), "first");
+            _exit(inserted ? 0 : 1);
+        } catch (...) {
+            _exit(1);
+        }
+    }
+
+    int status = 0;
+    ASSERT_TRUE(waitpid(pid, &status, 0) == pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+
+    {
+        SegmentedVectorStore store(root, cfg);
+        store.initialize();
+        const uint64_t restart_base = store.getStatistics().latest_sequence;
+        ASSERT_TRUE(restart_base >= (1ull << 20));
+        ASSERT_TRUE(store.insert(Vector(std::vector<float>{0.0f, 1.0f}), "second"));
+        ASSERT_TRUE(store.getStatistics().latest_sequence > restart_base);
+        store.shutdown();
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+void test_hnsw_seed_persists_across_reopen() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("hnsw_seed_persist_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+
+    SegmentedVectorStore::Config cfg;
+    cfg.dimensions = 2;
+    cfg.hnsw_seed = 77;
+    {
+        SegmentedVectorStore store(root, cfg);
+        store.initialize();
+        ASSERT_TRUE(store.insert(Vector(std::vector<float>{1.0f, 2.0f}), "seeded"));
+        store.shutdown();
+    }
+
+    auto read_text = [](const std::filesystem::path& path) {
+        std::ifstream is(path);
+        return std::string(std::istreambuf_iterator<char>(is), {});
+    };
+    ASSERT_TRUE(read_text(root / "manifest.txt").find("hnsw_seed=77\n") != std::string::npos);
+    ASSERT_TRUE(read_text(root / "segments" / "seg_00000001" / "segment.meta")
+                    .find("hnsw_seed=77\n") != std::string::npos);
+
+    cfg.hnsw_seed = 999;
+    {
+        SegmentedVectorStore store(root, cfg);
+        store.initialize();
+        ASSERT_TRUE(store.get("seeded").has_value());
+        store.shutdown();
+    }
+    ASSERT_TRUE(read_text(root / "manifest.txt").find("hnsw_seed=77\n") != std::string::npos);
     std::filesystem::remove_all(root);
 }
 
@@ -1207,6 +1730,7 @@ int main() {
     run_test("insert and search", test_hnsw_insert_search);
     run_test("remove", test_hnsw_remove);
     run_test("many vectors", test_hnsw_many_vectors);
+    run_test("fixed seed reproduces topology", test_hnsw_fixed_seed_reproduces_topology);
 
     std::cout << "\n[Query Cache]\n";
     run_test("hit and miss", test_cache_hit_miss);
@@ -1257,6 +1781,16 @@ int main() {
 
     std::cout << "\n[Segmented Vector Store]\n";
     run_test("insert/search/recover",   test_segmented_store_insert_search_recover);
+    run_test("staged tail frontiers and exact search", test_segment_staged_tail_frontiers_and_exact_search);
+    run_test("staged insert recovery drops tail", test_store_staged_insert_recovery_drops_tail);
+    run_test("manifest role is authoritative", test_store_manifest_role_is_authoritative);
+    run_test("WAL v2 discards unfenced tail", test_wal_v2_discards_unfenced_tail);
+    run_test("WAL v2 replays fenced generation", test_wal_v2_replays_fenced_generation);
+    run_test("WAL v2 rejects inconsistent fence", test_wal_v2_rejects_inconsistent_fence);
+    run_test("WAL v1 migrates and rejects bad suffix", test_wal_v1_migrates_and_rejects_bad_suffix);
+    run_test("WAL recovery bounds corrupt lengths", test_wal_recovery_bounds_corrupt_lengths);
+    run_test("sequence high-water skips restart range", test_sequence_highwater_skips_restart_range);
+    run_test("HNSW seed persists across reopen", test_hnsw_seed_persists_across_reopen);
 
     std::cout << "\n[Scalar Quantizer]\n";
     run_test("train and quantize",      test_scalar_quantizer_train_and_quantize);

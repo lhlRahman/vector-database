@@ -127,7 +127,8 @@ simd-tail-test: $(BUILD_DIR)/core/vector.o $(BUILD_DIR)/optimizations/simd_opera
 LIB_OBJS = $(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
            $(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
            $(BUILD_DIR)/features/atomic_persistence.o \
-           $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/algorithms/hnsw_index.o \
+           $(BUILD_DIR)/features/commit_log.o $(BUILD_DIR)/features/recall_commit_policy.o \
+           $(BUILD_DIR)/algorithms/hnsw_index.o \
            $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/utils/random_generator.o \
            $(BUILD_DIR)/optimizations/simd_operations.o $(BUILD_DIR)/optimizations/parallel_processing.o \
            $(GPU_OPS_OBJ) $(BUILD_DIR)/storage/mmap_storage.o \
@@ -140,6 +141,58 @@ unit-test: $(LIB_OBJS)
 	$(CXX) $(CXXFLAGS) -pthread $(BUILD_DIR)/unit_tests.o $(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(UNIT_TEST)
 	@echo "Running unit tests..."
 	@./$(UNIT_TEST)
+
+COMMITTER_UNIT_TEST = $(BUILD_DIR)/committer_unit_tests
+committer-unit-test: unit-test
+	$(CXX) $(CXXFLAGS) -pthread test/committer_unit_tests.cpp \
+		$(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(COMMITTER_UNIT_TEST)
+	@echo "Running recall-committer unit tests..."
+	@./$(COMMITTER_UNIT_TEST)
+
+VERIFY_COMMITTER_IMAGE = $(BUILD_DIR)/verify_committer_image
+verify-committer-image: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -pthread test/verify_committer_image.cpp \
+		$(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(VERIFY_COMMITTER_IMAGE)
+	@./$(VERIFY_COMMITTER_IMAGE) --capabilities
+
+COMMITTER_CRASH_TEST = $(BUILD_DIR)/committer_crash_test
+committer-crash-test: verify-committer-image
+	$(CXX) $(CXXFLAGS) -pthread test/committer_crash_test.cpp \
+		$(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(COMMITTER_CRASH_TEST)
+	@set -eu; \
+		run_dir="$(BUILD_DIR)/committer-crash-matrix"; \
+		rm -rf "$$run_dir"; mkdir -p "$$run_dir"; \
+		passed=0; \
+		for frontier in w0 w1 wcap cap-plus-one after-fence \
+			fence-before-append fence-after-append fence-before-sync \
+			fence-after-sync fence-after-publish seal-after-prepare \
+			seal-after-new-mutable seal-after-manifest seal-after-publish \
+			seal-after-retire; do \
+			./$(COMMITTER_CRASH_TEST) --db "$$run_dir/$$frontier.db" \
+				--ledger "$$run_dir/$$frontier.ledger" --frontier "$$frontier" \
+				--verifier ./$(VERIFY_COMMITTER_IMAGE); \
+			passed=$$((passed + 1)); \
+		done; \
+		echo "PASS: recall-committer process crash matrix $$passed/$$passed"
+
+committer-test: committer-unit-test committer-crash-test
+
+COMMITTER_CUT_TEST = $(BUILD_DIR)/committer_cut_test
+committer-cut-test: $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -pthread test/committer_cut_test.cpp \
+		$(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(COMMITTER_CUT_TEST)
+	@./$(COMMITTER_CUT_TEST)
+
+# Always run the portable exhaustive WAL byte-cut sweep. On a provisioned Linux
+# host, the same target additionally runs the destructive dm-log-writes sweep;
+# exit 77 records an unavailable host capability without hiding test failures.
+powerloss-committer: committer-cut-test committer-crash-test
+	@status=0; ./scripts/powerloss_committer.sh || status=$$?; \
+		if [ "$$status" -eq 77 ]; then \
+			echo "physical dm-log-writes sweep unavailable on this host (portable cuts passed)"; \
+		elif [ "$$status" -ne 0 ]; then \
+			exit "$$status"; \
+		fi
 
 # End-to-end tests
 E2E_TEST = $(BUILD_DIR)/e2e_tests
@@ -228,17 +281,19 @@ bench-recall-staleness: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/v
 	@echo "recall-staleness benchmark built: $(RECALL_STALENESS_BENCH)"
 	@./$(RECALL_STALENESS_BENCH) $(ANN_ARGS)
 
-# Recall-aware committer prototype + crash validation (recall-bounded durability).
+# Production recall-committer benchmark. The canonical target first reruns the
+# real process-crash matrix, then measures the public API and writes raw CSVs.
 RECALL_COMMIT_BENCH = $(BUILD_DIR)/bench_recall_commit
-bench-recall-commit: $(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
-           $(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o
-	$(CXX) $(CXXFLAGS) -c test/bench_recall_commit.cpp -o $(BUILD_DIR)/bench_recall_commit.o
-	$(CXX) $(CXXFLAGS) $(BUILD_DIR)/bench_recall_commit.o \
-		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/core/vector.o \
-		$(BUILD_DIR)/utils/distance_metrics.o $(BUILD_DIR)/optimizations/simd_operations.o \
-		-o $(RECALL_COMMIT_BENCH)
-	@echo "recall-commit benchmark built: $(RECALL_COMMIT_BENCH)"
-	@./$(RECALL_COMMIT_BENCH) $(ANN_ARGS)
+RECALL_COMMIT_ARGS ?=
+$(RECALL_COMMIT_BENCH): test/bench_recall_commit.cpp $(LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -pthread test/bench_recall_commit.cpp \
+		$(LIB_OBJS) $(METAL_FRAMEWORKS) -o $(RECALL_COMMIT_BENCH)
+
+bench-recall-committer: committer-crash-test $(RECALL_COMMIT_BENCH)
+	@./$(RECALL_COMMIT_BENCH) $(RECALL_COMMIT_ARGS)
+
+# Compatibility alias for the old target name.
+bench-recall-commit: bench-recall-committer
 
 # Crash-consistency verifier (used by the Linux dm-log-writes power-loss harness).
 VERIFY_OPEN = $(BUILD_DIR)/verify_open
@@ -423,7 +478,8 @@ FUZZ_DBOPS = $(BUILD_DIR)/fuzz_db_ops
 fuzz-db-ops: $(FUZZ_MAIN_OBJ)
 	@mkdir -p $(BUILD_DIR)/core $(BUILD_DIR)/features $(BUILD_DIR)/algorithms $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations $(BUILD_DIR)/storage
 	@for f in core/vector_database core/vector features/query_cache features/atomic_batch_insert \
-	          features/atomic_persistence features/commit_log algorithms/hnsw_index \
+	          features/atomic_persistence features/commit_log features/recall_commit_policy \
+	          algorithms/hnsw_index \
 	          utils/distance_metrics utils/random_generator optimizations/simd_operations \
 	          optimizations/parallel_processing storage/mmap_storage storage/segment \
 	          storage/segmented_vector_store; do \
@@ -435,6 +491,7 @@ fuzz-db-ops: $(FUZZ_MAIN_OBJ)
 		$(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
 		$(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
 		$(BUILD_DIR)/features/atomic_persistence.o $(BUILD_DIR)/features/commit_log.o \
+		$(BUILD_DIR)/features/recall_commit_policy.o \
 		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/utils/distance_metrics.o \
 		$(BUILD_DIR)/utils/random_generator.o $(BUILD_DIR)/optimizations/simd_operations.o \
 		$(BUILD_DIR)/optimizations/parallel_processing.o $(FUZZ_GPU_OBJ) \
@@ -450,7 +507,8 @@ FUZZ_DBOPS_MMAP = $(BUILD_DIR)/fuzz_db_ops_mmap
 fuzz-db-ops-mmap: $(FUZZ_MAIN_OBJ)
 	@mkdir -p $(BUILD_DIR)/core $(BUILD_DIR)/features $(BUILD_DIR)/algorithms $(BUILD_DIR)/utils $(BUILD_DIR)/optimizations $(BUILD_DIR)/storage
 	@for f in core/vector_database core/vector features/query_cache features/atomic_batch_insert \
-	          features/atomic_persistence features/commit_log algorithms/hnsw_index \
+	          features/atomic_persistence features/commit_log features/recall_commit_policy \
+	          algorithms/hnsw_index \
 	          utils/distance_metrics utils/random_generator optimizations/simd_operations \
 	          optimizations/parallel_processing storage/mmap_storage storage/segment \
 	          storage/segmented_vector_store; do \
@@ -462,6 +520,7 @@ fuzz-db-ops-mmap: $(FUZZ_MAIN_OBJ)
 		$(BUILD_DIR)/core/vector_database.o $(BUILD_DIR)/core/vector.o \
 		$(BUILD_DIR)/features/query_cache.o $(BUILD_DIR)/features/atomic_batch_insert.o \
 		$(BUILD_DIR)/features/atomic_persistence.o $(BUILD_DIR)/features/commit_log.o \
+		$(BUILD_DIR)/features/recall_commit_policy.o \
 		$(BUILD_DIR)/algorithms/hnsw_index.o $(BUILD_DIR)/utils/distance_metrics.o \
 		$(BUILD_DIR)/utils/random_generator.o $(BUILD_DIR)/optimizations/simd_operations.o \
 		$(BUILD_DIR)/optimizations/parallel_processing.o $(FUZZ_GPU_OBJ) \
@@ -477,4 +536,4 @@ fuzz: fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sea
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-recall-commit bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops
+.PHONY: all clean run-server metal benchmark-gpu simd-tail-test unit-test committer-unit-test committer-crash-test verify-committer-image committer-test committer-cut-test powerloss-committer e2e-test perf-test test tcp-server tcp-test bench-tcp bench-hnsw-allocator bench-segmented-persistence bench-ann bench-recall-staleness bench-recall-commit bench-recall-committer bench-durability bench-hnswlib fuzz fuzz-protocol fuzz-wal fuzz-logentry fuzz-mmap-file fuzz-distance fuzz-sealed-segment fuzz-db-ops
