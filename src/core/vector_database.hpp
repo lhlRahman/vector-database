@@ -62,6 +62,10 @@ public:
 
     struct SearchResponse {
         std::vector<SearchResult> results;
+        // Latest requests below the configured k_min are served from the stable
+        // snapshot so the weak-tail recall bound is not applied outside its
+        // configured domain. This field reports the visibility actually used.
+        vdb::ReadVisibility effective_visibility{vdb::ReadVisibility::Latest};
         uint64_t snapshot_lsn{0};
         uint64_t durable_lsn{0};
         uint64_t manifest_generation{0};
@@ -191,6 +195,8 @@ private:
     void requestAsyncFence();
     void syncRecallFrontierFromStore();
     void requireWritable() const;
+    SearchResponse segmentedSimilaritySearchLocked(
+        const Vector& query, size_t k, vdb::ReadVisibility visibility);
 
 public:
     VectorDatabase(size_t dimensions,
@@ -269,6 +275,10 @@ public:
                                                const std::vector<std::string>& metadata = {});
     AtomicBatchInsert::BatchResult batchDelete(const std::vector<std::string>& keys);
 
+    // When recall commit is enabled, every segmented Latest-search entry point
+    // below uses Stable visibility for k < k_min. The weak-tail bound is only
+    // defined for protected result sizes; callers that need to observe this
+    // fallback can use the SearchResponse overload's effective_visibility.
     std::vector<std::pair<std::string, float>> similaritySearch(const Vector& query, size_t k);
     SearchResponse similaritySearch(
         const Vector& query, size_t k, vdb::ReadVisibility visibility);

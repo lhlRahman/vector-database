@@ -88,20 +88,14 @@ std::string fmt(const Stat& s, int prec = 0) {
 }
 
 // Tight write()+fsync loop: how many durable syncs/sec the device sustains.
-double fsync_floor(const std::filesystem::path& dir, int n, bool full) {
+double fsync_floor(const std::filesystem::path& dir, int n) {
     auto f = dir / "fsync_floor.bin";
     int fd = ::open(f.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return 0.0;
     auto t0 = Clock::now();
     for (int i = 0; i < n; ++i) {
         (void)!::write(fd, &i, sizeof(i));
-#if defined(__APPLE__)
-        if (full) { if (::fcntl(fd, F_FULLFSYNC) != 0) ::fsync(fd); }
-        else ::fsync(fd);
-#else
-        ::fsync(fd);
-        (void)full;
-#endif
+        vdb::io::sync_file_descriptor(fd, f);
     }
     double sec = std::chrono::duration<double>(Clock::now() - t0).count();
     ::close(fd);
@@ -195,7 +189,7 @@ int main(int argc, char** argv) {
     for (size_t t = 0; t < TRIALS; ++t) {
         std::cout << "  trial " << (t + 1) << "/" << TRIALS << " ..." << std::flush;
 
-        floor_s.push_back(fsync_floor(root, static_cast<int>(std::min<size_t>(N, 500)), full));
+        floor_s.push_back(fsync_floor(root, static_cast<int>(std::min<size_t>(N, 500))));
 
         // 1) Per-write fsync: N single inserts, each fsync'd before returning.
         {

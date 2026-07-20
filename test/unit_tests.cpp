@@ -1664,6 +1664,7 @@ void test_atomic_write_creates_file_and_content() {
                 ("atomicw_" + std::to_string(::getpid()) + ".bin");
     std::filesystem::remove(path);
 
+    const auto sync_before = vdb::io::file_sync_statistics();
     const std::string payload = "the quick brown fox";
     vdb::io::atomic_write(path, [&](std::ostream& os) {
         os.write(payload.data(), static_cast<std::streamsize>(payload.size()));
@@ -1673,6 +1674,10 @@ void test_atomic_write_creates_file_and_content() {
     std::ifstream is(path, std::ios::binary);
     std::string read_back((std::istreambuf_iterator<char>(is)), {});
     ASSERT_EQ(read_back, payload);
+
+    const auto sync_after = vdb::io::file_sync_statistics();
+    ASSERT_EQ(sync_after.fsync_successes + sync_after.full_fsync_successes,
+              sync_before.fsync_successes + sync_before.full_fsync_successes + 1);
 
     // No leftover .tmp file.
     auto tmp = path; tmp += ".tmp";
@@ -1694,6 +1699,116 @@ void test_atomic_write_overwrites_existing() {
     ASSERT_EQ(content, std::string{"second"});
 
     std::filesystem::remove(path);
+}
+
+void test_full_fsync_failure_never_falls_back() {
+    size_t plain_calls = 0;
+    size_t full_calls = 0;
+    bool threw = false;
+    try {
+        (void)vdb::io::detail::sync_descriptor_with_calls(
+            -1,
+            std::filesystem::path("synthetic-full-sync"),
+            true,
+            [&](int) {
+                ++plain_calls;
+                return 0;
+            },
+            [&](int) {
+                ++full_calls;
+                errno = EIO;
+                return -1;
+            });
+    } catch (const std::runtime_error& error) {
+        threw = true;
+        ASSERT_TRUE(std::string(error.what()).find("F_FULLFSYNC") != std::string::npos);
+    }
+
+    ASSERT_TRUE(threw);
+    ASSERT_EQ(full_calls, size_t{1});
+    ASSERT_EQ(plain_calls, size_t{0});
+}
+
+void test_full_fsync_retries_eintr_and_reports_mode() {
+    size_t plain_calls = 0;
+    size_t full_calls = 0;
+    const auto mode = vdb::io::detail::sync_descriptor_with_calls(
+        -1,
+        std::filesystem::path("synthetic-full-sync"),
+        true,
+        [&](int) {
+            ++plain_calls;
+            return 0;
+        },
+        [&](int) {
+            ++full_calls;
+            if (full_calls == 1) {
+                errno = EINTR;
+                return -1;
+            }
+            return 0;
+        });
+
+    ASSERT_TRUE(mode == vdb::io::FileSyncMode::FullFsync);
+    ASSERT_EQ(full_calls, size_t{2});
+    ASSERT_EQ(plain_calls, size_t{0});
+}
+
+int fail_file_sync_for_test(int, vdb::io::FileSyncMode) {
+    errno = EIO;
+    return -1;
+}
+
+class FileSyncOverrideGuard {
+public:
+    explicit FileSyncOverrideGuard(vdb::io::detail::FileSyncCallOverride override_call) {
+        vdb::io::testing::set_file_sync_call_override(override_call);
+    }
+
+    ~FileSyncOverrideGuard() {
+        vdb::io::testing::set_file_sync_call_override(nullptr);
+    }
+};
+
+void test_sync_failure_cannot_report_stable_ack() {
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("vdb_sync_failure_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(path);
+
+    VectorDatabase database(2, VectorDatabase::SearchMode::HNSW, false, false, {},
+                            false, 0, path.string());
+    vdb::RecallCommitConfig config;
+    config.enabled = true;
+    config.policy = vdb::RecallPolicy::Strict;
+    config.epsilon = 0.2;
+    config.k_min = 10;
+    database.configureRecallCommit(config);
+    database.initialize();
+
+    const auto sync_before = vdb::io::file_sync_statistics();
+    {
+        FileSyncOverrideGuard fail_sync(fail_file_sync_for_test);
+        ASSERT_THROWS(
+            (void)database.insertWithAck(
+                Vector(std::vector<float>{1.0f, 2.0f}),
+                "must-not-be-stable",
+                vdb::AckMode::Stable),
+            std::runtime_error);
+
+        const auto committer = database.recallCommitterStatistics();
+        ASSERT_EQ(committer.sync_attempts, uint64_t{1});
+        ASSERT_EQ(committer.sync_failures, uint64_t{1});
+        ASSERT_EQ(committer.sync_successes, uint64_t{0});
+        ASSERT_EQ(committer.stable_acks, uint64_t{0});
+        ASSERT_TRUE(database.durabilityStatus().health == vdb::CommitterHealth::SyncFailed);
+
+        const auto sync_after = vdb::io::file_sync_statistics();
+        ASSERT_EQ(sync_after.failures, sync_before.failures + 1);
+        ASSERT_EQ(sync_after.full_fsync_successes, sync_before.full_fsync_successes);
+    }
+
+    database.shutdown();
+    std::filesystem::remove_all(path);
 }
 
 // =====================================================================
@@ -1802,6 +1917,9 @@ int main() {
     std::cout << "\n[Atomic Write]\n";
     run_test("creates file with content", test_atomic_write_creates_file_and_content);
     run_test("overwrites existing",       test_atomic_write_overwrites_existing);
+    run_test("full sync failure does not fall back", test_full_fsync_failure_never_falls_back);
+    run_test("full sync retries EINTR", test_full_fsync_retries_eintr_and_reports_mode);
+    run_test("sync failure cannot report stable ACK", test_sync_failure_cannot_report_stable_ack);
 
     std::cout << "\n========================================\n";
     std::cout << " Results: " << tests_passed << "/" << tests_run << " passed";

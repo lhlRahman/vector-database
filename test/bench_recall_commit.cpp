@@ -43,7 +43,7 @@ struct Options {
     size_t dimensions{12};
     size_t k{10};
     size_t writers{4};
-    size_t repetitions{2};
+    size_t repetitions{30};
     size_t ef{32};
     double strict_epsilon{0.20};
     double exchange_epsilon{0.05};
@@ -105,7 +105,8 @@ struct TrialResult {
     std::string case_name;
     std::string workload;
     size_t repetition{0};
-    uint32_t seed{0};
+    uint32_t hnsw_seed{0};
+    uint32_t tail_seed{0};
     size_t writer_count{0};
     double write_seconds{0.0};
     double throughput{0.0};
@@ -121,6 +122,7 @@ struct TrialResult {
     size_t max_cap{0};
     double max_risk{0.0};
     VectorDatabase::RecallCommitterStatistics committer;
+    VectorDatabase::RecallCommitterStatistics timed_committer;
     vdb::RecallCommitPolicyCounters policy;
     std::vector<CrashObservation> crash;
     size_t stable_losses{0};
@@ -193,21 +195,6 @@ double percentile(std::vector<double> values, double p) {
     const size_t high = std::min(low + 1, values.size() - 1);
     const double fraction = location - static_cast<double>(low);
     return values[low] + fraction * (values[high] - values[low]);
-}
-
-std::pair<double, double> bootstrapMeanCI(const std::vector<double>& samples,
-                                          uint32_t seed) {
-    if (samples.empty()) return {0.0, 0.0};
-    std::mt19937 generator(seed);
-    std::uniform_int_distribution<size_t> pick(0, samples.size() - 1);
-    std::vector<double> means;
-    means.reserve(1000);
-    for (size_t replicate = 0; replicate < 1000; ++replicate) {
-        double sum = 0.0;
-        for (size_t i = 0; i < samples.size(); ++i) sum += samples[pick(generator)];
-        means.push_back(sum / static_cast<double>(samples.size()));
-    }
-    return {percentile(means, 0.025), percentile(means, 0.975)};
 }
 
 void copyTree(const std::filesystem::path& source,
@@ -470,7 +457,9 @@ TrialResult runTrial(const DataSet& data,
     trial.case_name = spec.name;
     trial.workload = workloadName(spec.workload);
     trial.repetition = repetition;
-    trial.seed = options.seed;
+    trial.hnsw_seed = options.seed;
+    trial.tail_seed = static_cast<uint32_t>(
+        (spec.workload == Workload::Hot ? 45001 : 9001) + repetition);
     trial.writer_count = options.writers;
     const auto database_path = root / (spec.name + "-" + std::to_string(repetition));
     const auto crash_path = root / (spec.name + "-" + std::to_string(repetition) + "-crash");
@@ -548,6 +537,7 @@ TrialResult runTrial(const DataSet& data,
     go.store(true, std::memory_order_release);
     for (auto& writer : writers) writer.join();
     const auto writers_end = Clock::now();
+    trial.timed_committer = database.recallCommitterStatistics();
     query_thread.join();
     if (error) std::rethrow_exception(error);
     trial.write_seconds = std::chrono::duration<double>(writers_end - workload_start).count();
@@ -686,14 +676,15 @@ TrialResult runTrial(const DataSet& data,
 void writeRawCsv(const std::filesystem::path& path,
                  const std::vector<TrialResult>& trials) {
     std::ofstream output(path);
-    output << "case,workload,repetition,seed,operation,index,ack,latency_us,lsn,"
+    output << "case,workload,repetition,hnsw_seed,tail_seed,operation,index,ack,latency_us,lsn,"
               "visible_lsn,durable_lsn,durable_records,weak_records,cap,risk,"
               "snapshot_lsn,exact_recall,tail_evaluations\n";
     for (const auto& trial : trials) {
         for (const auto& operation : trial.writes) {
             const auto& receipt = operation.receipt;
             output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-                   << ',' << trial.seed << ",write," << operation.index << ','
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",write," << operation.index << ','
                    << ackName(receipt.actual_ack) << ',' << operation.latency_us << ','
                    << receipt.lsn << ',' << receipt.visible_lsn << ','
                    << receipt.durable_lsn << ',' << receipt.durable_count << ','
@@ -703,7 +694,8 @@ void writeRawCsv(const std::filesystem::path& path,
         for (size_t i = 0; i < trial.queries.size(); ++i) {
             const auto& query = trial.queries[i];
             output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-                   << ',' << trial.seed << ",query," << i << ",," << query.latency_us
+                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                   << ",query," << i << ",," << query.latency_us
                    << ",," << query.response.snapshot_lsn << ','
                    << query.response.durable_lsn << ',' << query.status.durable_records
                    << ',' << query.status.weak_records << ',' << query.status.policy_record_cap
@@ -712,7 +704,8 @@ void writeRawCsv(const std::filesystem::path& path,
                    << query.response.exact_tail_distance_evaluations << '\n';
         }
         output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-               << ',' << trial.seed << ",fence,0,stable," << trial.fence_latency_us
+               << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+               << ",fence,0,stable," << trial.fence_latency_us
                << ",,,,,,,,,,\n";
     }
 }
@@ -723,7 +716,8 @@ void writeAggregateCsv(const std::filesystem::path& path,
     output << "case,workload,repetition,writers,writes_per_s,weak_p50_us,weak_p95_us,"
               "weak_p99_us,stable_p50_us,stable_p95_us,stable_p99_us,fence_us,"
               "query_p50_us,query_p95_us,query_p99_us,mean_D,mean_W,max_W,max_cap,"
-              "max_risk,sync_attempts,sync_successes,sync_failures,syncs_per_s,records_per_sync,"
+              "max_risk,timed_sync_successes,total_sync_attempts,total_sync_successes,"
+              "total_sync_failures,timed_syncs_per_s,total_records_per_sync,"
               "policy_fences,age_fences,overshoots,enrichment,alarm,alarm_latency_ms,"
               "M_max,L_max,delta_max,amplification_max,stable_losses,weak_survivors,"
               "frontier_ok,recovery_ok,strict_ok\n";
@@ -751,9 +745,10 @@ void writeAggregateCsv(const std::filesystem::path& path,
                << ',' << percentile(trial.query_latencies, .95) << ','
                << percentile(trial.query_latencies, .99) << ',' << trial.mean_durable
                << ',' << trial.mean_weak << ',' << trial.max_weak << ',' << trial.max_cap
-               << ',' << trial.max_risk << ',' << trial.committer.sync_attempts << ','
+               << ',' << trial.max_risk << ',' << trial.timed_committer.sync_successes
+               << ',' << trial.committer.sync_attempts << ','
                << trial.committer.sync_successes << ',' << trial.committer.sync_failures
-               << ',' << trial.committer.sync_successes / trial.write_seconds
+               << ',' << trial.timed_committer.sync_successes / trial.write_seconds
                << ',' << records_per_sync << ',' << trial.committer.policy_fences << ','
                << trial.committer.age_fences << ',' << trial.policy.cap_overshoots << ','
                << trial.policy.correlation.enrichment << ',' << (trial.alarmed ? 1 : 0)
@@ -802,7 +797,7 @@ Options parseOptions(int argc, char** argv) {
         else if (argument == "--dim") options.dimensions = std::stoul(next());
         else if (argument == "--k") options.k = std::stoul(next());
         else if (argument == "--writers") options.writers = std::stoul(next());
-        else if (argument == "--repetitions" || argument == "--seeds") options.repetitions = std::stoul(next());
+        else if (argument == "--repetitions") options.repetitions = std::stoul(next());
         else if (argument == "--ef") options.ef = std::stoul(next());
         else if (argument == "--epsilon") options.strict_epsilon = std::stod(next());
         else if (argument == "--exchange-epsilon") options.exchange_epsilon = std::stod(next());
@@ -864,8 +859,14 @@ int main(int argc, char** argv) {
         };
 
         std::vector<TrialResult> trials;
-        for (const auto& spec : cases) {
-            for (size_t repetition = 0; repetition < options.repetitions; ++repetition) {
+        for (size_t repetition = 0; repetition < options.repetitions; ++repetition) {
+            std::vector<size_t> case_order(cases.size());
+            std::iota(case_order.begin(), case_order.end(), 0);
+            std::mt19937 case_order_rng(
+                options.seed + static_cast<uint32_t>(repetition));
+            std::shuffle(case_order.begin(), case_order.end(), case_order_rng);
+            for (const size_t case_index : case_order) {
+                const auto& spec = cases[case_index];
                 auto trial = runTrial(data, options, spec, repetition, base, root);
                 double max_m = 0.0, max_l = 0.0, max_delta = 0.0, max_amp = 0.0;
                 for (const auto& observation : trial.crash) {
@@ -881,7 +882,8 @@ int main(int argc, char** argv) {
                           << " query_p95_us=" << percentile(trial.query_latencies, .95)
                           << " maxW=" << trial.max_weak << " M=" << max_m
                           << " L=" << max_l << " Delta+=" << max_delta
-                          << " amp=" << max_amp << " syncs="
+                          << " amp=" << max_amp << " timed_syncs="
+                          << trial.timed_committer.sync_successes << " total_syncs="
                           << trial.committer.sync_successes << " alarm="
                           << (trial.alarmed ? 1 : 0) << " strict_ok="
                           << (trial.strict_ok ? 1 : 0) << " recovery_ok="
@@ -890,36 +892,41 @@ int main(int argc, char** argv) {
             }
         }
 
-        const auto raw_path = options.output_dir / "recall_commit_operations.csv";
-        const auto crash_path = options.output_dir / "recall_commit_crash.csv";
-        const auto aggregate_path = options.output_dir / "recall_commit.csv";
+        const auto raw_path = options.output_dir / "recall_committer_operations.csv";
+        const auto crash_path = options.output_dir / "recall_committer_crash.csv";
+        const auto aggregate_path = options.output_dir / "recall_committer.csv";
         writeRawCsv(raw_path, trials);
         writeCrashCsv(crash_path, trials);
         writeAggregateCsv(aggregate_path, trials);
 
         bool all_ok = negative_control_tripped;
-        std::cout << "\nbootstrap 95% confidence intervals (1000 deterministic resamples)\n";
+        std::cout << "\nindependent-image min/median/max (no query-row bootstrap)\n";
         for (const auto& spec : cases) {
             std::vector<double> throughputs;
             std::vector<double> deltas;
             for (const auto& trial : trials) {
                 if (trial.case_name != spec.name) continue;
                 throughputs.push_back(trial.throughput);
+                double image_delta = 0.0;
                 for (const auto& observation : trial.crash) {
-                    deltas.push_back(observation.positive_delta);
+                    image_delta += observation.positive_delta;
                 }
+                deltas.push_back(image_delta /
+                                 static_cast<double>(std::max<size_t>(1, trial.crash.size())));
                 all_ok = all_ok && trial.frontier_ok && trial.recovery_ok &&
                          trial.policy.cap_overshoots == 0;
                 if (spec.policy == vdb::RecallPolicy::Strict) {
                     all_ok = all_ok && trial.strict_ok;
                 }
             }
-            const auto throughput_ci = bootstrapMeanCI(throughputs, 10 + options.seed);
-            const auto delta_ci = bootstrapMeanCI(deltas, 20 + options.seed);
             std::cout << std::left << std::setw(20) << spec.name
-                      << " writes/s_ci=[" << throughput_ci.first << ','
-                      << throughput_ci.second << "] Delta+_ci=[" << delta_ci.first
-                      << ',' << delta_ci.second << "]\n";
+                      << " writes/s=[" << *std::min_element(throughputs.begin(), throughputs.end())
+                      << ',' << percentile(throughputs, .50) << ','
+                      << *std::max_element(throughputs.begin(), throughputs.end())
+                      << "] image_mean_Delta+=["
+                      << *std::min_element(deltas.begin(), deltas.end()) << ','
+                      << percentile(deltas, .50) << ','
+                      << *std::max_element(deltas.begin(), deltas.end()) << "]\n";
         }
         std::cout << "raw_csv=" << raw_path << " crash_csv=" << crash_path
                   << " aggregate_csv=" << aggregate_path

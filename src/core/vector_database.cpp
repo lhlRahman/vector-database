@@ -357,9 +357,23 @@ void VectorDatabase::recallCommitterLoop() {
             if (!age_fence && !committer.queue.empty() &&
                 committer.config.group_delay.count() > 0 &&
                 !committer.stop_requested) {
-                committer.queue_cv.wait_for(lock, committer.config.group_delay, [&] {
+                const auto now = std::chrono::steady_clock::now();
+                auto delay_deadline = now + committer.config.group_delay;
+                const bool has_age_deadline =
+                    committer.has_oldest_weak &&
+                    committer.config.max_tail_age.count() > 0;
+                std::chrono::steady_clock::time_point age_deadline{};
+                if (has_age_deadline) {
+                    age_deadline = committer.oldest_weak + committer.config.max_tail_age;
+                    delay_deadline = std::min(delay_deadline, age_deadline);
+                }
+                committer.queue_cv.wait_until(lock, delay_deadline, [&] {
                     return committer.stop_requested;
                 });
+                if (has_age_deadline &&
+                    std::chrono::steady_clock::now() >= age_deadline) {
+                    age_fence = true;
+                }
             }
             while (!committer.queue.empty()) {
                 requests.push_back(std::move(committer.queue.front()));
@@ -1178,18 +1192,18 @@ std::vector<VectorDatabase::RecordSnapshot> VectorDatabase::inspectRecords(
     return snapshots;
 }
 
-VectorDatabase::SearchResponse VectorDatabase::similaritySearch(
+VectorDatabase::SearchResponse VectorDatabase::segmentedSimilaritySearchLocked(
     const Vector& query, size_t k, vdb::ReadVisibility visibility) {
-    RWLock::ReadGuard guard(rw_lock_);
-    if (!ready.load()) throw std::runtime_error("Database not initialized");
-    if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
-    if (storage_engine != StorageEngine::Segmented) {
-        throw std::invalid_argument("visibility-aware search requires segmented storage");
-    }
+    const bool below_policy_k =
+        visibility == vdb::ReadVisibility::Latest &&
+        recall_committer_->config.enabled && k < recall_committer_->config.k_min;
+    const vdb::ReadVisibility effective_visibility =
+        below_policy_k ? vdb::ReadVisibility::Stable : visibility;
 
     SearchResponse response;
+    response.effective_visibility = effective_visibility;
     size_t volatile_hits = 0;
-    if (visibility == vdb::ReadVisibility::Stable) {
+    if (effective_visibility == vdb::ReadVisibility::Stable) {
         for (const auto& [key, distance] : segmented_store_->searchStable(query, k)) {
             response.results.push_back(SearchResult{
                 key, distance, segmented_store_->getMetadata(key)});
@@ -1205,10 +1219,14 @@ VectorDatabase::SearchResponse VectorDatabase::similaritySearch(
     }
     response.durable_lsn = segmented_store_->durableLsn();
     response.manifest_generation = segmented_store_->manifestGeneration();
-    response.exact_tail_distance_evaluations = segmented_store_->volatileCount();
+    response.exact_tail_distance_evaluations =
+        effective_visibility == vdb::ReadVisibility::Latest
+            ? segmented_store_->volatileCount()
+            : 0;
     total_searches.fetch_add(1, std::memory_order_relaxed);
 
-    if (visibility == vdb::ReadVisibility::Latest && recall_committer_->config.enabled) {
+    if (effective_visibility == vdb::ReadVisibility::Latest &&
+        recall_committer_->config.enabled) {
         const auto before = recall_committer_->policy.correlationCounters().alarmed;
         recall_committer_->policy.observeQuery(
             segmented_store_->vectorCount(),
@@ -1219,6 +1237,17 @@ VectorDatabase::SearchResponse VectorDatabase::similaritySearch(
         if (!before && after) requestAsyncFence();
     }
     return response;
+}
+
+VectorDatabase::SearchResponse VectorDatabase::similaritySearch(
+    const Vector& query, size_t k, vdb::ReadVisibility visibility) {
+    RWLock::ReadGuard guard(rw_lock_);
+    if (!ready.load()) throw std::runtime_error("Database not initialized");
+    if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
+    if (storage_engine != StorageEngine::Segmented) {
+        throw std::invalid_argument("visibility-aware search requires segmented storage");
+    }
+    return segmentedSimilaritySearchLocked(query, k, visibility);
 }
 
 std::vector<std::pair<std::string, float>> VectorDatabase::similaritySearch(const Vector& query, size_t k) {
@@ -1312,8 +1341,14 @@ VectorDatabase::batchSimilaritySearch(const std::vector<Vector>& queries, size_t
     for (const auto& query : queries) {
         if (query.size() != dimensions) throw std::invalid_argument("Query vector dimension mismatch");
         if (storage_engine == StorageEngine::Segmented) {
-            total_searches.fetch_add(1, std::memory_order_relaxed);
-            results.push_back(segmented_store_->search(query, k));
+            auto response = segmentedSimilaritySearchLocked(
+                query, k, vdb::ReadVisibility::Latest);
+            std::vector<std::pair<std::string, float>> single_result;
+            single_result.reserve(response.results.size());
+            for (const auto& result : response.results) {
+                single_result.emplace_back(result.key, result.distance);
+            }
+            results.push_back(std::move(single_result));
             continue;
         }
         if (key_to_slot_.empty()) { results.emplace_back(); continue; }

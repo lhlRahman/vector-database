@@ -1,9 +1,9 @@
 #include <atomic>
 #include <cmath>
-#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -355,8 +355,8 @@ void testRealWeakVisibilityAndFence() {
     CHECK(receipt.visible_lsn > receipt.durable_lsn);
 
     const Vector query(std::vector<float>{0.0f, 0.0f});
-    const auto latest = db.similaritySearch(query, 1, vdb::ReadVisibility::Latest);
-    const auto stable = db.similaritySearch(query, 1, vdb::ReadVisibility::Stable);
+    const auto latest = db.similaritySearch(query, 10, vdb::ReadVisibility::Latest);
+    const auto stable = db.similaritySearch(query, 10, vdb::ReadVisibility::Stable);
     CHECK(latest.results.size() == 1 && latest.results[0].key == "weak");
     CHECK(stable.results.empty());
     CHECK(db.durabilityStatus().weak_records == 1);
@@ -472,6 +472,111 @@ void testInvalidPayloadDoesNotPoisonCommitter() {
     std::filesystem::remove_all(path);
 }
 
+void testKMinFallbackAndBatchCorrelation() {
+    const auto path = tempDb("k_min_queries");
+    std::filesystem::remove_all(path);
+    VectorDatabase db(2, VectorDatabase::SearchMode::HNSW, false, false, {},
+                      false, 0, path.string());
+    db.configureRecallCommit(strictConfig());  // k_min=10
+    db.initialize();
+
+    const Vector query(std::vector<float>{0.0f, 0.0f});
+    const auto stable_insert = db.insertWithAck(
+        Vector(std::vector<float>{10.0f, 0.0f}), "stable", vdb::AckMode::Stable);
+    const auto weak_insert = db.insertWithAck(
+        Vector(std::vector<float>{0.0f, 0.0f}), "weak", vdb::AckMode::Weak);
+    CHECK(stable_insert.actual_ack == vdb::AckLevel::Stable);
+    CHECK(weak_insert.actual_ack == vdb::AckLevel::Weak);
+
+    const auto correlations_before =
+        db.recallPolicyStatistics().correlation.correlation_queries;
+    const auto explicit_latest =
+        db.similaritySearch(query, 1, vdb::ReadVisibility::Latest);
+    CHECK(explicit_latest.effective_visibility == vdb::ReadVisibility::Stable);
+    CHECK(explicit_latest.snapshot_lsn == explicit_latest.durable_lsn);
+    CHECK(explicit_latest.exact_tail_distance_evaluations == 0);
+    CHECK(explicit_latest.results.size() == 1);
+    CHECK(explicit_latest.results[0].key == "stable");
+
+    const auto scalar = db.similaritySearch(query, 1);
+    CHECK(scalar.size() == 1 && scalar[0].first == "stable");
+    const auto metadata = db.similaritySearchWithMetadata(query, 1);
+    CHECK(metadata.size() == 1 && metadata[0].key == "stable");
+    const auto small_batch = db.batchSimilaritySearch({query, query}, 1);
+    CHECK(small_batch.size() == 2);
+    for (const auto& result : small_batch) {
+        CHECK(result.size() == 1 && result[0].first == "stable");
+    }
+    CHECK(db.recallPolicyStatistics().correlation.correlation_queries ==
+          correlations_before);
+
+    const auto protected_latest =
+        db.similaritySearch(query, 10, vdb::ReadVisibility::Latest);
+    CHECK(protected_latest.effective_visibility == vdb::ReadVisibility::Latest);
+    CHECK(protected_latest.exact_tail_distance_evaluations == 1);
+    CHECK(!protected_latest.results.empty() && protected_latest.results[0].key == "weak");
+
+    const auto before_metadata =
+        db.recallPolicyStatistics().correlation.correlation_queries;
+    const auto protected_metadata = db.similaritySearchWithMetadata(query, 10);
+    CHECK(!protected_metadata.empty() && protected_metadata[0].key == "weak");
+    CHECK(db.recallPolicyStatistics().correlation.correlation_queries ==
+          before_metadata + 1);
+
+    const auto before_batch =
+        db.recallPolicyStatistics().correlation.correlation_queries;
+    const auto protected_batch = db.batchSimilaritySearch({query, query, query}, 10);
+    CHECK(protected_batch.size() == 3);
+    for (const auto& result : protected_batch) {
+        CHECK(!result.empty() && result[0].first == "weak");
+    }
+    CHECK(db.recallPolicyStatistics().correlation.correlation_queries ==
+          before_batch + 3);
+
+    db.shutdown();
+    std::filesystem::remove_all(path);
+}
+
+void testBatchOnlyHotQueriesTripCorrelationGuard() {
+    const auto path = tempDb("batch_guard");
+    std::filesystem::remove_all(path);
+    VectorDatabase db(2, VectorDatabase::SearchMode::HNSW, false, false, {},
+                      false, 0, path.string());
+    auto config = enabledConfig(vdb::RecallPolicy::ExchangeableMean, 0.2, 10);
+    config.max_tail_records = 64;
+    config.correlation_guard_enabled = true;
+    config.correlation_min_queries = 1;
+    config.correlation_min_expected_hits = 0.0;
+    config.correlation_enrichment_threshold = 1.01;
+    config.correlation_cusum_drift = 0.0;
+    config.correlation_cusum_threshold = 0.01;
+    db.configureRecallCommit(config);
+    db.initialize();
+
+    for (size_t i = 0; i < 10; ++i) {
+        const auto stable = db.insertWithAck(
+            Vector(std::vector<float>{10.0f + static_cast<float>(i), 0.0f}),
+            "stable-" + std::to_string(i), vdb::AckMode::Stable);
+        CHECK(stable.actual_ack == vdb::AckLevel::Stable);
+    }
+    const Vector hot(std::vector<float>{0.0f, 0.0f});
+    const auto weak = db.insertWithAck(hot, "weak", vdb::AckMode::Weak);
+    CHECK(weak.actual_ack == vdb::AckLevel::Weak);
+
+    const auto results = db.batchSimilaritySearch({hot}, 10);
+    CHECK(results.size() == 1);
+    CHECK(!results[0].empty() && results[0][0].first == "weak");
+    const auto correlation = db.recallPolicyStatistics().correlation;
+    CHECK(correlation.correlation_queries == 1);
+    CHECK(correlation.volatile_result_hits == 1);
+    CHECK(correlation.alarmed);
+    CHECK(correlation.alarm_count == 1);
+    CHECK(db.waitUntilDurable(weak.lsn, std::chrono::seconds(1)));
+
+    db.shutdown();
+    std::filesystem::remove_all(path);
+}
+
 void testAgeFencePreemptsGroupDelay() {
     const auto path = tempDb("age_preempts_group");
     std::filesystem::remove_all(path);
@@ -479,14 +584,22 @@ void testAgeFencePreemptsGroupDelay() {
                       false, 0, path.string());
     auto config = strictConfig();
     config.group_delay = std::chrono::milliseconds(500);
-    config.max_tail_age = std::chrono::milliseconds(20);
+    config.max_tail_age = std::chrono::milliseconds(30);
     db.configureRecallCommit(config);
     db.initialize();
 
     const auto weak = db.insertWithAck(
         Vector(std::vector<float>{3.0f, 4.0f}), "weak", vdb::AckMode::Weak);
     CHECK(weak.actual_ack == vdb::AckLevel::Weak);
+
+    // Keep the worker in its group-delay path while the existing weak record's
+    // age deadline expires. The deadline must preempt the much longer delay.
+    auto queued = std::async(std::launch::async, [&] {
+        return db.insertWithAck(
+            Vector(std::vector<float>{5.0f, 6.0f}), "queued", vdb::AckMode::Weak);
+    });
     CHECK(db.waitUntilDurable(weak.lsn, std::chrono::milliseconds(250)));
+    CHECK(queued.get().actual_ack == vdb::AckLevel::Weak);
     CHECK(db.recallCommitterStatistics().age_fences >= 1);
     db.shutdown();
     std::filesystem::remove_all(path);
@@ -629,6 +742,8 @@ int main() {
     run("fence preserves exact representation", testFenceDoesNotTriggerIndexMaintenance);
     run("read-only recovery rejects mutations", testReadOnlyRecoveryRejectsMutations);
     run("invalid payload keeps committer healthy", testInvalidPayloadDoesNotPoisonCommitter);
+    run("k_min fallback and batch correlation", testKMinFallbackAndBatchCorrelation);
+    run("batch-only hot queries trip guard", testBatchOnlyHotQueriesTripCorrelationGuard);
     run("age fence preempts group delay", testAgeFencePreemptsGroupDelay);
     run("strict zero cap auto-stable", testStrictZeroCapAutoStable);
     run("real exchangeable admission", testExchangeableAdmissionOnRealStore);
