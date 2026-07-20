@@ -8,8 +8,9 @@ scripts/make_arxiv.sh --verify
 
 The command creates `build/honest-durability-arxiv.tar.gz` with the manuscript,
 the vendored official ADMS/PVLDB `acmart.cls` and bibliography style, BibTeX and
-PDF/A metadata, and both canonical summary CSVs. Missing assets, Tectonic, or
-veraPDF are fatal in verification mode. Set `VERAPDF` and `JAVA_HOME` when the
+PDF/A metadata, both canonical summary CSVs, and the physical block-replay
+bundle with its SHA-256 manifest. Missing assets, Tectonic, veraPDF, or a digest
+mismatch are fatal in verification mode. Set `VERAPDF` and `JAVA_HOME` when the
 validator is not on `PATH`.
 
 ## Must decide before submission
@@ -21,7 +22,7 @@ validator is not on `PATH`.
 - [ ] Select the arXiv license and categories (suggested primary `cs.DB`, with
   `cs.IR` or `cs.DC` as appropriate).
 
-## Verified for round 5
+## Current verification
 
 - [x] Uses the ADMS 2026 call's linked PVLDB Volume 19 template:
   `acmart` commit `bc9fcacbdc559a577816812cb46c6d41d8bced2b`.
@@ -41,7 +42,8 @@ validator is not on `PATH`.
   15/15 process-crash frontiers, and 661/661 WAL byte prefixes.
 - [x] The exact published `.artifacts/recall-committer-evidence` recipe ran and
   the tracked canonical bundle revalidates byte-for-byte.
-- [x] The physical `dm-log-writes` experiment was not run and is not claimed.
+- [x] The physical `dm-log-writes` bundle records 102/102 passing cuts on one
+  CentOS 9/ext4 host and its external ledger validates 18/18 ACKs.
 
 ## Before posting
 
@@ -55,7 +57,7 @@ validator is not on `PATH`.
   workload with one query set and two fixed HNSW graphs.
 - The legacy tax/recovery study spans Apple and AWS Linux but lacks full modern
   provenance parity; it is labeled as pre-committer evidence.
-- Process death, logical image recovery, and byte cuts are not physical power
-  loss. The destructive Linux block-replay run remains pending.
+- Device-level evidence is limited to 102 recorded write-prefix cuts on one
+  CentOS 9/ext4 host, three loop devices, and one short synthetic workload.
 - The implementation is single-node and insert-only. The root lock assumes
   cooperating processes and local filesystem `flock` semantics.

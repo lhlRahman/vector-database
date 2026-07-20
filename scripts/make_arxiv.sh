@@ -51,6 +51,19 @@ done
 echo "Referenced data:"; echo "$data_files" | sed 's/^/  /'
 [ "$missing" -eq 0 ] || exit 1
 
+# Include the executed device-level power-loss evidence and its tracked digest.
+cp "$SRC/data/powerloss_committer_sha256.txt" "$OUT/data/"
+cp -R "$SRC/data/powerloss_committer" "$OUT/data/"
+if command -v sha256sum >/dev/null 2>&1; then
+  ( cd "$OUT/data" && sha256sum -c powerloss_committer_sha256.txt >/dev/null )
+elif command -v shasum >/dev/null 2>&1; then
+  ( cd "$OUT/data" && shasum -a 256 -c powerloss_committer_sha256.txt >/dev/null )
+else
+  echo "ERROR: sha256sum or shasum is required to verify packaged evidence" >&2
+  exit 1
+fi
+echo "Physical replay evidence: data/powerloss_committer (SHA-256 verified)"
+
 if [ "$VERIFY" -eq 1 ]; then
   [ -x "$TECTONIC" ] || {
     echo "ERROR: Tectonic not executable at $TECTONIC" >&2

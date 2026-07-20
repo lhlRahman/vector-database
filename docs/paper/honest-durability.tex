@@ -12,8 +12,8 @@
 \edef\pdfcreationdate{\detokenize{D:20260720000000-04'00'}}
 \usepackage[a-2b]{pdfx}
 \usepackage{amsmath}
-\usepackage{balance}
 \usepackage{booktabs}
+\usepackage{flushend}
 \usepackage{graphicx}
 \usepackage{pgfplots}
 \usepackage{textcomp}   % \textmu on pre-2020 TeX
@@ -67,11 +67,13 @@ when its allowed weak batch amortizes fencing.
 Across 15 process-crash frontiers, 661 WAL byte prefixes, and 2{,}880 queries
 from 240 reopened images, stable records never disappear, admission never
 overshoots, and strict observations satisfy $\Delta^+\le L\le M\le
-\varepsilon=.2$: the positive recall drop $\Delta^+$ cannot exceed the actually
-lost top-$k$ membership fraction $L$, which cannot exceed volatile-tail exposure
-$M$. A separate two-host study quantifies
-synchronization, group-commit, and recovery costs. The evaluation remains
-single-node and insert-only; physical block-replay execution is pending.
+\varepsilon=.2$, where $\Delta^+$ is positive recall drop, $L$ actual lost
+top-$k$ membership, and $M$ volatile-tail exposure. On one CentOS~9/ext4 host, a separate
+\texttt{dm-log-writes} run also passes all 102 recorded block-log cuts: every
+stable acknowledgment survives and any permitted absence is confined to the
+weak window. A separate two-host study quantifies synchronization, batching,
+and recovery costs. The evaluation remains single-node and insert-only; this
+device-level result covers one host, filesystem, and synthetic workload.
 \end{abstract}
 
 \maketitle
@@ -135,7 +137,8 @@ commit, snapshots, WAL fencing, and the exact-tail composition are not new
 algorithms. Our contribution is an auditable post-recovery loss-cap contract and
 an evidence methodology that checks it across every latest-query path, with
 stable-only fallback where required (\S\ref{sec:recall}). Legacy measurements
-span Apple and AWS Linux; the committer experiment uses one Apple host.
+span Apple and AWS Linux; committer timings use one Apple host, while the
+device-level replay uses one AWS CentOS~9/ext4 host.
 
 \paragraph{Contributions.}
 \begin{itemize}
@@ -153,8 +156,9 @@ snapshot load with graph-rebuilding WAL replay on block storage, complementing
 P-HNSW's persistent-memory analysis~\cite{phnsw}.
 \item \textbf{C5 (\S\ref{sec:recall}).} An auditable weak-ACK contract with a
 strict distribution-free top-$k$ loss cap, enforced across all latest-query
-paths and checked after production recovery. We measure the price of that
-guarantee against stable and model-conditional alternatives.
+paths and checked after production recovery and device-level block replay. We
+measure the price of that guarantee against stable and model-conditional
+alternatives.
 \end{itemize}
 
 \section{Background and System}
@@ -284,9 +288,9 @@ reaches $128\times$ at $N{=}6$k with sealing cost ($29$--$47$\,ms) again far bel
 the WAL replay it saves ($385$--$4843$\,ms). So the durability tax, the group-commit
 curve, and the snapshot-vs-replay recovery result all hold on the platform vector
 databases actually run on---the macOS numbers are illustrative, but these legacy
-tax and recovery trends are not confined to it. The new committer measurements
-and process-crash matrix, however, were run only on the Apple host; its physical
-block-replay experiment remains pending (\S\ref{sec:threats}).
+tax and recovery trends are not confined to it. The new committer timing and
+process-crash measurements were run on the Apple host; a separate CentOS~9/ext4
+block-replay experiment tests its durability contract below.
 
 \section{Pre-Committer Durability Tax}
 \label{sec:tax}
@@ -378,11 +382,16 @@ the signal. Acknowledgments remain stable and follow the shared synchronization.
 \paragraph{Crash scope.} The stable path is exercised inside the committer's
 15-frontier \texttt{\_exit} matrix (\S\ref{sec:recall}); the child exits while its
 database object is live, and the parent reopens that database through production
-recovery. This tests process death and the OS-visible disk image, not loss of
-device caches. We implemented a separate Linux \texttt{dm-log-writes} harness that
-records an external acknowledgment ledger and replays each block-log entry before
-read-only verification. That physical committer-path run has \emph{not} yet been
-executed on disposable hardware, so it contributes no result here.
+recovery. This tests process death and the OS-visible disk image. Separately, on
+AWS CentOS~9 (kernel 5.14) and ext4, \texttt{dm-log-writes} logged the committer's
+device-level writes on three 1-GiB, 512-byte-sector loop devices. Xfstests
+\texttt{replay-log} replayed every block-log entry 268--369, from
+\texttt{DB\_READY} through the crash mark; each prefix underwent normal journal
+recovery and read-only verification against an external ledger with 18 intents,
+18 acknowledgments, and 20 named frontiers. All 102 cuts pass: every stable
+acknowledgment survives, and only records in the weak window may be absent. This
+exercises recorded device-write prefixes beyond the OS-visible images, but on
+one host, filesystem, and workload rather than across storage stacks.
 
 \section{Recall-Bounded Durability}
 \label{sec:recall}
@@ -760,8 +769,9 @@ logging primitive.
 \section{Threats to Validity and Remaining Work}
 \label{sec:threats}
 The legacy tax/recovery study uses seven trials on Apple and a separate AWS Linux
-cross-check; the real committer study uses one Apple M4 Pro and a small clustered
-synthetic workload. Thirty tail/write image executions per case expose substantial
+cross-check; committer timings use one Apple M4 Pro and a small clustered
+synthetic workload. The physical replay uses one AWS CentOS~9/ext4 host and the
+same small committer path. Thirty tail/write image executions per case expose substantial
 timing variance, but they share one query set and only two fixed base graphs. The
 terminal frontier is repeated for six cases; the cap-before-fence frontier is
 repeated for strict-random, and the post-sync/pre-publish frontier for strict-hot.
@@ -805,12 +815,13 @@ single-node, and unfiltered; updates/deletes retain stable semantics, and tenant
 filters, sharding, and replication remain open.
 
 Finally, 15 \texttt{\_exit} points test process death, 661 byte prefixes test the
-WAL parser, and cloned images test production reopen. None removes a device cache
-or reproduces arbitrary block persistence. The Linux \texttt{dm-log-writes}
-committer harness is implemented with an external ACK ledger, per-entry replay,
-normal journal recovery, and read-only verification, but its destructive physical
-run is pending suitable hardware. The older graph-rebuild recovery table is a
-pre-committer baseline, not a measurement of current raw-delta recovery.
+WAL parser, and cloned images test production reopen. The executed Linux
+\texttt{dm-log-writes} run adds 102/102 passing device-level write-prefix cuts
+with normal journal recovery and an external ACK oracle. Its scope is still one
+CentOS~9 host, ext4, loop-backed devices, and one short workload; it does not
+establish behavior across filesystems, controllers, or literal power removal.
+The older graph-rebuild recovery table is a pre-committer baseline, not a
+measurement of current raw-delta recovery.
 
 \section{Conclusion}
 ANN durability should be reported as a contract, not inferred from an API name.
@@ -838,8 +849,9 @@ finds a positive but conditional systems regime: at $k=100,\varepsilon=.2$, the
 repetitions for both workloads. Exchangeable-mean mode is higher in the default
 run, but it fails as a per-query guarantee on hot data.
 The guard responds by fencing and falling back to stable ACKs at substantial cost.
-The shipped default remains stable. General claims await larger workloads and an
-executed physical block-replay experiment.
+The shipped default remains stable. On the separate CentOS~9/ext4 host, all 102
+\texttt{dm-log-writes} cuts also preserve the ledger contract. Generalization
+awaits larger workloads and additional hosts, filesystems, and storage devices.
 
 \section*{Reproducibility}
 Run the committer artifact from the repository root:
@@ -856,35 +868,48 @@ cd docs/paper
 ~/.local/bin/tectonic -X compile \
   honest-durability.tex
 \end{verbatim}
-The first command runs 77 general tests. The staging script then clean-builds and
-runs 24 policy/API tests, the 15/15 process-crash matrix, the 661/661 byte-prefix
-sweep, the main benchmark, and the paired throughput sweep into an untracked
-output tree. It snapshots and rechecks
-the source commit and file hashes, validates
-schemas, counts, pairs, seeds, and invariants, regenerates both summaries and the digest, then
-fsyncs and atomically publishes one versioned bundle. The second script invocation
-audits the tracked canonical bundle without installing it, so the compiled figure
-cannot silently mix a fresh timing run with the archived table and prose. Neither
-invocation runs the
-physical \texttt{dm-log-writes} harness. That pending branch requires Linux,
-root, explicit destructive opt-in, and three distinct unmounted disposable
-devices as documented in \path{scripts/powerloss_committer.sh}.
+The first command runs 77 general tests. The staging script clean-builds 24
+policy/API tests, the 15/15 process-crash and 661/661 byte-prefix sweeps, and both
+benchmarks. It validates hashes, schemas, counts, pairs, seeds, and invariants
+before atomic publication; the second invocation audits the tracked bundle.
+Neither invokes the destructive physical harness.
 
-The committer run used an Apple M4 Pro, Darwin 25.5.0, APFS on
-internal Apple NVMe, Apple clang 21.0.0, C++20 \texttt{-O2 -mcpu=native}, and
-\fullfsync{}. Benchmark defaults are 160 clustered base records, 25 writes, 32
-concurrent queries, $d=12$, $k=10$, four writers, 30 repetitions,
-$\mathrm{ef}=32$, and graph seeds 100 and 117. Aggregate, crash, raw-operation,
-stdout, environment, and SHA-256 files from code commit
+The executed device-level recipe was the following; it requires Linux, root,
+explicit opt-in, and three disposable devices (the target also builds the
+verifier):
+\begingroup\scriptsize
+\begin{verbatim}
+make committer-crash-test
+truncate -s 1G /tmp/vdb-{data,log,replay}.img
+for p in 10:data 11:log 12:replay; do
+  sudo losetup /dev/loop${p%%:*} /tmp/vdb-${p#*:}.img
+done
+RL=/home/cloud-user/xfstests-dev/src/log-writes/replay-log
+A=$PWD/docs/paper/data/powerloss_committer
+sudo env VDB_POWERLOSS_ALLOW_DESTRUCTIVE=YES \
+  DATA_DEV=/dev/loop10 LOG_DEV=/dev/loop11 \
+  REPLAY_DEV=/dev/loop12 REPLAY_LOG=$RL \
+  ARTIFACT_DIR=$A \
+  scripts/powerloss_committer.sh
+\end{verbatim}
+\endgroup
+The x86-64 CentOS~9 host ran kernel \texttt{5.14.0-710.el9.x86\_64}, ext4
+(mke2fs~1.46.5), and device-mapper library/driver 1.02.207-RHEL9/4.50.0. The
+102/102 PASS bundle (entries 268--369) is under
+\path{docs/paper/data/powerloss_committer/}; ledger SHA-256 is
+\texttt{e9ac3e910b1728b21c825273bc09e79a}\\
+\texttt{0013f430d4aa1bb5ddb247c78c56b6b3}.
+
+The timing run used an Apple M4 Pro, Darwin 25.5.0, APFS, Apple clang 21.0.0,
+C++20 \texttt{-O2 -mcpu=native}, and \fullfsync{}. Defaults are 160 base records,
+25 writes, 32 queries, $d=12$, $k=10$, four writers, 30 repetitions,
+$\mathrm{ef}=32$, and graph seeds 100/117. Evidence from code commit
 \texttt{9d93ba5fceab945985c28e9f18e337bf2c7c1555} (run
-\texttt{20260720T055159Z-9d93ba5fceab}) are tracked under
-\path{docs/paper/data/recall_committer_canonical}; no separately selected timing
-run is used. The canonical files contain 240/2{,}880/14{,}100 main aggregate,
-recovery-query, and operation rows, plus 480 paired-sweep images and 30{,}720
-sweep operation rows. The compact paired table is
+\texttt{20260720T055159Z-9d93ba5fceab}) is tracked under
+\path{docs/paper/data/recall_committer_canonical}. It contains
+240/2{,}880/14{,}100 aggregate/query/operation rows and 480/30{,}720 paired-sweep
+images/operations. The compact paired table is
 \path{data/recall_committer_canonical/recall_committer_throughput_sweep_summary.csv}.
-\newpage
-\balance
 Archived pre-committer tax/group/recovery CSVs are authenticated by their
 SHA-256 manifest. Current \texttt{make bench-durability} exercises the raw-delta
 engine and is not their exact reproducer. Their provenance record pins commit

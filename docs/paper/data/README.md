@@ -1,8 +1,9 @@
 # Raw data for "Recall-Bounded Durability for Graph-Based ANN Indexes"
 
 These tracked files are the inputs behind the paper's tables and figures. The
-legacy durability study spans Apple and AWS Linux; the committer results use one
-Apple M4 Pro. Commands below are run from the repository root unless noted.
+legacy durability study spans Apple and AWS Linux; committer timings use one
+Apple M4 Pro, and physical block replay uses one AWS CentOS 9/ext4 host. Commands
+below are run from the repository root unless noted.
 
 ## Legacy pre-committer durability study
 
@@ -144,5 +145,20 @@ The paper should be compiled only after this tracked-canonical audit; a fresh
 timing run is deliberately installed under the ignored `.artifacts/` directory
 and is not silently mixed with the archived numbers in the prose and tables.
 The runner exercises logical crash images and production read-only recovery; it
-never invokes `scripts/powerloss_committer.sh`. The Linux `dm-log-writes`
-harness has not been executed, so no physical block-replay result is present.
+never invokes `scripts/powerloss_committer.sh`.
+
+## Physical committer block replay
+
+`powerloss_committer/` is the executed AWS CentOS 9, kernel
+5.14.0-710.el9.x86_64, ext4 result. Xfstests `replay-log` replayed every recorded
+block-log entry 268 through 369 from `DB_READY` to the crash mark onto a fresh
+1 GiB loop device. All 102 cuts passed normal journal recovery and read-only
+verification against the external ACK ledger. The ledger validates 18 intents,
+18 ACKs, and 20 named frontiers; its SHA-256 is
+`e9ac3e910b1728b21c825273bc09e79a0013f430d4aa1bb5ddb247c78c56b6b3`.
+`powerloss_committer_sha256.txt` authenticates every tracked file in the bundle.
+Verify it from `docs/paper/data` with:
+
+```sh
+shasum -a 256 -c powerloss_committer_sha256.txt
+```
