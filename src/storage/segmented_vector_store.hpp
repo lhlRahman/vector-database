@@ -68,6 +68,10 @@ public:
     };
 
     SegmentedVectorStore(std::filesystem::path root, Config config);
+    ~SegmentedVectorStore() noexcept;
+
+    SegmentedVectorStore(const SegmentedVectorStore&) = delete;
+    SegmentedVectorStore& operator=(const SegmentedVectorStore&) = delete;
 
     void initialize(bool read_only_recovery = false);
     void shutdown();
@@ -120,6 +124,21 @@ public:
                                double max_tombstone_ratio);
 
 private:
+    class WriterRootLock {
+    public:
+        WriterRootLock() = default;
+        ~WriterRootLock() noexcept;
+
+        WriterRootLock(const WriterRootLock&) = delete;
+        WriterRootLock& operator=(const WriterRootLock&) = delete;
+
+        void acquire(const std::filesystem::path& root);
+        void release() noexcept;
+
+    private:
+        int fd_{-1};
+    };
+
     struct Location {
         std::shared_ptr<VectorSegment> segment;
         uint64_t sequence;
@@ -127,6 +146,7 @@ private:
 
     std::filesystem::path root_;
     Config config_;
+    WriterRootLock writer_root_lock_;
     std::shared_ptr<VectorSegment> mutable_segment_;
     std::vector<std::shared_ptr<VectorSegment>> sealed_segments_;
     std::unordered_map<std::string, Location> key_locations_;

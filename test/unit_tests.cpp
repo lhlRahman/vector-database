@@ -2,6 +2,7 @@
 // Lightweight unit test framework (no external dependencies)
 
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1529,6 +1530,136 @@ void test_sequence_highwater_skips_restart_range() {
     std::filesystem::remove_all(root);
 }
 
+bool read_pipe_byte(int fd, char& value) {
+    ssize_t result = -1;
+    do {
+        result = ::read(fd, &value, 1);
+    } while (result < 0 && errno == EINTR);
+    return result == 1;
+}
+
+bool write_pipe_byte(int fd, char value) {
+    ssize_t result = -1;
+    do {
+        result = ::write(fd, &value, 1);
+    } while (result < 0 && errno == EINTR);
+    return result == 1;
+}
+
+bool writer_open_reports_lock_conflict(
+    const std::filesystem::path& root,
+    const SegmentedVectorStore::Config& cfg) {
+    try {
+        SegmentedVectorStore contender(root, cfg);
+        contender.initialize();
+        contender.shutdown();
+        return false;
+    } catch (const std::runtime_error& error) {
+        return std::string(error.what()).find("already open for writing") !=
+               std::string::npos;
+    } catch (...) {
+        return false;
+    }
+}
+
+void test_segmented_store_exclusive_writer_lock() {
+    auto root = std::filesystem::temp_directory_path() /
+                ("segmented_writer_lock_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    SegmentedVectorStore::Config cfg;
+    cfg.dimensions = 2;
+
+    SegmentedVectorStore parent(root, cfg);
+    parent.initialize();
+
+    // Read-only recovery never takes the exclusive writer lock.
+    {
+        SegmentedVectorStore reader(root, cfg);
+        reader.initialize(true);
+        reader.shutdown();
+    }
+    ASSERT_TRUE(writer_open_reports_lock_conflict(root, cfg));
+
+    pid_t contender_pid = ::fork();
+    ASSERT_TRUE(contender_pid >= 0);
+    if (contender_pid == 0) {
+        _exit(writer_open_reports_lock_conflict(root, cfg) ? 0 : 1);
+    }
+
+    int contender_status = 0;
+    ASSERT_TRUE(::waitpid(contender_pid, &contender_status, 0) == contender_pid);
+    ASSERT_TRUE(WIFEXITED(contender_status));
+    ASSERT_EQ(WEXITSTATUS(contender_status), 0);
+
+    parent.shutdown();
+    {
+        SegmentedVectorStore after_shutdown(root, cfg);
+        after_shutdown.initialize();
+        after_shutdown.shutdown();
+    }
+
+    auto verify_forked_holder_release = [&](bool clean_shutdown) {
+        int ready_pipe[2];
+        int release_pipe[2];
+        ASSERT_EQ(::pipe(ready_pipe), 0);
+        ASSERT_EQ(::pipe(release_pipe), 0);
+
+        pid_t holder_pid = ::fork();
+        ASSERT_TRUE(holder_pid >= 0);
+        if (holder_pid == 0) {
+            ::close(ready_pipe[0]);
+            ::close(release_pipe[1]);
+            try {
+                SegmentedVectorStore holder(root, cfg);
+                holder.initialize();
+                if (!write_pipe_byte(ready_pipe[1], 'R')) _exit(2);
+
+                char release = 0;
+                if (!read_pipe_byte(release_pipe[0], release) || release != 'X') {
+                    _exit(3);
+                }
+                if (clean_shutdown) holder.shutdown();
+                _exit(0);
+            } catch (...) {
+                (void)write_pipe_byte(ready_pipe[1], 'E');
+                _exit(4);
+            }
+        }
+
+        ::close(ready_pipe[1]);
+        ::close(release_pipe[0]);
+
+        char ready = 0;
+        const bool child_ready = read_pipe_byte(ready_pipe[0], ready) && ready == 'R';
+        const bool rejected_while_child_holds =
+            child_ready && writer_open_reports_lock_conflict(root, cfg);
+        const bool child_released =
+            child_ready && write_pipe_byte(release_pipe[1], 'X');
+
+        ::close(ready_pipe[0]);
+        ::close(release_pipe[1]);
+
+        int holder_status = 0;
+        const bool child_waited =
+            ::waitpid(holder_pid, &holder_status, 0) == holder_pid;
+        ASSERT_TRUE(child_ready);
+        ASSERT_TRUE(rejected_while_child_holds);
+        ASSERT_TRUE(child_released);
+        ASSERT_TRUE(child_waited);
+        ASSERT_TRUE(WIFEXITED(holder_status));
+        ASSERT_EQ(WEXITSTATUS(holder_status), 0);
+
+        SegmentedVectorStore after_child_exit(root, cfg);
+        after_child_exit.initialize();
+        after_child_exit.shutdown();
+    };
+
+    verify_forked_holder_release(true);
+    verify_forked_holder_release(false);
+
+    std::filesystem::remove_all(root);
+}
+
 void test_hnsw_seed_persists_across_reopen() {
     auto root = std::filesystem::temp_directory_path() /
                 ("hnsw_seed_persist_" + std::to_string(::getpid()));
@@ -2043,6 +2174,7 @@ int main() {
     run_test("WAL v1 migrates and rejects bad suffix", test_wal_v1_migrates_and_rejects_bad_suffix);
     run_test("WAL recovery bounds corrupt lengths", test_wal_recovery_bounds_corrupt_lengths);
     run_test("sequence high-water skips restart range", test_sequence_highwater_skips_restart_range);
+    run_test("exclusive writer lock lifecycle", test_segmented_store_exclusive_writer_lock);
     run_test("sequence rollover barrier rejects weak write",
              test_sequence_rollover_barrier_failure_rejects_weak_write);
     run_test("HNSW seed persists across reopen", test_hnsw_seed_persists_across_reopen);

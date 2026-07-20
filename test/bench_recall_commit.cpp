@@ -60,6 +60,11 @@ struct Options {
     std::string data_dir;
     std::filesystem::path output_dir{"build/ann_results"};
     bool keep_images{false};
+    bool throughput_sweep{false};
+    std::vector<size_t> sweep_k_mins{10, 20, 40, 100};
+    std::vector<double> sweep_epsilons{0.05, 0.10, 0.20};
+    std::vector<size_t> sweep_group_delays_us{750};
+    std::vector<size_t> sweep_writers{4};
 };
 
 struct DataSet {
@@ -189,6 +194,37 @@ struct TrialResult {
     bool has_strict_loss_gap{false};
     bool alarmed{false};
     double alarm_latency_ms{-1.0};
+};
+
+struct ThroughputCaseSpec {
+    std::string name;
+    Workload workload{Workload::Random};
+    vdb::AckMode ack{vdb::AckMode::Weak};
+    size_t k_min{10};
+    double epsilon{0.0};
+    double comparison_epsilon{0.0};
+    size_t writers{4};
+    std::chrono::microseconds group_delay{750};
+};
+
+struct ThroughputTrial {
+    ThroughputCaseSpec spec;
+    size_t repetition{0};
+    uint32_t hnsw_seed{0};
+    uint32_t tail_seed{0};
+    size_t configured_cap{0};
+    double write_seconds{0.0};
+    double throughput{0.0};
+    std::vector<WriteOp> writes;
+    std::vector<double> query_latencies;
+    size_t latest_queries{0};
+    size_t stable_queries{0};
+    size_t observed_weak_acks{0};
+    size_t observed_stable_acks{0};
+    size_t max_weak{0};
+    bool all_applied{true};
+    VectorDatabase::RecallCommitterStatistics committer;
+    vdb::RecallCommitPolicyCounters policy;
 };
 
 double elapsedUs(Clock::time_point begin, Clock::time_point end) {
@@ -1242,6 +1278,314 @@ TrialResult runTrial(const DataSet& data,
     return trial;
 }
 
+ThroughputTrial runThroughputTrial(const DataSet& data,
+                                   const Options& options,
+                                   const ThroughputCaseSpec& spec,
+                                   size_t repetition,
+                                   const std::filesystem::path& base_image,
+                                   uint32_t graph_seed,
+                                   const std::filesystem::path& root) {
+    ThroughputTrial trial;
+    trial.spec = spec;
+    trial.repetition = repetition;
+    trial.hnsw_seed = graph_seed;
+    trial.tail_seed = static_cast<uint32_t>(
+        (spec.workload == Workload::Hot ? 45001 : 9001) + repetition);
+
+    const auto database_path = root / (spec.name + "-" + std::to_string(repetition));
+    copyTree(base_image, database_path);
+    CaseSpec config_spec{spec.name, spec.workload, vdb::RecallPolicy::Strict,
+                         spec.ack, spec.epsilon};
+    auto config = makeConfig(config_spec, options, graph_seed);
+    config.k_min = spec.k_min;
+    config.group_delay = spec.group_delay;
+    trial.configured_cap =
+        vdb::RecallCommitPolicyEvaluator::policyRecordCap(config, data.base.size());
+    const auto tail = makeTail(data, options, spec.workload, repetition);
+
+    VectorDatabase database(data.dimensions, VectorDatabase::SearchMode::HNSW,
+                            false, false, {}, false, 0, database_path.string());
+    database.configureHNSW(16, 100, options.ef, graph_seed);
+    database.configureSegmentedStorage(data.base.size() + options.writes + 128);
+    database.configureRecallCommit(config);
+    database.initialize();
+
+    trial.writes.resize(options.writes);
+    std::atomic<size_t> next{0};
+    std::atomic<bool> go{false};
+    std::mutex error_mutex;
+    std::exception_ptr error;
+    auto capture_error = [&] {
+        std::lock_guard lock(error_mutex);
+        if (!error) error = std::current_exception();
+    };
+
+    std::vector<std::thread> writers;
+    for (size_t writer = 0; writer < spec.writers; ++writer) {
+        writers.emplace_back([&, writer] {
+            try {
+                while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+                for (;;) {
+                    const size_t i = next.fetch_add(1);
+                    if (i >= options.writes) break;
+                    const auto begin = Clock::now();
+                    auto receipt = database.insertWithAck(
+                        Vector(tail[i]), "tail-" + std::to_string(i), "throughput-sweep",
+                        spec.ack);
+                    const auto end = Clock::now();
+                    trial.writes[i] = WriteOp{i, elapsedUs(begin, end), receipt};
+                    std::this_thread::sleep_for(std::chrono::microseconds(100 + writer * 15));
+                }
+            } catch (...) {
+                capture_error();
+            }
+        });
+    }
+
+    std::thread query_thread([&] {
+        try {
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            for (size_t i = 0; i < options.queries; ++i) {
+                const size_t query_index = spec.workload == Workload::Hot
+                                               ? i % std::min<size_t>(4, data.queries.size())
+                                               : i % data.queries.size();
+                const auto begin = Clock::now();
+                const auto response = database.similaritySearch(
+                    Vector(data.queries[query_index]), spec.k_min,
+                    vdb::ReadVisibility::Latest);
+                const auto end = Clock::now();
+                trial.query_latencies.push_back(elapsedUs(begin, end));
+                if (response.effective_visibility == vdb::ReadVisibility::Latest) {
+                    ++trial.latest_queries;
+                } else {
+                    ++trial.stable_queries;
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(120));
+            }
+        } catch (...) {
+            capture_error();
+        }
+    });
+
+    const auto workload_start = Clock::now();
+    go.store(true, std::memory_order_release);
+    for (auto& writer : writers) writer.join();
+    const auto writers_end = Clock::now();
+    trial.committer = database.recallCommitterStatistics();
+    trial.policy = database.recallPolicyStatistics();
+    query_thread.join();
+    if (error) std::rethrow_exception(error);
+    trial.write_seconds = std::chrono::duration<double>(writers_end - workload_start).count();
+    trial.throughput = static_cast<double>(options.writes) / trial.write_seconds;
+
+    for (const auto& operation : trial.writes) {
+        trial.all_applied = trial.all_applied && operation.receipt.applied;
+        trial.max_weak = std::max(trial.max_weak, operation.receipt.weak_count);
+        if (operation.receipt.actual_ack == vdb::AckLevel::Weak) {
+            ++trial.observed_weak_acks;
+        } else if (operation.receipt.actual_ack == vdb::AckLevel::Stable) {
+            ++trial.observed_stable_acks;
+        }
+    }
+
+    (void)database.durabilityFence();
+    database.shutdown();
+    if (!options.keep_images) std::filesystem::remove_all(database_path);
+    return trial;
+}
+
+std::string throughputCaseName(vdb::AckMode ack,
+                               Workload workload,
+                               size_t k_min,
+                               double epsilon,
+                               size_t writers,
+                               size_t group_delay_us) {
+    std::ostringstream name;
+    name << (ack == vdb::AckMode::Stable ? "stable" : "strict") << '-'
+         << workloadName(workload) << "-k" << k_min;
+    if (ack == vdb::AckMode::Weak) {
+        name << "-e" << std::llround(epsilon * 1000000.0);
+    } else {
+        name << "-for-e" << std::llround(epsilon * 1000000.0);
+    }
+    name << "-g" << group_delay_us << "-w" << writers;
+    return name.str();
+}
+
+void writeThroughputSweepCsv(const std::filesystem::path& path,
+                             const std::vector<ThroughputTrial>& trials) {
+    std::ofstream output(path);
+    output << std::setprecision(17);
+    output << "case,workload,repetition,hnsw_seed,tail_seed,requested_ack,writers,writes,"
+              "queries,k_min,epsilon,comparison_epsilon,configured_cap,group_delay_us,"
+              "write_seconds,writes_per_s,"
+              "weak_acks,stable_acks,max_weak,binding,weak_p50_us,weak_p95_us,weak_p99_us,"
+              "stable_p50_us,stable_p95_us,stable_p99_us,query_p50_us,query_p95_us,query_p99_us,"
+              "latest_queries,stable_queries,timed_sync_attempts,timed_sync_successes,"
+              "timed_sync_failures,timed_records_synced,policy_fences,follower_requests,"
+              "fence_then_retry,strict_rejections,cap_overshoots,all_applied\n";
+    for (const auto& trial : trials) {
+        std::vector<double> weak_latencies;
+        std::vector<double> stable_latencies;
+        for (const auto& operation : trial.writes) {
+            if (operation.receipt.actual_ack == vdb::AckLevel::Weak) {
+                weak_latencies.push_back(operation.latency_us);
+            } else if (operation.receipt.actual_ack == vdb::AckLevel::Stable) {
+                stable_latencies.push_back(operation.latency_us);
+            }
+        }
+        const bool binding = trial.configured_cap >= 1 && trial.observed_weak_acks > 0;
+        output << trial.spec.name << ',' << workloadName(trial.spec.workload) << ','
+               << trial.repetition << ',' << trial.hnsw_seed << ',' << trial.tail_seed << ','
+               << (trial.spec.ack == vdb::AckMode::Stable ? "stable" : "weak") << ','
+               << trial.spec.writers << ',' << trial.writes.size() << ','
+               << trial.query_latencies.size() << ',' << trial.spec.k_min << ','
+               << trial.spec.epsilon << ',' << trial.spec.comparison_epsilon << ','
+               << trial.configured_cap << ','
+               << trial.spec.group_delay.count() << ',' << trial.write_seconds << ','
+               << trial.throughput << ',' << trial.observed_weak_acks << ','
+               << trial.observed_stable_acks << ',' << trial.max_weak << ','
+               << (binding ? 1 : 0) << ',' << percentile(weak_latencies, .50) << ','
+               << percentile(weak_latencies, .95) << ',' << percentile(weak_latencies, .99)
+               << ',' << percentile(stable_latencies, .50) << ','
+               << percentile(stable_latencies, .95) << ','
+               << percentile(stable_latencies, .99) << ','
+               << percentile(trial.query_latencies, .50) << ','
+               << percentile(trial.query_latencies, .95) << ','
+               << percentile(trial.query_latencies, .99) << ',' << trial.latest_queries << ','
+               << trial.stable_queries << ',' << trial.committer.sync_attempts << ','
+               << trial.committer.sync_successes << ',' << trial.committer.sync_failures << ','
+               << trial.committer.records_synced << ',' << trial.committer.policy_fences << ','
+               << trial.committer.follower_requests << ',' << trial.policy.fence_then_retry
+               << ',' << trial.policy.strict_rejections << ',' << trial.policy.cap_overshoots
+               << ',' << (trial.all_applied ? 1 : 0) << '\n';
+    }
+}
+
+void writeThroughputSweepOperationsCsv(const std::filesystem::path& path,
+                                       const std::vector<ThroughputTrial>& trials) {
+    std::ofstream output(path);
+    output << std::setprecision(17);
+    output << "case,workload,repetition,hnsw_seed,tail_seed,requested_ack,writers,writes,"
+              "queries,k_min,epsilon,comparison_epsilon,configured_cap,group_delay_us,index,"
+              "actual_ack,latency_us,"
+              "lsn,visible_lsn,durable_lsn,durable_records,weak_records,receipt_cap,risk\n";
+    for (const auto& trial : trials) {
+        for (const auto& operation : trial.writes) {
+            const auto& receipt = operation.receipt;
+            output << trial.spec.name << ',' << workloadName(trial.spec.workload) << ','
+                   << trial.repetition << ',' << trial.hnsw_seed << ',' << trial.tail_seed << ','
+                   << (trial.spec.ack == vdb::AckMode::Stable ? "stable" : "weak") << ','
+                   << trial.spec.writers << ',' << trial.writes.size() << ','
+                   << trial.query_latencies.size() << ',' << trial.spec.k_min << ','
+                   << trial.spec.epsilon << ',' << trial.spec.comparison_epsilon << ','
+                   << trial.configured_cap << ','
+                   << trial.spec.group_delay.count() << ',' << operation.index << ','
+                   << ackName(receipt.actual_ack) << ',' << operation.latency_us << ','
+                   << receipt.lsn << ',' << receipt.visible_lsn << ',' << receipt.durable_lsn
+                   << ',' << receipt.durable_count << ',' << receipt.weak_count << ','
+                   << receipt.policy_cap << ',' << receipt.risk_estimate << '\n';
+        }
+    }
+}
+
+bool runThroughputSweep(const DataSet& data,
+                        const Options& options,
+                        const std::vector<std::filesystem::path>& bases,
+                        const std::vector<uint32_t>& graph_seeds,
+                        const std::filesystem::path& root) {
+    std::vector<ThroughputCaseSpec> cases;
+    for (const size_t writers : options.sweep_writers) {
+        for (const size_t delay_us : options.sweep_group_delays_us) {
+            for (const size_t k_min : options.sweep_k_mins) {
+                for (const Workload workload : {Workload::Random, Workload::Hot}) {
+                    for (const double epsilon : options.sweep_epsilons) {
+                        cases.push_back(ThroughputCaseSpec{
+                            throughputCaseName(vdb::AckMode::Stable, workload, k_min, epsilon,
+                                               writers, delay_us),
+                            workload, vdb::AckMode::Stable, k_min, 0.0, epsilon, writers,
+                            std::chrono::microseconds(delay_us)});
+                        cases.push_back(ThroughputCaseSpec{
+                            throughputCaseName(vdb::AckMode::Weak, workload, k_min, epsilon,
+                                               writers, delay_us),
+                            workload, vdb::AckMode::Weak, k_min, epsilon, epsilon, writers,
+                            std::chrono::microseconds(delay_us)});
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<ThroughputTrial> trials;
+    trials.reserve(options.repetitions * cases.size());
+    bool all_ok = true;
+    for (size_t repetition = 0; repetition < options.repetitions; ++repetition) {
+        std::vector<size_t> pair_order(cases.size() / 2);
+        std::iota(pair_order.begin(), pair_order.end(), 0);
+        std::mt19937 order_rng(options.seed + static_cast<uint32_t>(repetition));
+        std::shuffle(pair_order.begin(), pair_order.end(), order_rng);
+        const size_t graph_index = repetition % bases.size();
+        for (const size_t pair_index : pair_order) {
+            const bool strict_first = (order_rng() & 1u) != 0;
+            for (size_t position = 0; position < 2; ++position) {
+                const size_t pair_offset = strict_first ? 1 - position : position;
+                const auto& spec = cases[pair_index * 2 + pair_offset];
+                auto trial = runThroughputTrial(data, options, spec, repetition,
+                                                bases[graph_index], graph_seeds[graph_index], root);
+                const bool binding =
+                    trial.configured_cap >= 1 && trial.observed_weak_acks > 0;
+                const bool cap_ok =
+                    trial.configured_cap == 0 || trial.policy.cap_overshoots == 0;
+                bool trial_ok = trial.all_applied && cap_ok &&
+                                trial.latest_queries == options.queries &&
+                                trial.max_weak <= trial.configured_cap;
+                if (spec.ack == vdb::AckMode::Stable) {
+                    trial_ok = trial_ok && trial.observed_weak_acks == 0 &&
+                               trial.observed_stable_acks == options.writes;
+                } else if (trial.configured_cap == 0) {
+                    trial_ok = trial_ok && trial.observed_weak_acks == 0 &&
+                               trial.observed_stable_acks == options.writes;
+                } else {
+                    trial_ok = trial_ok && binding;
+                }
+                all_ok = all_ok && trial_ok;
+                std::cout << std::left << std::setw(38) << spec.name
+                          << " rep=" << repetition << " writes/s=" << std::fixed
+                          << std::setprecision(1) << trial.throughput
+                          << " cap=" << trial.configured_cap
+                          << " weak=" << trial.observed_weak_acks
+                          << " stable=" << trial.observed_stable_acks
+                          << " maxW=" << trial.max_weak
+                          << " syncs=" << trial.committer.sync_successes
+                          << " binding=" << (binding ? 1 : 0)
+                          << " ok=" << (trial_ok ? 1 : 0) << '\n';
+                trials.push_back(std::move(trial));
+            }
+        }
+    }
+
+    const auto aggregate_path = options.output_dir / "recall_committer_throughput_sweep.csv";
+    const auto operations_path =
+        options.output_dir / "recall_committer_throughput_sweep_operations.csv";
+    writeThroughputSweepCsv(aggregate_path, trials);
+    writeThroughputSweepOperationsCsv(operations_path, trials);
+
+    std::cout << "\npaired independent-image min/median/max\n";
+    for (const auto& spec : cases) {
+        std::vector<double> throughputs;
+        for (const auto& trial : trials) {
+            if (trial.spec.name == spec.name) throughputs.push_back(trial.throughput);
+        }
+        std::cout << std::left << std::setw(34) << spec.name << " writes/s=["
+                  << *std::min_element(throughputs.begin(), throughputs.end()) << ','
+                  << percentile(throughputs, .50) << ','
+                  << *std::max_element(throughputs.begin(), throughputs.end()) << "]\n";
+    }
+    std::cout << "aggregate_csv=" << aggregate_path << " operations_csv=" << operations_path
+              << " sweep_invariants_ok=" << (all_ok ? 1 : 0) << '\n';
+    return all_ok;
+}
+
 void writeRawCsv(const std::filesystem::path& path,
                  const std::vector<TrialResult>& trials) {
     std::ofstream output(path);
@@ -1431,6 +1775,36 @@ void writeCrashCsv(const std::filesystem::path& path,
     }
 }
 
+std::vector<size_t> parseSizeList(const std::string& value, const std::string& option) {
+    std::vector<size_t> result;
+    std::stringstream input(value);
+    std::string token;
+    while (std::getline(input, token, ',')) {
+        if (token.empty()) throw std::invalid_argument("empty value in " + option);
+        size_t consumed = 0;
+        const auto parsed = std::stoull(token, &consumed);
+        if (consumed != token.size()) throw std::invalid_argument("invalid value in " + option);
+        result.push_back(static_cast<size_t>(parsed));
+    }
+    if (result.empty()) throw std::invalid_argument(option + " must not be empty");
+    return result;
+}
+
+std::vector<double> parseDoubleList(const std::string& value, const std::string& option) {
+    std::vector<double> result;
+    std::stringstream input(value);
+    std::string token;
+    while (std::getline(input, token, ',')) {
+        if (token.empty()) throw std::invalid_argument("empty value in " + option);
+        size_t consumed = 0;
+        const double parsed = std::stod(token, &consumed);
+        if (consumed != token.size()) throw std::invalid_argument("invalid value in " + option);
+        result.push_back(parsed);
+    }
+    if (result.empty()) throw std::invalid_argument(option + " must not be empty");
+    return result;
+}
+
 Options parseOptions(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
@@ -1452,6 +1826,16 @@ Options parseOptions(int argc, char** argv) {
         else if (argument == "--exchange-epsilon") options.exchange_epsilon = std::stod(next());
         else if (argument == "--output") options.output_dir = next();
         else if (argument == "--keep-images") options.keep_images = true;
+        else if (argument == "--throughput-sweep") options.throughput_sweep = true;
+        else if (argument == "--sweep-k-mins") {
+            options.sweep_k_mins = parseSizeList(next(), argument);
+        } else if (argument == "--sweep-epsilons") {
+            options.sweep_epsilons = parseDoubleList(next(), argument);
+        } else if (argument == "--sweep-group-delays-us") {
+            options.sweep_group_delays_us = parseSizeList(next(), argument);
+        } else if (argument == "--sweep-writers") {
+            options.sweep_writers = parseSizeList(next(), argument);
+        }
         else throw std::invalid_argument("unknown argument: " + argument);
     }
     if (options.writers == 0 || options.writes == 0 || options.queries == 0 ||
@@ -1461,9 +1845,25 @@ Options parseOptions(int argc, char** argv) {
     if (options.base_records < options.k) {
         throw std::invalid_argument("base records must be at least k");
     }
-    if (std::floor(options.strict_epsilon * static_cast<double>(options.k)) < 2.0) {
+    if (!options.throughput_sweep &&
+        std::floor(options.strict_epsilon * static_cast<double>(options.k)) < 2.0) {
         throw std::invalid_argument(
             "strict epsilon*k must admit two records for partial-survival validation");
+    }
+    if (options.throughput_sweep) {
+        for (const size_t k_min : options.sweep_k_mins) {
+            if (k_min == 0 || k_min > options.base_records) {
+                throw std::invalid_argument("sweep k_min must be in [1, base records]");
+            }
+        }
+        for (const double epsilon : options.sweep_epsilons) {
+            if (!std::isfinite(epsilon) || epsilon < 0.0 || epsilon >= 1.0) {
+                throw std::invalid_argument("sweep epsilon must be finite and in [0, 1)");
+            }
+        }
+        for (const size_t writers : options.sweep_writers) {
+            if (writers == 0) throw std::invalid_argument("sweep writers must be nonzero");
+        }
     }
     return options;
 }
@@ -1493,6 +1893,11 @@ int main(int argc, char** argv) {
             bases.push_back(buildBaseImage(
                 data, options, root, graph_seeds[i], false,
                 "base-seed-" + std::to_string(graph_seeds[i])));
+        }
+        if (options.throughput_sweep) {
+            const bool sweep_ok = runThroughputSweep(data, options, bases, graph_seeds, root);
+            if (!options.keep_images) std::filesystem::remove_all(root);
+            return sweep_ok ? 0 : 2;
         }
         const bool negative_control_tripped =
             validateChangedSeedControl(data, options, root, bases.front(), graph_seeds.front());

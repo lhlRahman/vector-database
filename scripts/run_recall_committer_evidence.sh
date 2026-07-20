@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPETITIONS=30
-OUTPUT="$ROOT/docs/paper/data"
+OUTPUT="$ROOT/.artifacts/recall-committer-evidence"
 STAGING_ROOT="${TMPDIR:-/tmp}/vdb-recall-committer-evidence"
 RUN_ID=""
 EXISTING=""
@@ -18,6 +18,12 @@ SCHEMA_VERSION=""
 SOURCE_SNAPSHOT_ACTIVE=0
 SOURCE_SNAPSHOT_VERIFIED=0
 SOURCE_MANIFEST_BEFORE=""
+HAS_THROUGHPUT_SWEEP=1
+
+readonly SWEEP_WRITES=64
+readonly SWEEP_QUERIES=64
+readonly SWEEP_K_MINS='10,20,50,100'
+readonly SWEEP_EPSILONS='0.2'
 
 readonly AGGREGATE_HEADER_V1='case,workload,repetition,writers,writes_per_s,weak_p50_us,weak_p95_us,weak_p99_us,stable_p50_us,stable_p95_us,stable_p99_us,fence_us,query_p50_us,query_p95_us,query_p99_us,mean_D,mean_W,max_W,max_cap,max_risk,timed_sync_successes,total_sync_attempts,total_sync_successes,total_sync_failures,timed_syncs_per_s,total_records_per_sync,policy_fences,age_fences,overshoots,enrichment,alarm,alarm_latency_ms,M_max,L_max,delta_max,amplification_max,stable_losses,weak_survivors,frontier_ok,recovery_ok,strict_ok'
 readonly CRASH_HEADER_V1='case,workload,repetition,query,M,L,delta_positive,amplification,pre_recall,post_recall,answer_churn,durable_overlap,lost_ids_subset_weak,durable_fingerprint_equal'
@@ -27,8 +33,10 @@ readonly CRASH_HEADER_V2='case,workload,repetition,hnsw_seed,tail_seed,crash_fro
 readonly OPERATIONS_HEADER_V2='case,workload,repetition,hnsw_seed,tail_seed,operation,index,ack,latency_us,lsn,visible_lsn,durable_lsn,durable_records,weak_records,cap,risk,snapshot_lsn,exact_recall,tail_evaluations,crash_frontier,expected_recovery,crash_child_status'
 readonly SUMMARY_HEADER_V1='case,repetitions,crash_observations,writes_per_s_min,writes_per_s_median,writes_per_s_max,weak_p50_ms_min,weak_p50_ms_median,weak_p50_ms_max,stable_p50_ms_min,stable_p50_ms_median,stable_p50_ms_max,query_p95_ms_min,query_p95_ms_median,query_p95_ms_max,max_W,timed_syncs_min,timed_syncs_median,timed_syncs_max,total_syncs_min,total_syncs_median,total_syncs_max,mean_delta_positive,image_mean_delta_min,image_mean_delta_median,image_mean_delta_max,max_delta_positive,max_M,max_amplification,stable_losses,weak_survivors,cap_overshoots,alarm'
 readonly SUMMARY_HEADER_V2="$SUMMARY_HEADER_V1,max_L,L_lt_M_observations,L_lt_M_images,exposed_weak_records,surviving_weak_records,lost_weak_records"
+readonly SWEEP_AGGREGATE_HEADER='case,workload,repetition,hnsw_seed,tail_seed,requested_ack,writers,writes,queries,k_min,epsilon,comparison_epsilon,configured_cap,group_delay_us,write_seconds,writes_per_s,weak_acks,stable_acks,max_weak,binding,weak_p50_us,weak_p95_us,weak_p99_us,stable_p50_us,stable_p95_us,stable_p99_us,query_p50_us,query_p95_us,query_p99_us,latest_queries,stable_queries,timed_sync_attempts,timed_sync_successes,timed_sync_failures,timed_records_synced,policy_fences,follower_requests,fence_then_retry,strict_rejections,cap_overshoots,all_applied'
+readonly SWEEP_OPERATIONS_HEADER='case,workload,repetition,hnsw_seed,tail_seed,requested_ack,writers,writes,queries,k_min,epsilon,comparison_epsilon,configured_cap,group_delay_us,index,actual_ack,latency_us,lsn,visible_lsn,durable_lsn,durable_records,weak_records,receipt_cap,risk'
 
-readonly -a BUNDLE_FILES=(
+readonly -a BASE_PAYLOAD_FILES=(
     recall_committer.csv
     recall_committer_crash.csv
     recall_committer_operations.csv
@@ -38,21 +46,26 @@ readonly -a BUNDLE_FILES=(
     committer_crash_test.txt
     committer_cut_test.txt
     recall_committer_environment.txt
-    recall_committer_sha256.txt
 )
+readonly -a SWEEP_PAYLOAD_FILES=(
+    recall_committer_throughput_sweep.csv
+    recall_committer_throughput_sweep_operations.csv
+    recall_committer_throughput_sweep_summary.csv
+)
+BUNDLE_FILES=("${BASE_PAYLOAD_FILES[@]}" "${SWEEP_PAYLOAD_FILES[@]}" recall_committer_sha256.txt)
 
 usage() {
     cat <<'EOF'
 Usage: scripts/run_recall_committer_evidence.sh [options]
 
-Run the committer unit, logical-crash, WAL-cut, and benchmark evidence suite in
-a staging directory. Validate every artifact before installing a versioned run
-and atomically switching the canonical pointer. This script never invokes the
-physical dm-log-writes harness.
+Run the committer unit, logical-crash, WAL-cut, main benchmark, and paired
+strict-versus-stable throughput sweep in a staging directory. Validate every
+artifact before installing a versioned run and atomically switching the
+canonical pointer. This script never invokes the physical dm-log-writes harness.
 
 Options:
   --repetitions N          Images per case (default: 30)
-  --output DIR             Canonical data directory (default: docs/paper/data)
+  --output DIR             Canonical data directory (default: .artifacts/recall-committer-evidence)
   --staging DIR            Staging parent (default: ${TMPDIR:-/tmp}/vdb-recall-committer-evidence)
   --run-id ID              Version directory name (default: UTC timestamp + commit)
   --validate-existing DIR  Stage and validate an existing flat evidence bundle
@@ -208,6 +221,28 @@ sha256_file() {
         sha256sum "$1" | awk '{print $1}'
     else
         shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+use_base_bundle_layout() {
+    HAS_THROUGHPUT_SWEEP=0
+    BUNDLE_FILES=("${BASE_PAYLOAD_FILES[@]}" recall_committer_sha256.txt)
+}
+
+use_round4_bundle_layout() {
+    HAS_THROUGHPUT_SWEEP=1
+    BUNDLE_FILES=("${BASE_PAYLOAD_FILES[@]}" "${SWEEP_PAYLOAD_FILES[@]}" recall_committer_sha256.txt)
+}
+
+select_bundle_layout_at() {
+    local directory=$1
+    local manifest="$directory/recall_committer_sha256.txt"
+    [[ -f "$manifest" && ! -L "$manifest" ]] ||
+        die "regular manifest missing from $directory"
+    if grep -q '  recall_committer_throughput_sweep.csv$' "$manifest"; then
+        use_round4_bundle_layout
+    else
+        use_base_bundle_layout
     fi
 }
 
@@ -732,7 +767,9 @@ validate_logs() {
     local run="$BUNDLE/recall_committer_run.txt"
     local count marker
 
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        grep -q 'Results: 77/77 passed' "$unit" || die "base unit-test total is not 77/77"
+    elif [[ "$SCHEMA_VERSION" == v2 ]]; then
         grep -q 'Results: 76/76 passed' "$unit" || die "base unit-test total is not 76/76"
     else
         grep -q 'Results: 75/75 passed' "$unit" || die "legacy base unit-test total is not 75/75"
@@ -754,6 +791,10 @@ validate_logs() {
         grep -q 'changed_seed_control_tripped=1 invariants_ok=1' "$run" ||
             die "legacy benchmark invariant marker missing"
     fi
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        grep -q 'sweep_invariants_ok=1' "$run" ||
+            die "throughput-sweep invariant marker missing"
+    fi
     ! grep -q 'invariants_ok=0' "$run" || die "benchmark reported an invariant failure"
 }
 
@@ -761,6 +802,10 @@ regenerate_summary_at() {
     local directory=$1
     python3 "$ROOT/docs/paper/plot_recall_committer.py" \
         --data-dir "$directory" >/dev/null
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+            --data-dir "$directory" >/dev/null
+    fi
 }
 
 generate_manifest_at() {
@@ -778,17 +823,10 @@ verify_manifest_at() {
     local manifest="$directory/recall_committer_sha256.txt"
     local expected_hash file actual_hash expected_file
     local index=0
-    local -a manifest_files=(
-        recall_committer.csv
-        recall_committer_crash.csv
-        recall_committer_operations.csv
-        recall_committer_summary.csv
-        recall_committer_run.txt
-        committer_unit_test.txt
-        committer_crash_test.txt
-        committer_cut_test.txt
-        recall_committer_environment.txt
-    )
+    local -a manifest_files=("${BASE_PAYLOAD_FILES[@]}")
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        manifest_files+=("${SWEEP_PAYLOAD_FILES[@]}")
+    fi
     [[ -f "$manifest" && ! -L "$manifest" ]] || die "regular manifest missing from $directory"
     while read -r expected_hash file; do
         [[ -n "$expected_hash" && -n "$file" ]] || die "malformed manifest line in $manifest"
@@ -806,6 +844,47 @@ verify_manifest_at() {
     [[ $index -eq ${#manifest_files[@]} ]] || die "manifest has $index entries; expected ${#manifest_files[@]}"
 }
 
+validate_throughput_sweep() {
+    local aggregate="$BUNDLE/recall_committer_throughput_sweep.csv"
+    local operations="$BUNDLE/recall_committer_throughput_sweep_operations.csv"
+    local summary="$BUNDLE/recall_committer_throughput_sweep_summary.csv"
+    local aggregate_rows operation_rows summary_rows
+
+    assert_header "$aggregate" "$SWEEP_AGGREGATE_HEADER"
+    assert_header "$operations" "$SWEEP_OPERATIONS_HEADER"
+    python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+        --data-dir "$BUNDLE" --check >/dev/null ||
+        die "throughput-sweep validation failed"
+
+    aggregate_rows="$(awk 'END { print NR - 1 }' "$aggregate")"
+    operation_rows="$(awk 'END { print NR - 1 }' "$operations")"
+    summary_rows="$(awk 'END { print NR - 1 }' "$summary")"
+    [[ "$aggregate_rows" -eq $((16 * REPETITIONS)) ]] ||
+        die "throughput-sweep image rows: expected $((16 * REPETITIONS)), got $aggregate_rows"
+    [[ "$operation_rows" -eq $((16 * REPETITIONS * SWEEP_WRITES)) ]] ||
+        die "throughput-sweep operation rows: expected $((16 * REPETITIONS * SWEEP_WRITES)), got $operation_rows"
+    [[ "$summary_rows" -eq 8 ]] ||
+        die "throughput-sweep summary rows: expected 8, got $summary_rows"
+
+    awk -F, -v reps="$REPETITIONS" -v writes="$SWEEP_WRITES" -v queries="$SWEEP_QUERIES" '
+        NR == 1 { next }
+        {
+            bad = 0
+            if ($2 != "random" && $2 != "hot") bad = 1
+            if ($3 !~ /^[0-9]+$/ || $3 < 0 || $3 >= reps) bad = 1
+            if ($7 != 4 || $8 != writes || $9 != queries) bad = 1
+            if ($10 != 10 && $10 != 20 && $10 != 50 && $10 != 100) bad = 1
+            if ($12 + 0 < 0.199999999999 || $12 + 0 > 0.200000000001) bad = 1
+            if ($14 != 750) bad = 1
+            if (bad) {
+                print "unexpected throughput-sweep configuration at line " NR > "/dev/stderr"
+                failed = 1
+            }
+        }
+        END { exit failed ? 1 : 0 }
+    ' "$aggregate" || die "throughput-sweep fixed-design validation failed"
+}
+
 validate_bundle() {
     local file
     for file in "${BUNDLE_FILES[@]}"; do
@@ -816,12 +895,16 @@ validate_bundle() {
     validate_operations
     validate_summary
     validate_logs
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        validate_throughput_sweep
+    fi
     verify_manifest_at "$BUNDLE"
 }
 
 relevant_source_status() {
     git -C "$ROOT" status --porcelain --untracked-files=all -- \
         Makefile include src test docs/paper/plot_recall_committer.py \
+        docs/paper/plot_strict_tradeoff.py \
         scripts/run_recall_committer_evidence.sh
 }
 
@@ -829,17 +912,12 @@ create_source_manifest() {
     local manifest=$1
     local file_list="${manifest}.files"
     local path relative
-    {
-        printf '%s\n' \
-            "$ROOT/Makefile" \
-            "$ROOT/docs/paper/plot_recall_committer.py" \
-            "$ROOT/scripts/run_recall_committer_evidence.sh"
-        for directory in "$ROOT/include" "$ROOT/src" "$ROOT/test"; do
-            if [[ -d "$directory" ]]; then
-                find "$directory" -type f
-            fi
-        done
-    } | LC_ALL=C sort -u > "$file_list"
+    git -C "$ROOT" ls-files -- \
+        Makefile include src test docs/paper/plot_recall_committer.py \
+        docs/paper/plot_strict_tradeoff.py scripts/run_recall_committer_evidence.sh |
+        while IFS= read -r relative; do
+            printf '%s/%s\n' "$ROOT" "$relative"
+        done | LC_ALL=C sort -u > "$file_list"
     : > "$manifest"
     while IFS= read -r path; do
         relative="${path#"$ROOT"/}"
@@ -886,11 +964,13 @@ capture_environment() {
     local os compiler cpu memory filesystem aggregate_rows crash_rows operation_rows
     local graph_seed_100_rows graph_seed_117_rows
     local partial_images terminal_images exposed surviving lost child_status_86 suffix_rows
+    local sweep_rows sweep_operation_rows
     [[ $SOURCE_SNAPSHOT_VERIFIED -eq 1 ]] || die "source snapshot was not verified"
     status="$(git -C "$ROOT" status --porcelain --untracked-files=all || true)"
     relevant_status="$(relevant_source_status)"
     git -C "$ROOT" diff --binary HEAD -- Makefile include src test \
-        docs/paper/plot_recall_committer.py scripts/run_recall_committer_evidence.sh \
+        docs/paper/plot_recall_committer.py docs/paper/plot_strict_tradeoff.py \
+        scripts/run_recall_committer_evidence.sh \
         > "$WORK/relevant_source.diff"
     diff_hash="$(sha256_file "$WORK/relevant_source.diff")"
     source_manifest_hash="$(sha256_file "$SOURCE_MANIFEST_BEFORE")"
@@ -902,6 +982,8 @@ capture_environment() {
     aggregate_rows="$(awk 'END { print NR - 1 }' "$BUNDLE/recall_committer.csv")"
     crash_rows="$(awk 'END { print NR - 1 }' "$BUNDLE/recall_committer_crash.csv")"
     operation_rows="$(awk 'END { print NR - 1 }' "$BUNDLE/recall_committer_operations.csv")"
+    sweep_rows="$(awk 'END { print NR - 1 }' "$BUNDLE/recall_committer_throughput_sweep.csv")"
+    sweep_operation_rows="$(awk 'END { print NR - 1 }' "$BUNDLE/recall_committer_throughput_sweep_operations.csv")"
     graph_seed_100_rows="$(awk -F, 'NR > 1 && $4 == 100 { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
     graph_seed_117_rows="$(awk -F, 'NR > 1 && $4 == 117 { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
     suffix_rows="$(awk -F, 'NR > 1 && $6 == "post-recovery-suffix" { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
@@ -926,7 +1008,9 @@ EOF
         printf 'evidence_schema=%s\n' "$SCHEMA_VERSION"
         printf 'relevant_source_diff_sha256=%s\n' "$diff_hash"
         printf 'relevant_source_manifest_sha256=%s\n' "$source_manifest_hash"
-        printf 'command=make clean; make committer-unit-test; make committer-crash-test; make committer-cut-test; make build/bench_recall_commit; ./build/bench_recall_commit --repetitions %s --output <staging>\n' "$REPETITIONS"
+        printf 'command=make clean; make committer-unit-test; make committer-crash-test; make committer-cut-test; make build/bench_recall_commit; ./build/bench_recall_commit --repetitions %s --output <staging>; ./build/bench_recall_commit --throughput-sweep --repetitions %s --writes %s --queries %s --sweep-k-mins %s --sweep-epsilons %s --output <staging>\n' \
+            "$REPETITIONS" "$REPETITIONS" "$SWEEP_WRITES" "$SWEEP_QUERIES" \
+            "$SWEEP_K_MINS" "$SWEEP_EPSILONS"
         printf 'physical_powerloss_harness_invoked=no\n'
         printf 'crash_model=logical live-directory image opened through production read-only recovery\n'
         printf 'repetitions_per_case=%s\n' "$REPETITIONS"
@@ -934,6 +1018,12 @@ EOF
         printf 'aggregate_image_rows=%s\n' "$aggregate_rows"
         printf 'recovered_query_rows=%s\n' "$crash_rows"
         printf 'raw_operation_rows=%s\n' "$operation_rows"
+        printf 'throughput_sweep_image_rows=%s\n' "$sweep_rows"
+        printf 'throughput_sweep_operation_rows=%s\n' "$sweep_operation_rows"
+        printf 'throughput_sweep_writes_per_image=%s\n' "$SWEEP_WRITES"
+        printf 'throughput_sweep_queries_per_image=%s\n' "$SWEEP_QUERIES"
+        printf 'throughput_sweep_k_mins=%s\n' "$SWEEP_K_MINS"
+        printf 'throughput_sweep_epsilons=%s\n' "$SWEEP_EPSILONS"
         printf 'base_records=160\n'
         printf 'writes_per_image=25\n'
         printf 'concurrent_queries_per_image=32\n'
@@ -971,6 +1061,7 @@ EOF
 
 copy_existing_bundle() {
     local file
+    select_bundle_layout_at "$EXISTING"
     verify_manifest_at "$EXISTING"
     for file in "${BUNDLE_FILES[@]}"; do
         [[ -s "$EXISTING/$file" ]] || die "existing bundle member missing: $EXISTING/$file"
@@ -990,7 +1081,7 @@ reproduce_existing_derived_artifacts() {
     mkdir -p "$reproduced"
     for file in "${BUNDLE_FILES[@]}"; do
         case "$file" in
-            recall_committer_summary.csv|recall_committer_sha256.txt) continue ;;
+            recall_committer_summary.csv|recall_committer_throughput_sweep_summary.csv|recall_committer_sha256.txt) continue ;;
         esac
         cp -p "$BUNDLE/$file" "$reproduced/$file"
     done
@@ -999,6 +1090,11 @@ reproduce_existing_derived_artifacts() {
     cmp -s "$BUNDLE/recall_committer_summary.csv" \
         "$reproduced/recall_committer_summary.csv" ||
         die "existing summary is not byte-for-byte reproducible"
+    if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+        cmp -s "$BUNDLE/recall_committer_throughput_sweep_summary.csv" \
+            "$reproduced/recall_committer_throughput_sweep_summary.csv" ||
+            die "existing throughput-sweep summary is not byte-for-byte reproducible"
+    fi
     cmp -s "$BUNDLE/recall_committer_sha256.txt" \
         "$reproduced/recall_committer_sha256.txt" ||
         die "existing SHA-256 manifest is not byte-for-byte reproducible"
@@ -1015,6 +1111,7 @@ assert_existing_bundle_unchanged() {
 }
 
 run_evidence() {
+    use_round4_bundle_layout
     begin_source_snapshot
     (
         cd "$ROOT"
@@ -1034,6 +1131,17 @@ run_evidence() {
         make build/bench_recall_commit
         ./build/bench_recall_commit --repetitions "$REPETITIONS" --output "$BUNDLE"
     ) 2>&1 | tee "$BUNDLE/recall_committer_run.txt"
+    (
+        cd "$ROOT"
+        ./build/bench_recall_commit \
+            --throughput-sweep \
+            --repetitions "$REPETITIONS" \
+            --writes "$SWEEP_WRITES" \
+            --queries "$SWEEP_QUERIES" \
+            --sweep-k-mins "$SWEEP_K_MINS" \
+            --sweep-epsilons "$SWEEP_EPSILONS" \
+            --output "$BUNDLE"
+    ) 2>&1 | tee -a "$BUNDLE/recall_committer_run.txt"
     detect_schema
 }
 
@@ -1115,6 +1223,10 @@ else
 fi
 printf 'validated %d aggregate, %d crash, and %d operation rows\n' \
     "$((8 * REPETITIONS))" "$((8 * REPETITIONS * 12))" "$EXPECTED_OPERATION_ROWS"
+if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
+    printf 'validated %d paired-sweep images and %d paired-sweep operation rows\n' \
+        "$((16 * REPETITIONS))" "$((16 * REPETITIONS * SWEEP_WRITES))"
+fi
 
 if [[ $INSTALL -eq 1 ]]; then
     if [[ $SOURCE_SNAPSHOT_ACTIVE -eq 1 ]]; then

@@ -1,9 +1,11 @@
 #include "segmented_vector_store.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -11,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <sys/file.h>
 #include <unordered_map>
 #include <unistd.h>
 
@@ -19,6 +22,7 @@
 namespace {
 constexpr uint32_t kSequenceHighwaterMagic = 0x314e534c;  // "LSN1"
 constexpr uint32_t kSequenceHighwaterVersion = 1;
+constexpr const char* kWriterLockFilename = ".writer.lock";
 
 struct SequenceHighwaterRecord {
     uint32_t magic;
@@ -72,9 +76,58 @@ void committer_failpoint(const char* name) {
 }
 }
 
+SegmentedVectorStore::WriterRootLock::~WriterRootLock() noexcept {
+    release();
+}
+
+void SegmentedVectorStore::WriterRootLock::acquire(
+    const std::filesystem::path& root) {
+    if (fd_ >= 0) {
+        throw std::logic_error("segmented storage writer lock is already held");
+    }
+
+    const auto lock_path = root / kWriterLockFilename;
+    int fd = -1;
+    do {
+        fd = ::open(lock_path.c_str(),
+                    O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+                    0644);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        const int error = errno;
+        throw std::runtime_error(
+            "cannot open segmented storage writer lock " + lock_path.string() +
+            ": " + std::strerror(error));
+    }
+
+    for (;;) {
+        if (::flock(fd, LOCK_EX | LOCK_NB) == 0) break;
+        const int error = errno;
+        if (error == EINTR) continue;
+        ::close(fd);
+        if (error == EWOULDBLOCK || error == EAGAIN) {
+            throw std::runtime_error(
+                "segmented storage root is already open for writing: " +
+                root.string());
+        }
+        throw std::runtime_error(
+            "cannot lock segmented storage root " + root.string() + ": " +
+            std::strerror(error));
+    }
+    fd_ = fd;
+}
+
+void SegmentedVectorStore::WriterRootLock::release() noexcept {
+    if (fd_ < 0) return;
+    (void)::close(fd_);
+    fd_ = -1;
+}
+
 SegmentedVectorStore::SegmentedVectorStore(std::filesystem::path root, Config config)
     : root_(std::move(root)), config_(std::move(config)) {
 }
+
+SegmentedVectorStore::~SegmentedVectorStore() noexcept = default;
 
 void SegmentedVectorStore::initialize(bool read_only_recovery) {
     if (initialized_) return;
@@ -85,56 +138,67 @@ void SegmentedVectorStore::initialize(bool read_only_recovery) {
             throw std::runtime_error("missing segmented store for read-only recovery");
         }
     } else {
-        std::filesystem::create_directories(segmentsDir());
-        vdb::io::fsync_dir(root_.parent_path());
-        vdb::io::fsync_dir(root_);
+        std::filesystem::create_directories(root_);
+        writer_root_lock_.acquire(root_);
     }
 
-    std::string mutable_id;
-    std::vector<std::string> sealed_ids;
-    const bool have_manifest = readManifest(mutable_id, sealed_ids);
-    if (read_only_recovery_ && !have_manifest) {
-        throw std::runtime_error("missing manifest for read-only recovery");
-    }
-    if (have_manifest) {
-        sealed_segments_.clear();
-        sealed_segments_.reserve(sealed_ids.size());
-        for (const auto& id : sealed_ids) {
-            sealed_segments_.push_back(loadSegment(
-                id, VectorSegment::State::Sealed, read_only_recovery_));
+    try {
+        if (!read_only_recovery_) {
+            std::filesystem::create_directories(segmentsDir());
+            vdb::io::fsync_dir(root_.parent_path());
+            vdb::io::fsync_dir(root_);
         }
 
-        if (!mutable_id.empty()) {
-            mutable_segment_ = loadSegment(
-                mutable_id, VectorSegment::State::Mutable, read_only_recovery_);
+        std::string mutable_id;
+        std::vector<std::string> sealed_ids;
+        const bool have_manifest = readManifest(mutable_id, sealed_ids);
+        if (read_only_recovery_ && !have_manifest) {
+            throw std::runtime_error("missing manifest for read-only recovery");
         }
-    }
+        if (have_manifest) {
+            sealed_segments_.clear();
+            sealed_segments_.reserve(sealed_ids.size());
+            for (const auto& id : sealed_ids) {
+                sealed_segments_.push_back(loadSegment(
+                    id, VectorSegment::State::Sealed, read_only_recovery_));
+            }
 
-    if (!mutable_segment_ && !read_only_recovery_) {
-        mutable_segment_ = createSegment(VectorSegment::State::Mutable);
-    }
-    if (!mutable_segment_) throw std::runtime_error("manifest has no mutable segment");
+            if (!mutable_id.empty()) {
+                mutable_segment_ = loadSegment(
+                    mutable_id, VectorSegment::State::Mutable, read_only_recovery_);
+            }
+        }
 
-    rebuildKeyLocations();
-    const uint64_t manifest_durable_lsn = durable_lsn_;
-    durable_lsn_ = mutable_segment_ ? mutable_segment_->durableLsn() : 0;
-    for (const auto& segment : sealed_segments_) {
-        durable_lsn_ = std::max(durable_lsn_, segment->maxSequence());
+        if (!mutable_segment_ && !read_only_recovery_) {
+            mutable_segment_ = createSegment(VectorSegment::State::Mutable);
+        }
+        if (!mutable_segment_) throw std::runtime_error("manifest has no mutable segment");
+
+        rebuildKeyLocations();
+        const uint64_t manifest_durable_lsn = durable_lsn_;
+        durable_lsn_ = mutable_segment_ ? mutable_segment_->durableLsn() : 0;
+        for (const auto& segment : sealed_segments_) {
+            durable_lsn_ = std::max(durable_lsn_, segment->maxSequence());
+        }
+        durable_lsn_ = std::max(durable_lsn_, manifest_durable_lsn);
+        // Writable recovery deliberately discards every unfenced mutable suffix.
+        visible_lsn_ = durable_lsn_;
+        if (!read_only_recovery_) {
+            reserveSequenceBlock();
+            writeManifest();
+        }
+        initialized_ = true;
+    } catch (...) {
+        writer_root_lock_.release();
+        throw;
     }
-    durable_lsn_ = std::max(durable_lsn_, manifest_durable_lsn);
-    // Writable recovery deliberately discards every unfenced mutable suffix.
-    visible_lsn_ = durable_lsn_;
-    if (!read_only_recovery_) {
-        reserveSequenceBlock();
-        writeManifest();
-    }
-    initialized_ = true;
 }
 
 void SegmentedVectorStore::shutdown() {
     if (!initialized_) return;
     if (!read_only_recovery_) flush();
     initialized_ = false;
+    writer_root_lock_.release();
 }
 
 bool SegmentedVectorStore::insert(const Vector& vector, const std::string& key, const std::string& metadata) {
