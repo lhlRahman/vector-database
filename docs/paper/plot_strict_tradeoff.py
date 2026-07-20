@@ -15,6 +15,8 @@ from pathlib import Path
 AGGREGATE_NAME = "recall_committer_throughput_sweep.csv"
 OPERATIONS_NAME = "recall_committer_throughput_sweep_operations.csv"
 SUMMARY_NAME = "recall_committer_throughput_sweep_summary.csv"
+WIN_FIELD = "strict_faster_timing_repetitions"
+LEGACY_WIN_FIELD = "strict_win_images"
 
 PAIR_FIELDS = (
     "workload",
@@ -124,6 +126,11 @@ def parse_args():
         "--check",
         action="store_true",
         help="validate raw data and require the existing summary to match exactly",
+    )
+    parser.add_argument(
+        "--legacy-win-field",
+        action="store_true",
+        help="render the archived v2 strict_win_images column name",
     )
     return parser, parser.parse_args()
 
@@ -451,15 +458,27 @@ def summarize(pairs):
     return summaries
 
 
-def render_summary(rows):
+def render_summary(rows, legacy_win_field=False):
+    fieldnames = tuple(
+        LEGACY_WIN_FIELD if field == WIN_FIELD and legacy_win_field else field
+        for field in SUMMARY_FIELDS
+    )
+    if legacy_win_field:
+        rows = [
+            {
+                (LEGACY_WIN_FIELD if key == WIN_FIELD else key): value
+                for key, value in row.items()
+            }
+            for row in rows
+        ]
     output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=SUMMARY_FIELDS, lineterminator="\n")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue().encode("utf-8")
 
 
-def run(data_dir, check):
+def run(data_dir, check, legacy_win_field=False):
     try:
         data_dir = data_dir.expanduser().resolve(strict=True)
     except OSError as exc:
@@ -474,7 +493,7 @@ def run(data_dir, check):
     operations = load_csv(operations_path, OPERATIONS_REQUIRED)
     pairs, aggregate_by_identity = validate_aggregate(aggregate_path, aggregate)
     validate_operations(operations_path, operations, aggregate_by_identity)
-    output = render_summary(summarize(pairs))
+    output = render_summary(summarize(pairs), legacy_win_field)
 
     if check:
         if not summary_path.is_file():
@@ -496,7 +515,7 @@ def run(data_dir, check):
 def main():
     parser, args = parse_args()
     try:
-        run(args.data_dir, args.check)
+        run(args.data_dir, args.check, args.legacy_win_field)
     except EvidenceError as exc:
         parser.error(str(exc))
 

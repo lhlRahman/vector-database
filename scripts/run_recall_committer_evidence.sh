@@ -365,7 +365,7 @@ validate_aggregate_v1() {
 validate_aggregate_v2() {
     local file="$BUNDLE/recall_committer.csv"
     assert_header "$file" "$AGGREGATE_HEADER_V2"
-    awk -F, -v reps="$REPETITIONS" '
+    awk -F, -v reps="$REPETITIONS" -v schema="$SCHEMA_VERSION" '
         BEGIN {
             split("stable-group fixed-count fixed-time strict-random strict-hot exchange-random exchange-hot exchange-hot-guard", names, " ")
             for (i = 1; i <= 8; ++i) { allowed[names[i]] = 1; case_index[names[i]] = i - 1 }
@@ -402,7 +402,7 @@ validate_aggregate_v2() {
                 }
                 ++partial_images
                 exposed += $39; surviving += $40; lost += $41
-            } else if ($1 == "strict-random") {
+            } else if ($1 == "strict-random" && schema == "v3") {
                 if ($35 != "strict-cap-before-fence" || $36 <= $37 || $38 != 87 ||
                     $39 != 2 || $40 != 0 || $41 != 2 || $42 != 0 ||
                     $43 + 0 < 0.199999999999 || $44 + 0 < 0.199999999999 ||
@@ -422,17 +422,21 @@ validate_aggregate_v2() {
         }
         END {
             if (rows != 8 * reps) { print "aggregate rows: expected " 8 * reps ", got " rows > "/dev/stderr"; failed = 1 }
-            if (partial_images != reps || cap_images != reps || terminal_images != 6 * reps ||
+            expected_cap_images = schema == "v3" ? reps : 0
+            expected_terminal_images = (schema == "v3" ? 6 : 7) * reps
+            if (partial_images != reps || cap_images != expected_cap_images ||
+                terminal_images != expected_terminal_images ||
                 exposed != 2 * reps || surviving != 2 * reps || lost != 0 ||
-                cap_exposed != 2 * reps || cap_surviving != 0 || cap_lost != 2 * reps) {
-                print "partial-survival frontier totals mismatch" > "/dev/stderr"; failed = 1
+                cap_exposed != 2 * expected_cap_images || cap_surviving != 0 ||
+                cap_lost != 2 * expected_cap_images) {
+                print "controlled frontier totals mismatch" > "/dev/stderr"; failed = 1
             }
             for (i = 1; i <= 8; ++i) for (r = 0; r < reps; ++r) {
                 if (!(names[i] SUBSEP r in seen)) { print "missing aggregate image " names[i] "," r > "/dev/stderr"; failed = 1 }
             }
             exit failed ? 1 : 0
         }
-    ' "$file" || die "aggregate CSV v2 validation failed"
+    ' "$file" || die "aggregate CSV $SCHEMA_VERSION validation failed"
 }
 
 validate_aggregate() {
@@ -487,7 +491,7 @@ validate_crash_v2() {
     local aggregate="$BUNDLE/recall_committer.csv"
     local file="$BUNDLE/recall_committer_crash.csv"
     assert_header "$file" "$CRASH_HEADER_V2"
-    awk -F, -v reps="$REPETITIONS" '
+    awk -F, -v reps="$REPETITIONS" -v schema="$SCHEMA_VERSION" '
         BEGIN {
             case_index["stable-group"] = 0; case_index["fixed-count"] = 1
             case_index["fixed-time"] = 2; case_index["strict-random"] = 3
@@ -523,7 +527,7 @@ validate_crash_v2() {
                     print "strict-hot crash frontier mismatch at line " FNR > "/dev/stderr"; bad = 1
                 }
                 if ($15 + 1e-12 < $14) gap[image] = 1
-            } else if ($1 == "strict-random") {
+            } else if ($1 == "strict-random" && schema == "v3") {
                 if ($6 != "strict-cap-before-fence" || $7 <= $8 || $9 != 87 ||
                     $10 != 2 || $11 != 0 || $12 != 2) {
                     print "strict-random crash frontier mismatch at line " FNR > "/dev/stderr"; bad = 1
@@ -548,13 +552,13 @@ validate_crash_v2() {
                 if (fields[1] == "strict-hot" && !(image in gap)) {
                     print "strict-hot image has no genuine L<M observation" > "/dev/stderr"; failed = 1
                 }
-                if (fields[1] == "strict-random" && !(image in cap_loss)) {
+                if (schema == "v3" && fields[1] == "strict-random" && !(image in cap_loss)) {
                     print "strict-random image did not attain the strict cap loss" > "/dev/stderr"; failed = 1
                 }
             }
             exit failed ? 1 : 0
         }
-    ' "$aggregate" "$file" || die "crash CSV v2 validation failed"
+    ' "$aggregate" "$file" || die "crash CSV $SCHEMA_VERSION validation failed"
 }
 
 validate_crash() {
@@ -618,7 +622,7 @@ validate_operations_v2() {
     local aggregate="$BUNDLE/recall_committer.csv"
     local file="$BUNDLE/recall_committer_operations.csv"
     assert_header "$file" "$OPERATIONS_HEADER_V2"
-    awk -F, -v reps="$REPETITIONS" '
+    awk -F, -v reps="$REPETITIONS" -v schema="$SCHEMA_VERSION" '
         BEGIN {
             case_index["stable-group"] = 0; case_index["fixed-count"] = 1
             case_index["fixed-time"] = 2; case_index["strict-random"] = 3
@@ -641,7 +645,7 @@ validate_operations_v2() {
             if ($1 == "strict-hot") {
                 expected_frontier = "fence-after-sync-before-publish"
                 expected_status = 86
-            } else if ($1 == "strict-random") {
+            } else if ($1 == "strict-random" && schema == "v3") {
                 expected_frontier = "strict-cap-before-fence"
                 expected_status = 87
             } else {
@@ -662,10 +666,13 @@ validate_operations_v2() {
                 ++queries[image]
             } else if (op == "crash-cohort") {
                 if ($1 == "strict-hot") expected_recovery = "survive"
-                else if ($1 == "strict-random") expected_recovery = "lost"
+                else if ($1 == "strict-random" && schema == "v3") expected_recovery = "lost"
                 else expected_recovery = ""
+                expected_risk = (idx + 1) / 10
                 if (expected_recovery == "" || idx !~ /^[0-9]+$/ || idx < 0 || idx >= 2 ||
-                    $8 != "weak" || $21 != expected_recovery || $10 <= $12 || $10 > $11) bad = 1
+                    $8 != "weak" || $21 != expected_recovery || $10 <= $12 || $10 > $11 ||
+                    $14 != idx + 1 || $15 != 2 || $16 + 0 < expected_risk - 1e-12 ||
+                    $16 + 0 > expected_risk + 1e-12) bad = 1
                 if (ordinal != 58 + idx) bad = 1
                 ++cohort[image]
             } else if (op == "crash-fence") {
@@ -674,7 +681,7 @@ validate_operations_v2() {
                 if (ordinal != 60) bad = 1
                 ++crash_fences[image]
             } else if (op == "timed-prefix-fence") {
-                if (($1 != "strict-hot" && $1 != "strict-random") ||
+                if (($1 != "strict-hot" && !(schema == "v3" && $1 == "strict-random")) ||
                     idx != 0 || $8 != "stable" || $21 != "") bad = 1
                 if (ordinal != 57) bad = 1
                 ++final_fences[image]
@@ -684,7 +691,7 @@ validate_operations_v2() {
                 if (ordinal != 61) bad = 1
                 ++suffixes[image]
             } else if (op == "cleanup-fence") {
-                if ($1 == "strict-hot" || $1 == "strict-random" ||
+                if ($1 == "strict-hot" || (schema == "v3" && $1 == "strict-random") ||
                     idx != 0 || $8 != "stable" || $21 != "") bad = 1
                 if (ordinal != 57) bad = 1
                 ++final_fences[image]
@@ -697,10 +704,12 @@ validate_operations_v2() {
             ++rows
         }
         END {
-            if (rows != 470 * reps) { print "operation rows: expected " 470 * reps ", got " rows > "/dev/stderr"; failed = 1 }
+            expected_rows = (schema == "v3" ? 470 : 468) * reps
+            if (rows != expected_rows) { print "operation rows: expected " expected_rows ", got " rows > "/dev/stderr"; failed = 1 }
             for (image in images) {
                 split(image, fields, SUBSEP)
-                expected_cohort = (fields[1] == "strict-hot" || fields[1] == "strict-random") ? 2 : 0
+                expected_cohort = (fields[1] == "strict-hot" ||
+                                   (schema == "v3" && fields[1] == "strict-random")) ? 2 : 0
                 expected_crash_fences = fields[1] == "strict-hot" ? 1 : 0
                 expected_suffixes = fields[1] == "strict-hot" ? 1 : 0
                 if (writes[image] != 25 || queries[image] != 32 || final_fences[image] != 1 ||
@@ -711,7 +720,7 @@ validate_operations_v2() {
             }
             exit failed ? 1 : 0
         }
-    ' "$aggregate" "$file" || die "operations CSV v2 validation failed"
+    ' "$aggregate" "$file" || die "operations CSV $SCHEMA_VERSION validation failed"
 }
 
 validate_operations() {
@@ -733,7 +742,8 @@ validate_summary() {
         expected_fields=33
     fi
     assert_header "$file" "$expected_header"
-    awk -F, -v reps="$REPETITIONS" -v expected_fields="$expected_fields" '
+    awk -F, -v reps="$REPETITIONS" -v expected_fields="$expected_fields" \
+        -v schema="$SCHEMA_VERSION" '
         BEGIN {
             split("stable-group strict-random strict-hot exchange-random exchange-hot exchange-hot-guard", names, " ")
             for (i = 1; i <= 6; ++i) allowed[names[i]] = 1
@@ -746,7 +756,7 @@ validate_summary() {
             if ($29 + 0 > 1e-12 || $29 + 0 < -1e-12 || $30 != 0 || $31 != 0 || $32 != 0) bad = 1
             if ($1 == "exchange-hot-guard" && $33 != 1) bad = 1
             if ($1 != "exchange-hot-guard" && $33 != 0) bad = 1
-            if (expected_fields == 39 && $1 == "strict-random" &&
+            if (schema == "v3" && $1 == "strict-random" &&
                 ($27 + 0 < 0.199999999999 || $28 + 0 < 0.199999999999 ||
                  $34 + 0 < 0.199999999999 || $37 != 2 * reps ||
                  $38 != 0 || $39 != 2 * reps)) bad = 1
@@ -826,8 +836,12 @@ validate_logs() {
     [[ "$count" -eq 15 ]] || die "expected 15 crash frontier PASS lines, got $count"
 
     grep -q 'committer_cut_test: PASS cuts=661' "$cut" || die "WAL-cut total is not 661"
-    if [[ "$SCHEMA_VERSION" != v1 ]]; then
+    if [[ "$SCHEMA_VERSION" == v3 ]]; then
         marker="changed_seed_control_tripped=1 terminal_loss_control_tripped=1 graph_seed_count=2 partial_survival_observed=1 post_recovery_suffixes=$REPETITIONS strict_cap_loss_images=$REPETITIONS observed_L_lt_M=1 invariants_ok=1"
+        grep -Fq "$marker" "$run" ||
+            die "v3 benchmark seed/frontier invariant marker missing"
+    elif [[ "$SCHEMA_VERSION" == v2 ]]; then
+        marker="changed_seed_control_tripped=1 terminal_loss_control_tripped=1 graph_seed_count=2 partial_survival_observed=1 post_recovery_suffixes=$REPETITIONS observed_L_lt_M=1 invariants_ok=1"
         grep -Fq "$marker" "$run" ||
             die "v2 benchmark seed/frontier invariant marker missing"
     else
@@ -846,8 +860,13 @@ regenerate_summary_at() {
     python3 "$ROOT/docs/paper/plot_recall_committer.py" \
         --data-dir "$directory" >/dev/null
     if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
-        python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
-            --data-dir "$directory" >/dev/null
+        if [[ "$SCHEMA_VERSION" == v2 ]]; then
+            python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+                --data-dir "$directory" --legacy-win-field >/dev/null
+        else
+            python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+                --data-dir "$directory" >/dev/null
+        fi
     fi
 }
 
@@ -895,9 +914,15 @@ validate_throughput_sweep() {
 
     assert_header "$aggregate" "$SWEEP_AGGREGATE_HEADER"
     assert_header "$operations" "$SWEEP_OPERATIONS_HEADER"
-    python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
-        --data-dir "$BUNDLE" --check >/dev/null ||
-        die "throughput-sweep validation failed"
+    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+        python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+            --data-dir "$BUNDLE" --check --legacy-win-field >/dev/null ||
+            die "throughput-sweep validation failed"
+    else
+        python3 "$ROOT/docs/paper/plot_strict_tradeoff.py" \
+            --data-dir "$BUNDLE" --check >/dev/null ||
+            die "throughput-sweep validation failed"
+    fi
 
     aggregate_rows="$(awk 'END { print NR - 1 }' "$aggregate")"
     operation_rows="$(awk 'END { print NR - 1 }' "$operations")"
@@ -1276,8 +1301,10 @@ fi
 fsync_bundle_at "$BUNDLE" "${BUNDLE_FILES[@]}"
 fsync_directory "$WORK"
 fsync_directory "$STAGING_ROOT"
-if [[ "$SCHEMA_VERSION" != v1 ]]; then
+if [[ "$SCHEMA_VERSION" == v3 ]]; then
     EXPECTED_OPERATION_ROWS=$((470 * REPETITIONS))
+elif [[ "$SCHEMA_VERSION" == v2 ]]; then
+    EXPECTED_OPERATION_ROWS=$((468 * REPETITIONS))
 else
     EXPECTED_OPERATION_ROWS=$((8 * REPETITIONS * 58))
 fi
