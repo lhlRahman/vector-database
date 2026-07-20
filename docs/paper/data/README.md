@@ -67,37 +67,47 @@ scripts/run_recall_committer_evidence.sh \
 ## Canonical recall-committer evidence
 
 `recall_committer_canonical` points to
-`recall_committer_runs/20260720T044019Z-889559979de0`. The canonical v2 bundle was
+`recall_committer_runs/20260720T055159Z-9d93ba5fceab`. The canonical v3 bundle was
 produced from source commit
-`889559979de0519a30de04e9aefbf67a3770e69f` and is the current paper evidence.
+`9d93ba5fceab945985c28e9f18e337bf2c7c1555` and is the current paper evidence.
 It contains:
 
 - 240 aggregate images: 30 executions for each of eight cases.
 - 2,880 recovered-query observations: 12 per image.
-- 14,040 write, query, fence, crash-cohort, and resumed-suffix operations.
+- 14,100 write, query, fence, crash-cohort, and resumed-suffix operations.
 - 60 weak records exposed at the post-sync frontier, all 60 recovered, with 0
-  lost; the terminal-frontier controls remain separately accounted.
+  lost.
+- 60 weak records exposed at the strict cap-before-fence frontier, all 60 lost;
+  every one of its 30 images reaches `M = L = Delta+ = .2` for one query without
+  exceeding the cap.
+- 180 terminal-frontier images across the remaining six cases.
 - 90 `L < M` query observations across all 30 strict-hot images.
 - 30 stable post-recovery suffixes verified through a second recovery.
 - 480 paired strict/stable sweep images and 30,720 raw sweep write rows. All 240
   strict images bind and all 15,360 strict requests return weak ACKs.
-- At `epsilon=.2`, the paired strict/stable median ratio is 1.39/1.43 at
-  `k_min=50` and 1.62/1.55 at `k_min=100` for random/hot workloads.
+- At `epsilon=.2`, the paired strict/stable median ratio is 1.40/1.38 at
+  `k_min=50` and 1.61/1.64 at `k_min=100` for random/hot workloads. Strict is
+  faster in 28/30 and 30/30 timing repetitions at 50, and 30/30 for both at
+  100; these are descriptive counts within fixed graphs, not graph-level
+  replication.
 - 77 general tests, 24 committer tests, 15/15 process-crash frontiers, and
   661/661 WAL byte cuts.
 
-Schema v2 alternates two fixed HNSW base images (seeds 100 and 117) 15 times per
-case. Each strict-hot image exits at the declared
+Schema v3 alternates two fixed HNSW base images (seeds 100 and 117) 15 times per
+case. Each strict-random image exits at the declared
+`strict-cap-before-fence` frontier after acknowledging two query-targeted weak
+records; recovery loses both. Each strict-hot image exits at the declared
 `fence-after-sync-before-publish` frontier, recovers both exposed weak records,
-and then appends its verified stable suffix. The other seven cases retain the
+and then appends its verified stable suffix. The other six cases retain the
 terminal-suffix control.
 
-The statistical unit is one tail/write live image. Recovery queries are
+The statistical unit is one executed tail/write timing repetition. Recovery queries are
 averaged within an image; summaries report min, median, and max across images
 without bootstrapping correlated query rows. The throughput sweep uses adjacent
 stable/strict pairs with randomized within-pair order and reports paired ratios.
 The query set and two base graphs remain fixed, so repetitions are not
-independent graph builds. Fixed-count and fixed-time controls remain in raw
+independent graph or workload samples; effective graph-level replication is two,
+and no sign-test p-value is reported. Fixed-count and fixed-time controls remain in raw
 invariant totals but are omitted from the six displayed main-summary rows.
 
 Run a new portable evidence bundle without rebinding the paper's tracked
