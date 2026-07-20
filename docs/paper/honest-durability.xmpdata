@@ -1,5 +1,5 @@
 \Title{Recall-Bounded Durability for Graph-Based Approximate Nearest Neighbor Indexes}
-\Author{Anonymous Author(s)}
+\Author{Habib Rahman}
 \Subject{An auditable post-recovery recall-loss contract for graph-based approximate nearest-neighbor indexes}
 \Language{en-US}
 \Keywords{approximate nearest neighbor\sep durability\sep crash consistency\sep recall}

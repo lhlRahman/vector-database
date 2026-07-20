@@ -15,8 +15,8 @@ validator is not on `PATH`.
 
 ## Must decide before submission
 
-- [ ] Replace the anonymous author and affiliation for arXiv or a camera-ready
-  version; retain anonymity if the active venue requires it.
+- [x] Author, email, and affiliation are set for arXiv or a camera-ready version;
+  re-anonymize if the active venue requires it.
 - [ ] Set the artifact URL when a stable public repository/archive exists.
 - [ ] Replace the PVLDB DOI, issue, and page placeholders when assigned.
 - [ ] Select the arXiv license and categories (suggested primary `cs.DB`, with
