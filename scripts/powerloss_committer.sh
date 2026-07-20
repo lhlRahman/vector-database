@@ -105,7 +105,7 @@ replay_sectors=$(blockdev --getsz "$REPLAY_DEV")
 [[ $data_sectors -gt 0 ]] || fail "DATA_DEV is empty"
 
 replay_help=$({ "$REPLAY_LOG" --help 2>&1 || true; })
-for option in --end-mark --find --limit --number-entries; do
+for option in --end-mark --find --limit; do
     grep -q -- "$option" <<<"$replay_help" || skip "$REPLAY_LOG lacks required option $option"
 done
 
@@ -219,7 +219,12 @@ source_mounted=0
 dmsetup remove "$DM_NAME"
 dm_created=0
 
-"$REPLAY_LOG" --log "$LOG_DEV" --number-entries >"$ARTIFACT_DIR/log-entry-count.txt"
+if ! "$REPLAY_LOG" --log "$LOG_DEV" --number-entries \
+        >"$ARTIFACT_DIR/log-entry-count.txt" \
+        2>"$ARTIFACT_DIR/log-entry-count.stderr"; then
+    printf '%s\n' 'number-entries: unsupported by this replay-log build' \
+        >"$ARTIFACT_DIR/log-entry-count.txt"
+fi
 
 echo "[2/5] resolve named ACK frontiers to block-log entries"
 mapfile -t marks < <(awk '$1 == "MARK" { print $2 }' "$LEDGER")
