@@ -566,7 +566,14 @@ Exch.-mean+guard/hot & 4 & 163 [137,172] & W 3.42 [2.90,3.83] & 22 & 0; 0/0/0 & 
   table[col sep=comma,x expr=\coordindex,
         y=writes_per_s_median]
         {data/recall_committer_canonical/recall_committer_summary.csv};
-\nextgroupplot[ymin=0, ymax=0.34, ylabel={recovery loss}]
+\nextgroupplot[
+  ymin=0, ymax=0.36, ylabel={recovery loss},
+  legend style={
+    at={(0.5,1.02)}, anchor=south,
+    draw=none, fill=none,
+    font=\scriptsize, legend columns=2,
+    /tikz/column sep=0.4em},
+  legend image post style={xscale=0.5}]
 \addplot+[mark=*,black]
   table[col sep=comma,x expr=\coordindex,y=mean_delta_positive]
         {data/recall_committer_canonical/recall_committer_summary.csv};
