@@ -77,6 +77,36 @@ struct DataSet {
 
 enum class Workload { Random, Hot };
 
+enum class CrashFrontier {
+    TerminalUnfencedSuffix,
+    StrictCapBeforeFence,
+    FenceAfterSyncBeforePublish,
+};
+
+std::string_view crashFrontierName(CrashFrontier frontier) {
+    switch (frontier) {
+        case CrashFrontier::TerminalUnfencedSuffix:
+            return "terminal-unfenced-suffix";
+        case CrashFrontier::StrictCapBeforeFence:
+            return "strict-cap-before-fence";
+        case CrashFrontier::FenceAfterSyncBeforePublish:
+            return "fence-after-sync-before-publish";
+    }
+    throw std::logic_error("unknown crash frontier");
+}
+
+int crashFrontierExitStatus(CrashFrontier frontier) {
+    switch (frontier) {
+        case CrashFrontier::StrictCapBeforeFence:
+            return 87;
+        case CrashFrontier::FenceAfterSyncBeforePublish:
+            return 86;
+        case CrashFrontier::TerminalUnfencedSuffix:
+            return -1;
+    }
+    throw std::logic_error("unknown crash frontier");
+}
+
 struct CaseSpec {
     std::string name;
     Workload workload{Workload::Random};
@@ -86,7 +116,7 @@ struct CaseSpec {
     size_t record_cap{std::numeric_limits<size_t>::max()};
     std::chrono::milliseconds age_cap{0};
     bool correlation_guard{false};
-    bool partial_survival_frontier{false};
+    CrashFrontier crash_frontier{CrashFrontier::TerminalUnfencedSuffix};
 };
 
 struct WriteOp {
@@ -123,7 +153,7 @@ struct CrashPreQuery {
     std::vector<RankedKey> stable;
 };
 
-struct PartialCrashResult {
+struct ControlledCrashResult {
     vdb::DurabilityStatus status;
     std::vector<CrashCohortRecord> cohort;
     std::vector<CrashPreQuery> queries;
@@ -640,14 +670,22 @@ bool validateChangedSeedControl(const DataSet& data,
     return !accepted;
 }
 
-PartialCrashResult runFenceAfterSyncCrash(
+ControlledCrashResult runControlledStrictCrash(
     const DataSet& data,
     const Options& options,
     const CaseSpec& spec,
     const std::filesystem::path& database_path,
     uint32_t graph_seed,
     const vdb::RecallCommitConfig& config) {
-    constexpr size_t cohort_size = 2;
+    const size_t cohort_size = static_cast<size_t>(
+        std::floor(spec.epsilon * static_cast<double>(options.k)));
+    const double cap_loss = static_cast<double>(cohort_size) /
+                            static_cast<double>(options.k);
+    if (spec.policy != vdb::RecallPolicy::Strict || cohort_size == 0 ||
+        spec.crash_frontier == CrashFrontier::TerminalUnfencedSuffix) {
+        throw std::logic_error("controlled crash requires a binding strict frontier");
+    }
+    const std::string frontier_name(crashFrontierName(spec.crash_frontier));
     const size_t crash_queries = std::min<size_t>(12, data.queries.size());
     int ledger_pipe[2];
     if (::pipe(ledger_pipe) != 0) {
@@ -678,7 +716,7 @@ PartialCrashResult runFenceAfterSyncCrash(
                 receipts.push_back(database->insertWithAck(
                     Vector(data.queries.front()),
                     "crash-weak-" + std::to_string(i),
-                    "fence-after-sync-before-publish", vdb::AckMode::Weak));
+                    frontier_name, vdb::AckMode::Weak));
             }
             const auto status = database->durabilityStatus();
             for (const auto& receipt : receipts) {
@@ -690,8 +728,11 @@ PartialCrashResult runFenceAfterSyncCrash(
                 }
             }
             if (status.weak_records != cohort_size ||
+                status.policy_record_cap != cohort_size ||
+                std::abs(status.estimated_recall_loss - cap_loss) > 1e-12 ||
                 status.visible_lsn <= status.durable_lsn) {
-                throw std::runtime_error("observed U_pre does not equal the crash cohort");
+                throw std::runtime_error(
+                    "observed U_pre does not exactly bind the strict crash cap");
             }
 
             std::ostringstream ledger;
@@ -735,8 +776,12 @@ PartialCrashResult runFenceAfterSyncCrash(
                 ledger << '\n';
             }
             writeAll(ledger_pipe[1], ledger.str());
+            if (spec.crash_frontier == CrashFrontier::StrictCapBeforeFence) {
+                _exit(crashFrontierExitStatus(spec.crash_frontier));
+            }
             if (::setenv("VDB_COMMITTER_FAILPOINT", "fence-after-sync", 1) != 0) {
-                throw std::system_error(errno, std::generic_category(), "set crash failpoint");
+                throw std::system_error(errno, std::generic_category(),
+                                        "set crash failpoint");
             }
             (void)database->durabilityFence();
             writeAll(ledger_pipe[1], "ERROR fence-after-sync failpoint returned\n");
@@ -768,13 +813,14 @@ PartialCrashResult runFenceAfterSyncCrash(
                                  : (WIFSIGNALED(wait_status)
                                         ? 128 + WTERMSIG(wait_status)
                                         : 255);
-    if (child_status != 86) {
+    const int expected_child_status = crashFrontierExitStatus(spec.crash_frontier);
+    if (child_status != expected_child_status) {
         throw std::runtime_error(
-            "fence-after-sync child status=" + std::to_string(child_status) +
+            frontier_name + " child status=" + std::to_string(child_status) +
             " ledger=" + ledger);
     }
 
-    PartialCrashResult result;
+    ControlledCrashResult result;
     result.child_exit_status = child_status;
     result.queries.resize(crash_queries);
     std::vector<bool> saw_query(crash_queries, false);
@@ -813,8 +859,8 @@ PartialCrashResult runFenceAfterSyncCrash(
             receipt.actual_ack = vdb::AckLevel::Weak;
             receipt.provisional = provisional != 0;
             result.cohort.push_back(CrashCohortRecord{
-                std::move(key), data.queries.front(),
-                "fence-after-sync-before-publish", receipt, true});
+                std::move(key), data.queries.front(), frontier_name, receipt,
+                spec.crash_frontier == CrashFrontier::FenceAfterSyncBeforePublish});
             saw_receipt[ordinal] = true;
         } else if (kind == "QUERY") {
             size_t ordinal = 0;
@@ -1009,17 +1055,19 @@ TrialResult runTrial(const DataSet& data,
     std::vector<CrashPreQuery> pre_queries;
     vdb::DurabilityStatus pre_status;
     bool database_shutdown = false;
-    if (spec.partial_survival_frontier) {
+    const bool controlled_frontier =
+        spec.crash_frontier != CrashFrontier::TerminalUnfencedSuffix;
+    if (controlled_frontier) {
         if (spec.policy != vdb::RecallPolicy::Strict ||
             std::floor(spec.epsilon * static_cast<double>(options.k)) < 2.0) {
             throw std::runtime_error(
-                "partial-survival frontier requires a strict cap of at least two records");
+                "controlled frontier requires a strict cap of at least two records");
         }
 
         // Leave a fully fenced timed prefix, then make the crash child the only
-        // process with this image open. Its two weak records are both in U_pre;
-        // the production failpoint exits after syncing their WAL fence but
-        // before publishing the new in-memory durable frontier.
+        // process with this image open. Its cap-sized query-targeted cohort is
+        // entirely in U_pre. One frontier exits before fencing; the other exits
+        // after fence sync but before publishing the in-memory durable frontier.
         const auto fence_begin = Clock::now();
         (void)database.durabilityFence();
         trial.fence_latency_us = elapsedUs(fence_begin, Clock::now());
@@ -1029,13 +1077,13 @@ TrialResult runTrial(const DataSet& data,
         database.shutdown();
         database_shutdown = true;
 
-        trial.crash_frontier = "fence-after-sync-before-publish";
-        auto partial = runFenceAfterSyncCrash(
+        trial.crash_frontier = crashFrontierName(spec.crash_frontier);
+        auto controlled = runControlledStrictCrash(
             data, options, spec, database_path, graph_seed, config);
-        pre_status = partial.status;
-        pre_queries = std::move(partial.queries);
-        trial.crash_cohort = std::move(partial.cohort);
-        trial.crash_child_status = partial.child_exit_status;
+        pre_status = controlled.status;
+        pre_queries = std::move(controlled.queries);
+        trial.crash_cohort = std::move(controlled.cohort);
+        trial.crash_child_status = controlled.child_exit_status;
         copyTree(database_path, crash_path);
     } else {
         pre_status = database.durabilityStatus();
@@ -1254,14 +1302,30 @@ TrialResult runTrial(const DataSet& data,
                 observation.membership_risk <= spec.epsilon + 1e-12;
         }
     }
-    if (spec.partial_survival_frontier) {
+    if (spec.crash_frontier == CrashFrontier::FenceAfterSyncBeforePublish) {
         trial.recovery_ok = trial.recovery_ok && trial.exposed_weak_records == 2 &&
                             trial.surviving_weak_records >= 1 &&
                             trial.crash_child_status == 86 && trial.has_strict_loss_gap;
+    } else if (spec.crash_frontier == CrashFrontier::StrictCapBeforeFence) {
+        const size_t strict_cap = static_cast<size_t>(
+            std::floor(spec.epsilon * static_cast<double>(options.k)));
+        const double cap_loss = static_cast<double>(strict_cap) /
+                                static_cast<double>(options.k);
+        const bool reached_cap_loss = std::any_of(
+            trial.crash.begin(), trial.crash.end(), [&](const CrashObservation& observation) {
+                return std::abs(observation.membership_risk - cap_loss) <= 1e-12 &&
+                       std::abs(observation.realized_loss - cap_loss) <= 1e-12 &&
+                       std::abs(observation.positive_delta - cap_loss) <= 1e-12;
+            });
+        trial.recovery_ok = trial.recovery_ok &&
+                            trial.exposed_weak_records == strict_cap &&
+                            trial.surviving_weak_records == 0 &&
+                            trial.lost_weak_records == strict_cap &&
+                            trial.crash_child_status == 87 && reached_cap_loss;
     }
     trial.strict_ok = trial.strict_ok && trial.policy.cap_overshoots == 0;
     recovered.shutdown();
-    if (spec.partial_survival_frontier) {
+    if (spec.crash_frontier == CrashFrontier::FenceAfterSyncBeforePublish) {
         copyTree(crash_path, resume_path);
         auto suffix = runPostRecoverySuffix(
             data, options, resume_path, graph_seed, config, trial.crash_cohort);
@@ -1570,7 +1634,7 @@ bool runThroughputSweep(const DataSet& data,
     writeThroughputSweepCsv(aggregate_path, trials);
     writeThroughputSweepOperationsCsv(operations_path, trials);
 
-    std::cout << "\npaired independent-image min/median/max\n";
+    std::cout << "\npaired fixed-graph timing-repetition min/median/max\n";
     for (const auto& spec : cases) {
         std::vector<double> throughputs;
         for (const auto& trial : trials) {
@@ -1619,7 +1683,7 @@ void writeRawCsv(const std::filesystem::path& path,
                    << query.response.exact_tail_distance_evaluations << ','
                    << trial.crash_frontier << ",," << trial.crash_child_status << '\n';
         }
-        if (trial.crash_child_status == 86) {
+        if (trial.crash_frontier != "terminal-unfenced-suffix") {
             output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
                    << ',' << trial.hnsw_seed << ',' << trial.tail_seed
                    << ",timed-prefix-fence,0,stable," << trial.fence_latency_us
@@ -1640,29 +1704,32 @@ void writeRawCsv(const std::filesystem::path& path,
                        << (record.expected_to_survive ? "survive" : "lost") << ','
                        << trial.crash_child_status << '\n';
             }
-            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
-                   << ",crash-fence,0,none,0," << trial.crash_visible_lsn << ','
-                   << trial.crash_visible_lsn << ',' << trial.crash_durable_lsn
-                   << ",0," << trial.exposed_weak_records
-                   << ",0,0,,,," << trial.crash_frontier
-                   << ",child-exit-after-sync," << trial.crash_child_status << '\n';
-            if (!trial.post_recovery_suffix) {
-                throw std::runtime_error("partial workflow has no post-recovery suffix");
+            if (trial.crash_frontier == "fence-after-sync-before-publish") {
+                output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
+                       << ',' << trial.hnsw_seed << ',' << trial.tail_seed
+                       << ",crash-fence,0,none,0," << trial.crash_visible_lsn << ','
+                       << trial.crash_visible_lsn << ',' << trial.crash_durable_lsn
+                       << ",0," << trial.exposed_weak_records
+                       << ",0,0,,,," << trial.crash_frontier
+                       << ",child-exit-after-sync," << trial.crash_child_status << '\n';
+                if (!trial.post_recovery_suffix) {
+                    throw std::runtime_error(
+                        "post-sync crash workflow has no post-recovery suffix");
+                }
+                const auto& suffix = *trial.post_recovery_suffix;
+                const auto& receipt = suffix.receipt;
+                output << trial.case_name << ',' << trial.workload << ','
+                       << trial.repetition << ',' << trial.hnsw_seed << ','
+                       << trial.tail_seed << ",post-recovery-suffix,0,"
+                       << ackName(receipt.actual_ack) << ',' << suffix.latency_us << ','
+                       << receipt.lsn << ',' << receipt.visible_lsn << ','
+                       << receipt.durable_lsn << ',' << receipt.durable_count << ','
+                       << receipt.weak_count << ',' << receipt.policy_cap << ','
+                       << receipt.risk_estimate << ",,,," << trial.crash_frontier
+                       << ",workflow-resumed," << trial.crash_child_status << '\n';
             }
-            const auto& suffix = *trial.post_recovery_suffix;
-            const auto& receipt = suffix.receipt;
-            output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
-                   << ',' << trial.hnsw_seed << ',' << trial.tail_seed
-                   << ",post-recovery-suffix,0," << ackName(receipt.actual_ack) << ','
-                   << suffix.latency_us << ',' << receipt.lsn << ','
-                   << receipt.visible_lsn << ',' << receipt.durable_lsn << ','
-                   << receipt.durable_count << ',' << receipt.weak_count << ','
-                   << receipt.policy_cap << ',' << receipt.risk_estimate
-                   << ",,,," << trial.crash_frontier << ",workflow-resumed,"
-                   << trial.crash_child_status << '\n';
         }
-        if (trial.crash_child_status != 86) {
+        if (trial.crash_frontier == "terminal-unfenced-suffix") {
             output << trial.case_name << ',' << trial.workload << ',' << trial.repetition
                    << ',' << trial.hnsw_seed << ',' << trial.tail_seed
                    << ",cleanup-fence,0,stable," << trial.fence_latency_us
@@ -1914,10 +1981,13 @@ int main(int argc, char** argv) {
              vdb::AckMode::Weak, 0.90, std::numeric_limits<size_t>::max(),
              std::chrono::milliseconds(2)},
             {"strict-random", Workload::Random, vdb::RecallPolicy::Strict,
-             vdb::AckMode::Weak, options.strict_epsilon},
+             vdb::AckMode::Weak, options.strict_epsilon,
+             std::numeric_limits<size_t>::max(), std::chrono::milliseconds(0), false,
+             CrashFrontier::StrictCapBeforeFence},
             {"strict-hot", Workload::Hot, vdb::RecallPolicy::Strict,
              vdb::AckMode::Weak, options.strict_epsilon,
-             std::numeric_limits<size_t>::max(), std::chrono::milliseconds(0), false, true},
+             std::numeric_limits<size_t>::max(), std::chrono::milliseconds(0), false,
+             CrashFrontier::FenceAfterSyncBeforePublish},
             {"exchange-random", Workload::Random, vdb::RecallPolicy::ExchangeableMean,
              vdb::AckMode::Weak, options.exchange_epsilon},
             {"exchange-hot", Workload::Hot, vdb::RecallPolicy::ExchangeableMean,
@@ -1933,6 +2003,7 @@ int main(int argc, char** argv) {
         bool observed_partial_survival = false;
         bool terminal_loss_control_tripped = false;
         size_t post_recovery_suffixes = 0;
+        size_t strict_cap_loss_images = 0;
         for (size_t repetition = 0; repetition < options.repetitions; ++repetition) {
             std::vector<size_t> case_order(cases.size());
             std::iota(case_order.begin(), case_order.end(), 0);
@@ -1969,16 +2040,34 @@ int main(int argc, char** argv) {
                 observed_strict_loss_gap = observed_strict_loss_gap ||
                                            trial.has_strict_loss_gap;
                 observed_partial_survival = observed_partial_survival ||
-                    (spec.partial_survival_frontier &&
+                    (spec.crash_frontier == CrashFrontier::FenceAfterSyncBeforePublish &&
                      trial.surviving_weak_records > 0 && trial.has_strict_loss_gap);
                 terminal_loss_control_tripped = terminal_loss_control_tripped ||
-                    (!spec.partial_survival_frontier &&
+                    (spec.crash_frontier == CrashFrontier::TerminalUnfencedSuffix &&
                      trial.exposed_weak_records > 0 &&
                      trial.surviving_weak_records == 0 &&
                      trial.lost_weak_records == trial.exposed_weak_records);
-                if (spec.partial_survival_frontier &&
+                if (spec.crash_frontier == CrashFrontier::FenceAfterSyncBeforePublish &&
                     trial.post_recovery_suffix && trial.post_recovery_suffix_ok) {
                     ++post_recovery_suffixes;
+                }
+                if (spec.crash_frontier == CrashFrontier::StrictCapBeforeFence) {
+                    const size_t strict_cap = static_cast<size_t>(
+                        std::floor(spec.epsilon * static_cast<double>(options.k)));
+                    const double cap_loss = static_cast<double>(strict_cap) /
+                                            static_cast<double>(options.k);
+                    const bool reached_cap_loss = std::any_of(
+                        trial.crash.begin(), trial.crash.end(),
+                        [&](const CrashObservation& observation) {
+                            return std::abs(observation.membership_risk - cap_loss) <= 1e-12 &&
+                                   std::abs(observation.realized_loss - cap_loss) <= 1e-12 &&
+                                   std::abs(observation.positive_delta - cap_loss) <= 1e-12;
+                        });
+                    if (trial.exposed_weak_records == strict_cap &&
+                        trial.surviving_weak_records == 0 &&
+                        trial.lost_weak_records == strict_cap && reached_cap_loss) {
+                        ++strict_cap_loss_images;
+                    }
                 }
                 trials.push_back(std::move(trial));
             }
@@ -1994,8 +2083,9 @@ int main(int argc, char** argv) {
         bool all_ok = negative_control_tripped && observed_graph_seeds.size() >= 2 &&
                       observed_strict_loss_gap && observed_partial_survival &&
                       terminal_loss_control_tripped &&
-                      post_recovery_suffixes == options.repetitions;
-        std::cout << "\nindependent-image min/median/max (no query-row bootstrap)\n";
+                      post_recovery_suffixes == options.repetitions &&
+                      strict_cap_loss_images == options.repetitions;
+        std::cout << "\nper-execution min/median/max (no query-row bootstrap)\n";
         for (const auto& spec : cases) {
             std::vector<double> throughputs;
             std::vector<double> deltas;
@@ -2032,6 +2122,7 @@ int main(int argc, char** argv) {
                   << " partial_survival_observed="
                   << (observed_partial_survival ? 1 : 0)
                   << " post_recovery_suffixes=" << post_recovery_suffixes
+                  << " strict_cap_loss_images=" << strict_cap_loss_images
                   << " observed_L_lt_M=" << (observed_strict_loss_gap ? 1 : 0)
                   << " invariants_ok=" << (all_ok ? 1 : 0) << '\n';
         if (!options.keep_images) std::filesystem::remove_all(root);

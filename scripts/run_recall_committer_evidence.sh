@@ -312,7 +312,12 @@ detect_schema() {
     IFS= read -r actual < "$BUNDLE/recall_committer.csv" ||
         die "cannot read aggregate schema"
     if [[ "$actual" == "$AGGREGATE_HEADER_V2" ]]; then
-        SCHEMA_VERSION=v2
+        if awk -F, 'NR > 1 && $35 == "strict-cap-before-fence" { found = 1 }
+                     END { exit found ? 0 : 1 }' "$BUNDLE/recall_committer.csv"; then
+            SCHEMA_VERSION=v3
+        else
+            SCHEMA_VERSION=v2
+        fi
     elif [[ "$actual" == "$AGGREGATE_HEADER_V1" ]]; then
         SCHEMA_VERSION=v1
     else
@@ -397,6 +402,15 @@ validate_aggregate_v2() {
                 }
                 ++partial_images
                 exposed += $39; surviving += $40; lost += $41
+            } else if ($1 == "strict-random") {
+                if ($35 != "strict-cap-before-fence" || $36 <= $37 || $38 != 87 ||
+                    $39 != 2 || $40 != 0 || $41 != 2 || $42 != 0 ||
+                    $43 + 0 < 0.199999999999 || $44 + 0 < 0.199999999999 ||
+                    $45 + 0 < 0.199999999999) {
+                    print "strict-random cap frontier mismatch at line " NR > "/dev/stderr"; bad = 1
+                }
+                ++cap_images
+                cap_exposed += $39; cap_surviving += $40; cap_lost += $41
             } else {
                 if ($35 != "terminal-unfenced-suffix" || $38 != -1 || $40 != 0 || $41 != $39) {
                     print "terminal frontier mismatch at line " NR > "/dev/stderr"; bad = 1
@@ -408,7 +422,9 @@ validate_aggregate_v2() {
         }
         END {
             if (rows != 8 * reps) { print "aggregate rows: expected " 8 * reps ", got " rows > "/dev/stderr"; failed = 1 }
-            if (partial_images != reps || terminal_images != 7 * reps || exposed != 2 * reps || surviving != 2 * reps || lost != 0) {
+            if (partial_images != reps || cap_images != reps || terminal_images != 6 * reps ||
+                exposed != 2 * reps || surviving != 2 * reps || lost != 0 ||
+                cap_exposed != 2 * reps || cap_surviving != 0 || cap_lost != 2 * reps) {
                 print "partial-survival frontier totals mismatch" > "/dev/stderr"; failed = 1
             }
             for (i = 1; i <= 8; ++i) for (r = 0; r < reps; ++r) {
@@ -421,7 +437,7 @@ validate_aggregate_v2() {
 
 validate_aggregate() {
     detect_schema
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
         validate_aggregate_v2
     else
         validate_aggregate_v1
@@ -507,6 +523,13 @@ validate_crash_v2() {
                     print "strict-hot crash frontier mismatch at line " FNR > "/dev/stderr"; bad = 1
                 }
                 if ($15 + 1e-12 < $14) gap[image] = 1
+            } else if ($1 == "strict-random") {
+                if ($6 != "strict-cap-before-fence" || $7 <= $8 || $9 != 87 ||
+                    $10 != 2 || $11 != 0 || $12 != 2) {
+                    print "strict-random crash frontier mismatch at line " FNR > "/dev/stderr"; bad = 1
+                }
+                if ($14 + 0 >= 0.199999999999 && $15 + 0 >= 0.199999999999 &&
+                    $16 + 0 >= 0.199999999999) cap_loss[image] = 1
             } else if ($6 != "terminal-unfenced-suffix" || $9 != -1 || $11 != 0 || $12 != $10) {
                 print "terminal crash frontier mismatch at line " FNR > "/dev/stderr"; bad = 1
             }
@@ -525,6 +548,9 @@ validate_crash_v2() {
                 if (fields[1] == "strict-hot" && !(image in gap)) {
                     print "strict-hot image has no genuine L<M observation" > "/dev/stderr"; failed = 1
                 }
+                if (fields[1] == "strict-random" && !(image in cap_loss)) {
+                    print "strict-random image did not attain the strict cap loss" > "/dev/stderr"; failed = 1
+                }
             }
             exit failed ? 1 : 0
         }
@@ -532,7 +558,7 @@ validate_crash_v2() {
 }
 
 validate_crash() {
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
         validate_crash_v2
     else
         validate_crash_v1
@@ -612,8 +638,16 @@ validate_operations_v2() {
             expected_seed = (($3 + case_index[$1]) % 2 == 0) ? 100 : 117
             expected_tail = ($2 == "hot" ? 45001 : 9001) + $3
             if ($4 != expected_seed || $5 != expected_tail) { print "operation seed mismatch at line " FNR > "/dev/stderr"; bad = 1 }
-            expected_frontier = ($1 == "strict-hot") ? "fence-after-sync-before-publish" : "terminal-unfenced-suffix"
-            expected_status = ($1 == "strict-hot") ? 86 : -1
+            if ($1 == "strict-hot") {
+                expected_frontier = "fence-after-sync-before-publish"
+                expected_status = 86
+            } else if ($1 == "strict-random") {
+                expected_frontier = "strict-cap-before-fence"
+                expected_status = 87
+            } else {
+                expected_frontier = "terminal-unfenced-suffix"
+                expected_status = -1
+            }
             if ($20 != expected_frontier || $22 != expected_status) { print "operation frontier/status mismatch at line " FNR > "/dev/stderr"; bad = 1 }
             op = $6
             idx = $7
@@ -627,8 +661,11 @@ validate_operations_v2() {
                 if (ordinal != 25 + idx) bad = 1
                 ++queries[image]
             } else if (op == "crash-cohort") {
-                if ($1 != "strict-hot" || idx !~ /^[0-9]+$/ || idx < 0 || idx >= 2 ||
-                    $8 != "weak" || $21 != "survive" || $10 <= $12 || $10 > $11) bad = 1
+                if ($1 == "strict-hot") expected_recovery = "survive"
+                else if ($1 == "strict-random") expected_recovery = "lost"
+                else expected_recovery = ""
+                if (expected_recovery == "" || idx !~ /^[0-9]+$/ || idx < 0 || idx >= 2 ||
+                    $8 != "weak" || $21 != expected_recovery || $10 <= $12 || $10 > $11) bad = 1
                 if (ordinal != 58 + idx) bad = 1
                 ++cohort[image]
             } else if (op == "crash-fence") {
@@ -637,7 +674,8 @@ validate_operations_v2() {
                 if (ordinal != 60) bad = 1
                 ++crash_fences[image]
             } else if (op == "timed-prefix-fence") {
-                if ($1 != "strict-hot" || idx != 0 || $8 != "stable" || $21 != "") bad = 1
+                if (($1 != "strict-hot" && $1 != "strict-random") ||
+                    idx != 0 || $8 != "stable" || $21 != "") bad = 1
                 if (ordinal != 57) bad = 1
                 ++final_fences[image]
             } else if (op == "post-recovery-suffix") {
@@ -646,7 +684,8 @@ validate_operations_v2() {
                 if (ordinal != 61) bad = 1
                 ++suffixes[image]
             } else if (op == "cleanup-fence") {
-                if ($1 == "strict-hot" || idx != 0 || $8 != "stable" || $21 != "") bad = 1
+                if ($1 == "strict-hot" || $1 == "strict-random" ||
+                    idx != 0 || $8 != "stable" || $21 != "") bad = 1
                 if (ordinal != 57) bad = 1
                 ++final_fences[image]
             } else {
@@ -658,10 +697,10 @@ validate_operations_v2() {
             ++rows
         }
         END {
-            if (rows != 468 * reps) { print "operation rows: expected " 468 * reps ", got " rows > "/dev/stderr"; failed = 1 }
+            if (rows != 470 * reps) { print "operation rows: expected " 470 * reps ", got " rows > "/dev/stderr"; failed = 1 }
             for (image in images) {
                 split(image, fields, SUBSEP)
-                expected_cohort = fields[1] == "strict-hot" ? 2 : 0
+                expected_cohort = (fields[1] == "strict-hot" || fields[1] == "strict-random") ? 2 : 0
                 expected_crash_fences = fields[1] == "strict-hot" ? 1 : 0
                 expected_suffixes = fields[1] == "strict-hot" ? 1 : 0
                 if (writes[image] != 25 || queries[image] != 32 || final_fences[image] != 1 ||
@@ -676,7 +715,7 @@ validate_operations_v2() {
 }
 
 validate_operations() {
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
         validate_operations_v2
     else
         validate_operations_v1
@@ -686,7 +725,7 @@ validate_operations() {
 validate_summary() {
     local file="$BUNDLE/recall_committer_summary.csv"
     local expected_header expected_fields
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
         expected_header="$SUMMARY_HEADER_V2"
         expected_fields=39
     else
@@ -707,6 +746,10 @@ validate_summary() {
             if ($29 + 0 > 1e-12 || $29 + 0 < -1e-12 || $30 != 0 || $31 != 0 || $32 != 0) bad = 1
             if ($1 == "exchange-hot-guard" && $33 != 1) bad = 1
             if ($1 != "exchange-hot-guard" && $33 != 0) bad = 1
+            if (expected_fields == 39 && $1 == "strict-random" &&
+                ($27 + 0 < 0.199999999999 || $28 + 0 < 0.199999999999 ||
+                 $34 + 0 < 0.199999999999 || $37 != 2 * reps ||
+                 $38 != 0 || $39 != 2 * reps)) bad = 1
             if (bad) { print "invalid summary row at line " NR > "/dev/stderr"; failed = 1 }
             ++rows
         }
@@ -717,7 +760,7 @@ validate_summary() {
         }
     ' "$file" || die "summary CSV validation failed"
 
-    [[ "$SCHEMA_VERSION" == v2 ]] || return 0
+    [[ "$SCHEMA_VERSION" != v1 ]] || return 0
     awk -F, \
         -v aggregate="$BUNDLE/recall_committer.csv" \
         -v crash="$BUNDLE/recall_committer_crash.csv" \
@@ -769,7 +812,7 @@ validate_logs() {
 
     if [[ $HAS_THROUGHPUT_SWEEP -eq 1 ]]; then
         grep -q 'Results: 77/77 passed' "$unit" || die "base unit-test total is not 77/77"
-    elif [[ "$SCHEMA_VERSION" == v2 ]]; then
+    elif [[ "$SCHEMA_VERSION" != v1 ]]; then
         grep -q 'Results: 76/76 passed' "$unit" || die "base unit-test total is not 76/76"
     else
         grep -q 'Results: 75/75 passed' "$unit" || die "legacy base unit-test total is not 75/75"
@@ -783,8 +826,8 @@ validate_logs() {
     [[ "$count" -eq 15 ]] || die "expected 15 crash frontier PASS lines, got $count"
 
     grep -q 'committer_cut_test: PASS cuts=661' "$cut" || die "WAL-cut total is not 661"
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
-        marker="changed_seed_control_tripped=1 terminal_loss_control_tripped=1 graph_seed_count=2 partial_survival_observed=1 post_recovery_suffixes=$REPETITIONS observed_L_lt_M=1 invariants_ok=1"
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
+        marker="changed_seed_control_tripped=1 terminal_loss_control_tripped=1 graph_seed_count=2 partial_survival_observed=1 post_recovery_suffixes=$REPETITIONS strict_cap_loss_images=$REPETITIONS observed_L_lt_M=1 invariants_ok=1"
         grep -Fq "$marker" "$run" ||
             die "v2 benchmark seed/frontier invariant marker missing"
     else
@@ -963,7 +1006,8 @@ capture_environment() {
     local status relevant_status diff_hash source_manifest_hash
     local os compiler cpu memory filesystem aggregate_rows crash_rows operation_rows
     local graph_seed_100_rows graph_seed_117_rows
-    local partial_images terminal_images exposed surviving lost child_status_86 suffix_rows
+    local partial_images cap_images terminal_images exposed surviving lost
+    local cap_exposed cap_surviving cap_lost child_status_86 child_status_87 suffix_rows
     local sweep_rows sweep_operation_rows
     [[ $SOURCE_SNAPSHOT_VERIFIED -eq 1 ]] || die "source snapshot was not verified"
     status="$(git -C "$ROOT" status --porcelain --untracked-files=all || true)"
@@ -987,15 +1031,24 @@ capture_environment() {
     graph_seed_100_rows="$(awk -F, 'NR > 1 && $4 == 100 { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
     graph_seed_117_rows="$(awk -F, 'NR > 1 && $4 == 117 { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
     suffix_rows="$(awk -F, 'NR > 1 && $6 == "post-recovery-suffix" { ++n } END { print n + 0 }' "$BUNDLE/recall_committer_operations.csv")"
-    partial_images=0; terminal_images=0; exposed=0; surviving=0; lost=0; child_status_86=0
-    if [[ "$SCHEMA_VERSION" == v2 ]]; then
-        read -r partial_images terminal_images exposed surviving lost child_status_86 <<EOF
+    partial_images=0; cap_images=0; terminal_images=0
+    exposed=0; surviving=0; lost=0; cap_exposed=0; cap_surviving=0; cap_lost=0
+    child_status_86=0; child_status_87=0
+    if [[ "$SCHEMA_VERSION" != v1 ]]; then
+        read -r partial_images cap_images terminal_images exposed surviving lost \
+            cap_exposed cap_surviving cap_lost child_status_86 child_status_87 <<EOF
 $(awk -F, 'NR > 1 {
     if ($35 == "fence-after-sync-before-publish") {
         ++partial; exposed += $39; surviving += $40; lost += $41
         if ($38 == 86) ++child86
+    } else if ($35 == "strict-cap-before-fence") {
+        ++cap; cap_exposed += $39; cap_surviving += $40; cap_lost += $41
+        if ($38 == 87) ++child87
     } else if ($35 == "terminal-unfenced-suffix") ++terminal
-} END { print partial + 0, terminal + 0, exposed + 0, surviving + 0, lost + 0, child86 + 0 }' "$BUNDLE/recall_committer.csv")
+} END { print partial + 0, cap + 0, terminal + 0,
+              exposed + 0, surviving + 0, lost + 0,
+              cap_exposed + 0, cap_surviving + 0, cap_lost + 0,
+              child86 + 0, child87 + 0 }' "$BUNDLE/recall_committer.csv")
 EOF
     fi
     {
@@ -1024,6 +1077,7 @@ EOF
         printf 'throughput_sweep_queries_per_image=%s\n' "$SWEEP_QUERIES"
         printf 'throughput_sweep_k_mins=%s\n' "$SWEEP_K_MINS"
         printf 'throughput_sweep_epsilons=%s\n' "$SWEEP_EPSILONS"
+        printf 'throughput_sweep_replication=two fixed base graphs; descriptive timing repetitions paired within graph\n'
         printf 'base_records=160\n'
         printf 'writes_per_image=25\n'
         printf 'concurrent_queries_per_image=32\n'
@@ -1031,21 +1085,27 @@ EOF
         printf 'dimensions=12\n'
         printf 'k=10\n'
         printf 'writers=4\n'
-        printf 'hnsw_graph_seeds=%s\n' "$([[ "$SCHEMA_VERSION" == v2 ]] && printf '100,117' || printf '100')"
+        printf 'hnsw_graph_seeds=%s\n' "$([[ "$SCHEMA_VERSION" != v1 ]] && printf '100,117' || printf '100')"
         printf 'graph_seed_100_operation_rows=%s\n' "$graph_seed_100_rows"
         printf 'graph_seed_117_operation_rows=%s\n' "$graph_seed_117_rows"
         printf 'tail_seeds=random:9001+repetition,hot:45001+repetition\n'
         printf 'partial_frontier=fence-after-sync-before-publish\n'
+        printf 'strict_cap_frontier=strict-cap-before-fence\n'
         printf 'terminal_frontier=terminal-unfenced-suffix\n'
         printf 'partial_frontier_images=%s\n' "$partial_images"
+        printf 'strict_cap_frontier_images=%s\n' "$cap_images"
         printf 'terminal_frontier_images=%s\n' "$terminal_images"
         printf 'partial_frontier_child_status_86_images=%s\n' "$child_status_86"
+        printf 'strict_cap_frontier_child_status_87_images=%s\n' "$child_status_87"
         printf 'partial_frontier_exposed_weak_records=%s\n' "$exposed"
         printf 'partial_frontier_surviving_weak_records=%s\n' "$surviving"
         printf 'partial_frontier_lost_weak_records=%s\n' "$lost"
+        printf 'strict_cap_frontier_exposed_weak_records=%s\n' "$cap_exposed"
+        printf 'strict_cap_frontier_surviving_weak_records=%s\n' "$cap_surviving"
+        printf 'strict_cap_frontier_lost_weak_records=%s\n' "$cap_lost"
         printf 'post_recovery_suffix_rows=%s\n' "$suffix_rows"
-        printf 'statistical_unit=one independently executed tail/write live image\n'
-        printf 'uncertainty_summary=min/median/max across images; no query-row bootstrap\n'
+        printf 'statistical_unit=one executed tail/write timing repetition; two fixed base graphs\n'
+        printf 'uncertainty_summary=descriptive min/median/max across timing repetitions; no query-row bootstrap\n'
         printf 'os=%s\n' "$os"
         printf 'cpu=%s\n' "$cpu"
         printf 'memory=%s\n' "$memory"
@@ -1216,8 +1276,8 @@ fi
 fsync_bundle_at "$BUNDLE" "${BUNDLE_FILES[@]}"
 fsync_directory "$WORK"
 fsync_directory "$STAGING_ROOT"
-if [[ "$SCHEMA_VERSION" == v2 ]]; then
-    EXPECTED_OPERATION_ROWS=$((468 * REPETITIONS))
+if [[ "$SCHEMA_VERSION" != v1 ]]; then
+    EXPECTED_OPERATION_ROWS=$((470 * REPETITIONS))
 else
     EXPECTED_OPERATION_ROWS=$((8 * REPETITIONS * 58))
 fi
