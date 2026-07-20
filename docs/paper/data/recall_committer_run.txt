@@ -1,0 +1,304 @@
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/verify_committer_image.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/verify_committer_image
+read-only committer verification API available
+c++ -std=c++20 -Iinclude -Isrc -Wno-psabi -Isrc -mcpu=native -O2 -pthread test/committer_crash_test.cpp \
+		build/core/vector_database.o build/core/vector.o build/features/query_cache.o build/features/atomic_batch_insert.o build/features/atomic_persistence.o build/features/commit_log.o build/features/recall_commit_policy.o build/algorithms/hnsw_index.o build/utils/distance_metrics.o build/utils/random_generator.o build/optimizations/simd_operations.o build/optimizations/parallel_processing.o build/optimizations/gpu_operations.o build/storage/mmap_storage.o build/storage/segment.o build/storage/segmented_vector_store.o -framework Metal -framework MetalPerformanceShaders -framework Foundation -o build/committer_crash_test
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=w0 ledger="build/committer-crash-matrix/w0.ledger"
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=w1 ledger="build/committer-crash-matrix/w1.ledger"
+OK frontier=crash durable_lsn=16 allow_through=crash
+OK frontier=crash durable_lsn=16 allow_through=crash
+PASS: process crash frontier=wcap ledger="build/committer-crash-matrix/wcap.ledger"
+OK frontier=crash durable_lsn=18 allow_through=crash
+OK frontier=crash durable_lsn=18 allow_through=crash
+PASS: process crash frontier=cap-plus-one ledger="build/committer-crash-matrix/cap-plus-one.ledger"
+OK frontier=crash durable_lsn=18 allow_through=crash
+OK frontier=crash durable_lsn=18 allow_through=crash
+PASS: process crash frontier=after-fence ledger="build/committer-crash-matrix/after-fence.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-before-append ledger="build/committer-crash-matrix/fence-before-append.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-append ledger="build/committer-crash-matrix/fence-after-append.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-before-sync ledger="build/committer-crash-matrix/fence-before-sync.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-sync ledger="build/committer-crash-matrix/fence-after-sync.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=fence-after-publish ledger="build/committer-crash-matrix/fence-after-publish.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-prepare ledger="build/committer-crash-matrix/seal-after-prepare.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-new-mutable ledger="build/committer-crash-matrix/seal-after-new-mutable.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-manifest ledger="build/committer-crash-matrix/seal-after-manifest.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-publish ledger="build/committer-crash-matrix/seal-after-publish.ledger"
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+OK frontier=weak-2 durable_lsn=16 allow_through=weak-2
+PASS: process crash frontier=seal-after-retire ledger="build/committer-crash-matrix/seal-after-retire.ledger"
+PASS: recall-committer process crash matrix 15/15
+recall-committer benchmark dataset=clustered-synthetic base=160 writes=25 queries=32 dim=12 k=10 writers=4 repetitions=30
+negative_control changed_seed=101 answer_drift=0 topology_fingerprint_mismatch=1 validator_rejected=1
+stable-group         rep=0 writes/s=319.0 weak_p95_us=0.0 query_p95_us=10253.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=0 writes/s=310.2 weak_p95_us=15986.5 query_p95_us=12493.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=0 writes/s=459.9 weak_p95_us=13153.5 query_p95_us=2713.5 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=0 writes/s=234.3 weak_p95_us=18730.1 query_p95_us=15343.2 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=0 writes/s=485.4 weak_p95_us=13956.9 query_p95_us=2403.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=0 writes/s=160.6 weak_p95_us=4341.0 query_p95_us=27677.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-hot           rep=0 writes/s=258.3 weak_p95_us=18768.8 query_p95_us=14928.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=0 writes/s=362.2 weak_p95_us=15586.0 query_p95_us=20.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=1 writes/s=146.2 weak_p95_us=3833.7 query_p95_us=29533.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-hot           rep=1 writes/s=173.8 weak_p95_us=35484.3 query_p95_us=22796.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=1 writes/s=157.6 weak_p95_us=34053.8 query_p95_us=4028.2 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=1 writes/s=492.8 weak_p95_us=12670.0 query_p95_us=8352.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=1 writes/s=314.8 weak_p95_us=0.0 query_p95_us=9837.7 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=1 writes/s=340.8 weak_p95_us=15582.5 query_p95_us=77.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=1 writes/s=317.6 weak_p95_us=16041.8 query_p95_us=10968.8 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=1 writes/s=539.1 weak_p95_us=10808.0 query_p95_us=4944.1 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=2 writes/s=299.8 weak_p95_us=0.0 query_p95_us=9807.8 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=2 writes/s=203.6 weak_p95_us=21068.8 query_p95_us=17224.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=2 writes/s=331.9 weak_p95_us=13103.3 query_p95_us=9826.5 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=2 writes/s=490.4 weak_p95_us=11272.2 query_p95_us=5072.4 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=2 writes/s=106.2 weak_p95_us=5096.6 query_p95_us=40650.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-time           rep=2 writes/s=247.4 weak_p95_us=30661.9 query_p95_us=115.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=2 writes/s=191.3 weak_p95_us=32293.5 query_p95_us=12159.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=2 writes/s=458.9 weak_p95_us=13956.4 query_p95_us=7754.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=3 writes/s=105.4 weak_p95_us=5308.9 query_p95_us=2076.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-time           rep=3 writes/s=286.9 weak_p95_us=23994.5 query_p95_us=71.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=3 writes/s=423.6 weak_p95_us=13478.3 query_p95_us=6464.0 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=3 writes/s=486.5 weak_p95_us=15212.0 query_p95_us=6973.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=3 writes/s=355.9 weak_p95_us=13901.9 query_p95_us=9638.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=3 writes/s=286.1 weak_p95_us=0.0 query_p95_us=10582.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=3 writes/s=235.9 weak_p95_us=18930.5 query_p95_us=7279.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=3 writes/s=223.4 weak_p95_us=23484.1 query_p95_us=14782.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=4 writes/s=340.3 weak_p95_us=18171.0 query_p95_us=12631.8 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=4 writes/s=335.5 weak_p95_us=20918.0 query_p95_us=75.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=4 writes/s=215.6 weak_p95_us=21857.3 query_p95_us=13241.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=4 writes/s=483.7 weak_p95_us=12661.3 query_p95_us=5396.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=4 writes/s=313.6 weak_p95_us=17665.0 query_p95_us=6021.5 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=4 writes/s=150.5 weak_p95_us=8424.0 query_p95_us=12066.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+stable-group         rep=4 writes/s=299.9 weak_p95_us=0.0 query_p95_us=11175.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=4 writes/s=229.2 weak_p95_us=23778.5 query_p95_us=14905.2 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=5 writes/s=326.6 weak_p95_us=0.0 query_p95_us=9112.0 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=5 writes/s=454.2 weak_p95_us=11614.3 query_p95_us=10379.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=5 writes/s=238.3 weak_p95_us=20542.8 query_p95_us=15831.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=5 writes/s=105.3 weak_p95_us=5151.4 query_p95_us=40508.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-hot           rep=5 writes/s=183.2 weak_p95_us=34793.6 query_p95_us=13598.9 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=5 writes/s=517.1 weak_p95_us=10685.4 query_p95_us=4795.9 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=5 writes/s=336.2 weak_p95_us=13796.5 query_p95_us=11094.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=5 writes/s=359.7 weak_p95_us=15477.4 query_p95_us=148.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=6 writes/s=471.9 weak_p95_us=12222.7 query_p95_us=7654.5 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=6 writes/s=191.3 weak_p95_us=33348.4 query_p95_us=11540.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=6 writes/s=329.6 weak_p95_us=14772.3 query_p95_us=10268.3 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=6 writes/s=97.1 weak_p95_us=4995.1 query_p95_us=45802.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-hot           rep=6 writes/s=215.6 weak_p95_us=23157.7 query_p95_us=14499.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=6 writes/s=205.1 weak_p95_us=35112.0 query_p95_us=82.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=6 writes/s=453.6 weak_p95_us=13521.5 query_p95_us=9525.6 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=6 writes/s=283.1 weak_p95_us=0.0 query_p95_us=12066.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=7 writes/s=435.0 weak_p95_us=13468.8 query_p95_us=8675.4 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=7 writes/s=318.5 weak_p95_us=15360.6 query_p95_us=11007.8 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=7 writes/s=225.7 weak_p95_us=23257.8 query_p95_us=11583.9 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=7 writes/s=300.7 weak_p95_us=0.0 query_p95_us=9879.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=7 writes/s=305.7 weak_p95_us=18432.8 query_p95_us=78.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=7 writes/s=216.6 weak_p95_us=26086.3 query_p95_us=6526.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=7 writes/s=505.5 weak_p95_us=11552.1 query_p95_us=7446.9 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=7 writes/s=117.7 weak_p95_us=5496.6 query_p95_us=32667.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-random        rep=8 writes/s=164.9 weak_p95_us=37332.1 query_p95_us=24023.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=8 writes/s=212.9 weak_p95_us=29942.6 query_p95_us=103.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=8 writes/s=472.3 weak_p95_us=12645.2 query_p95_us=4019.1 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=8 writes/s=361.5 weak_p95_us=12759.4 query_p95_us=7016.0 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=8 writes/s=237.9 weak_p95_us=19394.8 query_p95_us=16525.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=8 writes/s=137.3 weak_p95_us=6029.5 query_p95_us=28395.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+stable-group         rep=8 writes/s=295.9 weak_p95_us=0.0 query_p95_us=11661.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=8 writes/s=440.5 weak_p95_us=15407.1 query_p95_us=5908.2 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=9 writes/s=514.6 weak_p95_us=11314.8 query_p95_us=4912.3 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=9 writes/s=314.7 weak_p95_us=0.0 query_p95_us=10763.8 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=9 writes/s=132.0 weak_p95_us=5120.4 query_p95_us=12002.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-random        rep=9 writes/s=188.3 weak_p95_us=28575.7 query_p95_us=18323.3 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=9 writes/s=323.0 weak_p95_us=17323.8 query_p95_us=74.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=9 writes/s=318.2 weak_p95_us=14117.9 query_p95_us=8931.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=9 writes/s=487.7 weak_p95_us=12643.3 query_p95_us=6922.8 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=9 writes/s=231.1 weak_p95_us=20804.8 query_p95_us=15465.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=10 writes/s=303.8 weak_p95_us=0.0 query_p95_us=10542.9 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=10 writes/s=238.2 weak_p95_us=20906.9 query_p95_us=12503.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=10 writes/s=98.3 weak_p95_us=5102.7 query_p95_us=43990.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-count          rep=10 writes/s=348.7 weak_p95_us=14214.3 query_p95_us=6746.2 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=10 writes/s=389.0 weak_p95_us=14321.9 query_p95_us=71.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=10 writes/s=472.6 weak_p95_us=13416.8 query_p95_us=3847.1 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=10 writes/s=476.7 weak_p95_us=14091.4 query_p95_us=2692.3 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=10 writes/s=214.8 weak_p95_us=22594.0 query_p95_us=16614.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=11 writes/s=159.6 weak_p95_us=34537.1 query_p95_us=18918.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=11 writes/s=483.5 weak_p95_us=11043.8 query_p95_us=5140.6 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=11 writes/s=490.6 weak_p95_us=11317.7 query_p95_us=6231.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=11 writes/s=153.4 weak_p95_us=5318.0 query_p95_us=27137.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-time           rep=11 writes/s=294.5 weak_p95_us=19730.6 query_p95_us=138.8 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=11 writes/s=306.9 weak_p95_us=0.0 query_p95_us=11150.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=11 writes/s=250.8 weak_p95_us=24567.7 query_p95_us=11684.2 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=11 writes/s=169.4 weak_p95_us=33067.7 query_p95_us=18623.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=12 writes/s=221.4 weak_p95_us=22810.6 query_p95_us=2965.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=12 writes/s=310.4 weak_p95_us=0.0 query_p95_us=10010.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=12 writes/s=288.7 weak_p95_us=21112.0 query_p95_us=99.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=12 writes/s=451.5 weak_p95_us=11274.8 query_p95_us=7086.7 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=12 writes/s=237.1 weak_p95_us=19718.7 query_p95_us=15040.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=12 writes/s=344.8 weak_p95_us=14181.9 query_p95_us=4769.3 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=12 writes/s=116.3 weak_p95_us=5650.3 query_p95_us=34815.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-hot         rep=12 writes/s=499.0 weak_p95_us=11559.6 query_p95_us=7938.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=13 writes/s=508.6 weak_p95_us=11435.0 query_p95_us=7034.7 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=13 writes/s=318.6 weak_p95_us=0.0 query_p95_us=10252.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=13 writes/s=268.2 weak_p95_us=16812.5 query_p95_us=14234.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=13 writes/s=334.3 weak_p95_us=14497.7 query_p95_us=9871.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=13 writes/s=352.3 weak_p95_us=15608.5 query_p95_us=112.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=13 writes/s=112.6 weak_p95_us=6144.3 query_p95_us=29762.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-hot         rep=13 writes/s=496.3 weak_p95_us=12649.7 query_p95_us=5198.2 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=13 writes/s=202.2 weak_p95_us=32936.4 query_p95_us=19223.6 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=14 writes/s=293.8 weak_p95_us=20148.5 query_p95_us=112.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=14 writes/s=221.6 weak_p95_us=20696.1 query_p95_us=14740.9 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=14 writes/s=343.8 weak_p95_us=13748.2 query_p95_us=7290.2 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=14 writes/s=546.7 weak_p95_us=11123.6 query_p95_us=4360.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=14 writes/s=176.3 weak_p95_us=4855.4 query_p95_us=21483.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-random      rep=14 writes/s=524.5 weak_p95_us=12544.2 query_p95_us=5347.3 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=14 writes/s=226.7 weak_p95_us=22095.2 query_p95_us=15329.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=14 writes/s=285.5 weak_p95_us=0.0 query_p95_us=12090.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=15 writes/s=365.8 weak_p95_us=17827.1 query_p95_us=131.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=15 writes/s=348.6 weak_p95_us=14418.9 query_p95_us=9688.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=15 writes/s=237.7 weak_p95_us=20953.7 query_p95_us=17276.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=15 writes/s=161.5 weak_p95_us=42342.6 query_p95_us=25033.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=15 writes/s=130.1 weak_p95_us=7555.9 query_p95_us=30443.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+stable-group         rep=15 writes/s=236.6 weak_p95_us=0.0 query_p95_us=15004.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=15 writes/s=422.9 weak_p95_us=12957.4 query_p95_us=5202.9 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=15 writes/s=421.0 weak_p95_us=17622.7 query_p95_us=9021.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=16 writes/s=477.9 weak_p95_us=13276.6 query_p95_us=7478.9 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=16 writes/s=227.3 weak_p95_us=20140.1 query_p95_us=16658.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=16 writes/s=410.6 weak_p95_us=16018.6 query_p95_us=6069.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=16 writes/s=347.5 weak_p95_us=14143.1 query_p95_us=8810.3 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=16 writes/s=331.7 weak_p95_us=16169.5 query_p95_us=88.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=16 writes/s=104.3 weak_p95_us=5032.8 query_p95_us=38011.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-random        rep=16 writes/s=192.7 weak_p95_us=26106.5 query_p95_us=17281.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=16 writes/s=299.2 weak_p95_us=0.0 query_p95_us=9688.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=17 writes/s=477.0 weak_p95_us=11453.4 query_p95_us=2586.4 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=17 writes/s=284.0 weak_p95_us=16622.8 query_p95_us=11717.4 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=17 writes/s=210.0 weak_p95_us=30752.9 query_p95_us=75.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=17 writes/s=251.3 weak_p95_us=17123.1 query_p95_us=14946.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=17 writes/s=115.4 weak_p95_us=5709.9 query_p95_us=14274.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+stable-group         rep=17 writes/s=298.9 weak_p95_us=0.0 query_p95_us=11771.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=17 writes/s=174.5 weak_p95_us=37200.9 query_p95_us=3890.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=17 writes/s=423.6 weak_p95_us=16464.3 query_p95_us=5611.9 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=18 writes/s=247.7 weak_p95_us=0.0 query_p95_us=12019.9 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=18 writes/s=177.2 weak_p95_us=32950.4 query_p95_us=17105.6 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=18 writes/s=97.2 weak_p95_us=4881.2 query_p95_us=42990.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-hot         rep=18 writes/s=504.6 weak_p95_us=11022.4 query_p95_us=80.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=18 writes/s=480.5 weak_p95_us=12800.6 query_p95_us=7050.8 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=18 writes/s=323.6 weak_p95_us=17095.1 query_p95_us=53.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=18 writes/s=354.3 weak_p95_us=11971.9 query_p95_us=8042.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=18 writes/s=221.9 weak_p95_us=20786.2 query_p95_us=17208.6 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=19 writes/s=377.0 weak_p95_us=15898.7 query_p95_us=55.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=19 writes/s=225.0 weak_p95_us=20724.6 query_p95_us=17107.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=19 writes/s=218.9 weak_p95_us=18611.1 query_p95_us=16373.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=19 writes/s=533.3 weak_p95_us=10591.5 query_p95_us=6749.3 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=19 writes/s=521.8 weak_p95_us=11860.6 query_p95_us=6930.5 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=19 writes/s=291.1 weak_p95_us=0.0 query_p95_us=11549.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=19 writes/s=158.5 weak_p95_us=4924.1 query_p95_us=27580.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-count          rep=19 writes/s=331.1 weak_p95_us=15193.3 query_p95_us=10896.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=20 writes/s=129.9 weak_p95_us=5216.4 query_p95_us=29935.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-count          rep=20 writes/s=302.5 weak_p95_us=21403.5 query_p95_us=7529.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=20 writes/s=210.9 weak_p95_us=20688.3 query_p95_us=18350.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=20 writes/s=207.6 weak_p95_us=24746.5 query_p95_us=12852.7 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=20 writes/s=316.7 weak_p95_us=18730.5 query_p95_us=74.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=20 writes/s=416.4 weak_p95_us=15031.3 query_p95_us=5307.4 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=20 writes/s=461.4 weak_p95_us=16183.4 query_p95_us=3000.0 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=20 writes/s=273.8 weak_p95_us=0.0 query_p95_us=12909.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=21 writes/s=314.7 weak_p95_us=19262.1 query_p95_us=67.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=21 writes/s=425.8 weak_p95_us=14504.9 query_p95_us=9788.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=21 writes/s=316.7 weak_p95_us=0.0 query_p95_us=9761.1 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=21 writes/s=96.4 weak_p95_us=5051.7 query_p95_us=48501.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-random      rep=21 writes/s=460.9 weak_p95_us=17838.0 query_p95_us=7262.9 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=21 writes/s=210.4 weak_p95_us=26346.0 query_p95_us=15842.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=21 writes/s=163.0 weak_p95_us=37301.5 query_p95_us=20059.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=21 writes/s=272.5 weak_p95_us=20768.0 query_p95_us=10771.1 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=22 writes/s=145.1 weak_p95_us=5482.7 query_p95_us=13113.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+strict-random        rep=22 writes/s=169.4 weak_p95_us=34233.7 query_p95_us=14911.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=22 writes/s=200.2 weak_p95_us=27654.5 query_p95_us=17319.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=22 writes/s=227.1 weak_p95_us=0.0 query_p95_us=13384.7 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=22 writes/s=471.1 weak_p95_us=14949.9 query_p95_us=4826.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=22 writes/s=515.1 weak_p95_us=11443.3 query_p95_us=7609.0 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=22 writes/s=313.0 weak_p95_us=16973.3 query_p95_us=96.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=22 writes/s=237.4 weak_p95_us=22328.8 query_p95_us=14466.5 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=23 writes/s=461.7 weak_p95_us=14526.1 query_p95_us=8082.8 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=23 writes/s=318.2 weak_p95_us=0.0 query_p95_us=9656.7 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=23 writes/s=221.7 weak_p95_us=22018.3 query_p95_us=16714.0 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=23 writes/s=99.1 weak_p95_us=5064.4 query_p95_us=17841.2 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-count          rep=23 writes/s=295.5 weak_p95_us=17127.7 query_p95_us=10986.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=23 writes/s=172.5 weak_p95_us=34271.3 query_p95_us=22662.6 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=23 writes/s=488.1 weak_p95_us=12624.8 query_p95_us=8149.6 maxW=9 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=23 writes/s=360.3 weak_p95_us=16716.6 query_p95_us=53.6 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=24 writes/s=473.6 weak_p95_us=14625.9 query_p95_us=7233.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=24 writes/s=450.7 weak_p95_us=13220.6 query_p95_us=2970.0 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=24 writes/s=199.4 weak_p95_us=30402.2 query_p95_us=17668.2 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=24 writes/s=251.2 weak_p95_us=18756.0 query_p95_us=9852.9 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=24 writes/s=359.0 weak_p95_us=16312.8 query_p95_us=19.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=24 writes/s=255.5 weak_p95_us=19369.3 query_p95_us=14254.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=24 writes/s=342.0 weak_p95_us=0.0 query_p95_us=8583.3 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=24 writes/s=155.8 weak_p95_us=5919.9 query_p95_us=26609.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-random      rep=25 writes/s=470.7 weak_p95_us=12937.6 query_p95_us=8572.6 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=25 writes/s=489.8 weak_p95_us=12046.9 query_p95_us=7768.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=25 writes/s=235.7 weak_p95_us=22807.6 query_p95_us=11157.5 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=25 writes/s=308.6 weak_p95_us=16302.6 query_p95_us=12991.2 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=25 writes/s=220.7 weak_p95_us=28986.0 query_p95_us=6342.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=25 writes/s=311.3 weak_p95_us=18069.2 query_p95_us=80.1 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=25 writes/s=295.7 weak_p95_us=0.0 query_p95_us=10821.6 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=25 writes/s=118.8 weak_p95_us=5131.8 query_p95_us=31406.4 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-hot         rep=26 writes/s=397.6 weak_p95_us=13807.2 query_p95_us=9738.1 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=26 writes/s=150.7 weak_p95_us=33903.9 query_p95_us=24183.7 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=26 writes/s=341.6 weak_p95_us=14991.6 query_p95_us=10822.0 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=26 writes/s=237.6 weak_p95_us=0.0 query_p95_us=11827.2 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=26 writes/s=140.9 weak_p95_us=39292.6 query_p95_us=33078.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=26 writes/s=317.1 weak_p95_us=18118.3 query_p95_us=10093.6 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=26 writes/s=110.0 weak_p95_us=7369.8 query_p95_us=19678.0 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-time           rep=26 writes/s=326.3 weak_p95_us=16635.0 query_p95_us=74.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=27 writes/s=339.0 weak_p95_us=17000.5 query_p95_us=10628.6 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=27 writes/s=513.3 weak_p95_us=11808.5 query_p95_us=4926.8 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=27 writes/s=223.7 weak_p95_us=20553.3 query_p95_us=15844.8 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=27 writes/s=113.4 weak_p95_us=5139.7 query_p95_us=41716.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-time           rep=27 writes/s=321.3 weak_p95_us=17112.1 query_p95_us=117.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=27 writes/s=338.9 weak_p95_us=23486.0 query_p95_us=7720.7 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=27 writes/s=230.8 weak_p95_us=20510.5 query_p95_us=8355.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=27 writes/s=259.6 weak_p95_us=0.0 query_p95_us=11524.7 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=28 writes/s=294.4 weak_p95_us=20963.9 query_p95_us=237.3 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=28 writes/s=159.0 weak_p95_us=39065.9 query_p95_us=21387.1 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=28 writes/s=81.1 weak_p95_us=5514.6 query_p95_us=18035.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+exchange-random      rep=28 writes/s=467.1 weak_p95_us=12563.6 query_p95_us=8135.7 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=28 writes/s=283.8 weak_p95_us=0.0 query_p95_us=13050.7 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-count          rep=28 writes/s=286.9 weak_p95_us=19116.2 query_p95_us=6426.7 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=28 writes/s=247.1 weak_p95_us=26524.0 query_p95_us=9620.9 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=28 writes/s=183.0 weak_p95_us=35707.6 query_p95_us=7590.3 maxW=2 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot-guard   rep=29 writes/s=119.6 weak_p95_us=5595.2 query_p95_us=16631.5 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=22 total_syncs=22 alarm=1 strict_ok=1 recovery_ok=1
+fixed-count          rep=29 writes/s=335.2 weak_p95_us=15922.5 query_p95_us=9677.0 maxW=4 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=6 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+fixed-time           rep=29 writes/s=265.7 weak_p95_us=23718.4 query_p95_us=100.9 maxW=4 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=8 alarm=0 strict_ok=1 recovery_ok=1
+strict-random        rep=29 writes/s=161.7 weak_p95_us=41543.5 query_p95_us=25904.3 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+exchange-random      rep=29 writes/s=485.6 weak_p95_us=11922.3 query_p95_us=7381.8 maxW=9 M=0.2 L=0.2 Delta+=0.2 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+stable-group         rep=29 writes/s=323.6 weak_p95_us=0.0 query_p95_us=80.4 maxW=0 M=0.0 L=0.0 Delta+=0.0 amp=0.0 timed_syncs=7 total_syncs=7 alarm=0 strict_ok=1 recovery_ok=1
+exchange-hot         rep=29 writes/s=429.1 weak_p95_us=13647.5 query_p95_us=6704.0 maxW=9 M=0.3 L=0.3 Delta+=0.3 amp=0.0 timed_syncs=2 total_syncs=3 alarm=0 strict_ok=1 recovery_ok=1
+strict-hot           rep=29 writes/s=207.6 weak_p95_us=23233.0 query_p95_us=16306.4 maxW=2 M=0.1 L=0.1 Delta+=0.1 amp=0.0 timed_syncs=12 total_syncs=13 alarm=0 strict_ok=1 recovery_ok=1
+
+independent-image min/median/max (no query-row bootstrap)
+stable-group         writes/s=[227.1,299.5,342.0] image_mean_Delta+=[0.0,0.0,0.0]
+fixed-count          writes/s=[237.4,330.3,361.5] image_mean_Delta+=[0.0,0.0,0.0]
+fixed-time           writes/s=[205.1,319.0,389.0] image_mean_Delta+=[0.0,0.0,0.0]
+strict-random        writes/s=[150.7,196.0,238.3] image_mean_Delta+=[0.0,0.0,0.0]
+strict-hot           writes/s=[140.9,221.5,268.2] image_mean_Delta+=[0.0,0.0,0.0]
+exchange-random      writes/s=[317.1,475.2,539.1] image_mean_Delta+=[0.0,0.0,0.1]
+exchange-hot         writes/s=[247.1,472.8,546.7] image_mean_Delta+=[0.2,0.2,0.2]
+exchange-hot-guard   writes/s=[81.1,117.0,176.3] image_mean_Delta+=[0.0,0.0,0.0]
+raw_csv="docs/paper/data/recall_committer_operations.csv" crash_csv="docs/paper/data/recall_committer_crash.csv" aggregate_csv="docs/paper/data/recall_committer.csv" changed_seed_control_tripped=1 invariants_ok=1

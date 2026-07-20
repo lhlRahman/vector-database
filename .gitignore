@@ -6,7 +6,7 @@ build/
 *.dylib
 
 # Data and logs (runtime generated)
-data/
+/data/
 logs/
 
 # IDE and editor files

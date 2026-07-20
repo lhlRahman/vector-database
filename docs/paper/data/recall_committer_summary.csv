@@ -1,0 +1,7 @@
+case,repetitions,crash_observations,writes_per_s_min,writes_per_s_median,writes_per_s_max,weak_p50_ms_min,weak_p50_ms_median,weak_p50_ms_max,stable_p50_ms_min,stable_p50_ms_median,stable_p50_ms_max,query_p95_ms_min,query_p95_ms_median,query_p95_ms_max,max_W,timed_syncs_min,timed_syncs_median,timed_syncs_max,total_syncs_min,total_syncs_median,total_syncs_max,mean_delta_positive,image_mean_delta_min,image_mean_delta_median,image_mean_delta_max,max_delta_positive,max_M,max_amplification,stable_losses,weak_survivors,cap_overshoots,alarm
+stable-group,30,360,227.062,299.497,342.029,0,0,0,10.7619,11.77805,14.5302,0.0804314,10.7927,15.0044,0,7,7,7,7,7,7,0,0,0,0,0,0,0,0,0,0,0
+strict-random,30,360,150.656,196.0385,238.343,16.0098,18.06995,23.4119,0,0,0,3.8907,15.5875,25.9043,2,12,12,12,13,13,13,0.00722222222222,0,0.00833333333333,0.0166666666667,0.1,0.1,0,0,0,0,0
+strict-hot,30,360,140.866,221.501,268.208,14.8725,16.92485,31.6878,0,0,0,2.96503,15.8438,33.0783,2,12,12,12,13,13,13,0.025,0.025,0.025,0.025,0.1,0.1,0,0,0,0,0
+exchange-random,30,360,317.073,475.205,539.102,5.75446,6.42429,12.6895,0,0,0,2.71349,6.83607,12.6318,9,2,2,2,3,3,3,0.0513888888889,0.0166666666667,0.05,0.0833333333333,0.3,0.3,5.55112e-17,0,0,0,0
+exchange-hot,30,360,247.081,472.7705,546.726,5.61321,6.482955,17.1292,0,0,0,0.0807146,6.9522,10.3791,9,2,2,2,3,3,3,0.225,0.225,0.225,0.225,0.3,0.3,5.55112e-17,0,0,0,0
+exchange-hot-guard,30,360,81.1453,117.033,176.266,2.25038,3.559815,5.15565,23.6568,36.722,51.9035,2.07682,28.96445,48.5011,4,22,22,22,22,22,22,0,0,0,0,0,0,0,0,0,0,1

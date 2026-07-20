@@ -1,6 +1,6 @@
 #!/bin/bash
-# Assemble a self-contained arXiv submission tarball: the .tex plus exactly the
-# figure PDFs it \includegraphics. No .bib (the paper uses an inline
+# Assemble a self-contained arXiv submission tarball: the .tex plus the figure
+# PDFs and data CSVs it reads. No .bib (the paper uses an inline
 # thebibliography). Pass --verify to also compile-check with tectonic.
 #
 #   scripts/make_arxiv.sh [--verify]
@@ -10,7 +10,7 @@ SRC=docs/paper
 OUT=build/arxiv
 TECTONIC="$HOME/.local/bin/tectonic"
 
-rm -rf "$OUT"; mkdir -p "$OUT/figs"
+rm -rf "$OUT"; mkdir -p "$OUT/figs" "$OUT/data"
 cp "$SRC/honest-durability.tex" "$OUT/"
 
 # Copy only the figures actually referenced by \includegraphics.
@@ -20,7 +20,14 @@ for f in $figs; do
 done
 echo "Referenced figures:"; echo "$figs" | sed 's/^/  /'
 
-( cd "$OUT" && tar czf ../honest-durability-arxiv.tar.gz honest-durability.tex figs )
+# PGFPlots reads these files at TeX compile time, so they must accompany source.
+data_files=$(grep -oE 'data/[A-Za-z0-9_.-]+\.csv' "$SRC/honest-durability.tex" | sort -u)
+for f in $data_files; do
+  if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$OUT/$f"; else echo "WARNING: missing $SRC/$f"; fi
+done
+echo "Referenced data:"; echo "$data_files" | sed 's/^/  /'
+
+( cd "$OUT" && tar czf ../honest-durability-arxiv.tar.gz honest-durability.tex figs data )
 echo "arXiv package -> build/honest-durability-arxiv.tar.gz"
 ls -lh build/honest-durability-arxiv.tar.gz | awk '{print "  size:", $5}'
 

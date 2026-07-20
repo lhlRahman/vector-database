@@ -42,29 +42,25 @@ records never mutate a queried HNSW, so a durability fence changes
 classification but not query representation.
 
 The mechanism supports a distribution-free strict cap on weak-tail size,
-$W\le\lfloor\varepsilon k_{\min}\rfloor$, for minimum supported query width
-$k_{\min}$, exchangeable-mean and hypergeometric policies,
+$W\le\lfloor\varepsilon k_{\min}\rfloor$, for minimum weak-visible query width
+$k_{\min}$; latest queries below that width are served stable-only. It also
+supports exchangeable-mean and hypergeometric policies,
 and an online CUSUM guard that fences and falls back to stable ACKs when fresh
 records are query-hot. We validate it with 15/15 real process-crash frontiers using
-\texttt{\_exit}, 661/661 WAL byte-prefix images, and 192 query observations
+\texttt{\_exit}, 661/661 WAL byte-prefix images, and 2{,}880 query observations
 reopened through production read-only recovery. Every trial has zero stable-ACK
 loss, no unexpected weak survivor, and no admission-cap overshoot; all query
 observations have zero topology amplification (within $10^{-12}$). Strict
 observations satisfy $\Delta^+\le L=M\le0.1\le\varepsilon=0.2$, with observed
-maxima $\max\Delta^+=\max L=\max M=0.1$. A
-changed-seed negative control is rejected on persisted seed metadata, showing
-that the checker rejects a mismatched recovery configuration.
+maxima $\max\Delta^+=\max L=\max M=0.1$.
 
-On the designated Apple-silicon \fullfsync{} run (four writers, two
-repetitions), stable group commit reaches 305--325 writes/s with 10.8--11.7\,ms
-median stable-ACK latency. Exchangeable weak ACK reaches 529--573 writes/s with
-5.3--6.0\,ms median weak-ACK latency; this is a population-mean model, not a
-per-query guarantee. Strict mode reaches 236--267 writes/s, while the correlation
-guard reduces the hot workload to 149--155 writes/s by fencing. We also retain a
-two-host durability-cost study: on Apple APFS, plain \fsync{} does not guarantee a
-device-cache flush, while \fullfsync{} does; the tax, group-commit curve, and
-snapshot/WAL recovery gap reproduce on AWS Linux/NVMe. The committer evaluation
-is insert-only, single-node, and unfiltered. Its Linux
+On the canonical Apple-silicon \fullfsync{} run (four writers, 30 image
+executions per case), stable group commit has median 299 writes/s
+(227--342), while exchangeable random has median 475 (317--539); their observed
+ranges overlap. Strict-random has median 196 writes/s (151--238), and the hot
+guard has median 117 (81--176). A pre-committer two-host study separately shows
+the tax, group-commit curve, and snapshot/WAL recovery gap on Apple and AWS
+Linux/NVMe. The committer evaluation is insert-only, single-node, and unfiltered; its Linux
 \texttt{dm-log-writes} harness is implemented, but block-replay execution remains
 pending suitable disposable hardware.
 \end{abstract}
@@ -80,55 +76,37 @@ frontier popularized by ANN-Benchmarks~\cite{annbench} and the Big ANN
 challenges~\cite{bigann}. What these evaluations almost never measure is
 \emph{durability}: does an acknowledged write survive a crash?
 
-This is not a niche concern. Vector databases are increasingly operational stores
-that ingest and update continuously, and an operational store that loses
-acknowledged writes is not a database. Yet mainstream ANN libraries exclude
-durable storage entirely (Faiss offers manual serialization, no
-WAL~\cite{faiss}; hnswlib offers soft-delete tombstones and no crash
-consistency~\cite{hnswlib}), and none of the widely used ANN benchmarks
-(ANN-Benchmarks~\cite{annbench}, Big ANN~\cite{bigann},
-VectorDBBench~\cite{vectordbbench}) include a crash-recovery, \fsync{}, or
-durability case. Production vector databases such as Milvus~\cite{milvus} do
-implement WAL-based persistence, but publish no isolated
-\fsync{}-tax, crash-consistency, or recovery-time analysis. The closest research
-systems either integrate ANN into an operational DB and \emph{inherit} durability
-from the host engine---delegating rather than analyzing it~\cite{cosmos}---or,
-like LSM-VEC~\cite{lsmvec}, build an LSM-tree graph index yet report no \fsync{}
-cost, crash consistency, or recovery time.
+Vector databases now ingest continuously, yet mainstream ANN libraries omit
+durable storage (Faiss offers manual serialization~\cite{faiss}; hnswlib has no
+crash contract~\cite{hnswlib}), and common benchmarks omit crash recovery and
+\fsync{}~\cite{annbench,bigann,vectordbbench}. Production systems such as
+Milvus~\cite{milvus} use WALs but publish no isolated durability analysis.
+Research systems either inherit a host DB's durability~\cite{cosmos} or, like
+LSM-VEC~\cite{lsmvec}, report no synchronization or recovery cost.
 
-Our stance is deliberately measurement-oriented: build durability into a
-\emph{standalone} graph-ANN index using well-known techniques, then measure it
-honestly and report where the naive measurement misleads. We do not claim the
-\emph{storage} mechanisms as novel---group commit and snapshot-based recovery are
-textbook database techniques. The ANN-specific mechanism is now a real WAL path:
-it bounds a crash's top-$k$ membership exposure, admits weak ACKs only within that
-budget, and keeps volatile records out of the durable graph
-(\S\ref{sec:recall}). The measurement study spans Apple APFS/NVMe and AWS
-Linux/ext4/NVMe; the committer experiment itself is one Apple-silicon host.
+We use known storage techniques in a standalone graph-ANN index and measure where
+naive evaluation misleads; group commit and snapshots are not claimed as novel.
+Our ANN-specific WAL path bounds a crash's top-$k$ exposure while isolating
+volatile records from the graph (\S\ref{sec:recall}). Legacy measurements span
+Apple and AWS Linux; the committer experiment uses one Apple host.
 
 \paragraph{Contributions.}
 \begin{itemize}
-\item \textbf{C1 (\S\ref{sec:honest}).} A durability-aware measurement protocol
-for ANN: tmpfs detection, an \fsync{}-floor baseline, and \fsync{}-mode labeling,
-so ANN write/durability numbers are comparable and honest. This is the paper's
-primary, reusable contribution.
-\item \textbf{C2 (\S\ref{sec:tax}).} An illustrative ANN-isolated durability-tax
-measurement---throughput and latency percentiles vs.\ the strength of the
-durability guarantee---with a primary Apple study and an AWS Linux cross-check.
-\item \textbf{C3 (\S\ref{sec:groupcommit}).} A group-commit \emph{batch-size sweep}
-showing that recovered throughput is a curve in batch size and depends on
-\fsync{} mode, plus corrected process-crash tests.
+\item \textbf{C1 (\S\ref{sec:honest}).} An ANN durability protocol with tmpfs
+detection, a sync-floor baseline, and explicit \fsync{}-mode labeling.
+\item \textbf{C2 (\S\ref{sec:tax}).} An illustrative pre-committer
+mutable-HNSW durability-tax
+measurement versus durability strength, with an AWS Linux cross-check.
+\item \textbf{C3 (\S\ref{sec:groupcommit}).} A pre-committer mutable-HNSW
+group-commit \emph{batch-size sweep}
+showing throughput versus batch size and \fsync{} mode.
 \item \textbf{C4 (\S\ref{sec:recovery}).} A pre-committer baseline comparing
-snapshot load with graph-rebuilding WAL replay on conventional block storage
-(\fsync{}/WAL)---extending P-HNSW's~\cite{phnsw} persistent-memory recovery
-analysis to this setting---including the snapshot-creation cost, which we measure to
-be far below the WAL replay it saves.
+snapshot load with graph-rebuilding WAL replay on block storage, complementing
+P-HNSW's persistent-memory analysis~\cite{phnsw}.
 \item \textbf{C5 (\S\ref{sec:recall}).} \emph{Recall-bounded durability}: we bound
-the top-$k$ membership a crash can destroy and implement the bound in an opt-in
-leader/follower committer with fenced WAL generations, exact isolated raw deltas,
-three admission policies, and correlation-triggered stable fallback. Real
-\texttt{\_exit} crashes, exhaustive WAL byte prefixes, and production recovery
-validate stable survival and $\Delta^+\le L=M\le\varepsilon$ in strict mode.
+top-$k$ exposure in an opt-in committer with fenced WAL generations, isolated raw
+deltas, three admission policies, and correlation-triggered stable fallback,
+validated by real crashes and exhaustive WAL prefixes.
 \end{itemize}
 
 \section{Background and System}
@@ -140,7 +118,11 @@ raw tail $U$. Latest reads search all three layers, stable reads omit $U$, and t
 results are merged by the deterministic key $(\mathrm{distance},\mathrm{key})$.
 Both raw layers use exact distance scans. In particular, inserting into $U$ and
 later hardening it into $R$ never mutates an HNSW. The existing insert API remains
-stable-by-default and returns only after synchronization.
+stable-by-default and returns only after synchronization. When recall commit is
+enabled, every latest-search API---scalar, metadata, and batch---serves
+$k<k_{\min}$ from the stable snapshot and reports the effective visibility on the
+structured response. Thus every query that can observe $U$ lies inside the
+admission contract.
 
 \paragraph{Durability model.} Version-2 WAL mutation frames contain explicit
 lengths, an LSN, operation, payload, and a header-plus-payload CRC. A fence covers
@@ -154,7 +136,9 @@ are never reused. Recovery bounds lengths before allocation, validates mutations
 and fences, and accepts only complete fenced generations. Writable recovery
 truncates and synchronizes any suffix; the read-only verifier follows the same
 parse without modifying the image. Legacy version-1 WALs are treated as stable
-and upgraded before weak mode can be enabled.
+and upgraded before weak mode can be enabled. In strong macOS mode, a failed
+\fullfsync{} is retried only for interruption and otherwise propagates; it never
+downgrades to plain \fsync{}, and a failed fence cannot return a stable ACK.
 
 Sealing is likewise crash-safe: it writes and synchronizes a snapshot plus
 \texttt{seal.ready}, creates the replacement mutable generation, atomically
@@ -167,11 +151,9 @@ neighbor-selection heuristic~\cite{hnsw}. The search-time candidate-list width
 $\mathrm{ef}$ (and its build-time analogue $\mathrm{ef}_{\mathrm{construction}}$)
 trade recall for speed. Distance kernels are SIMD-vectorized (NEON on our host;
 an AVX+FMA path is implemented but untested here) with a devirtualized hot path.
-After we fixed an initially na\"ive neighbor-selection rule---under which recall
-plateaued regardless of $\mathrm{ef}$---recall@10 on SIFT1M rises monotonically
-with $\mathrm{ef}$ to $0.999$ and sits on the same recall--QPS Pareto front as
-hnswlib (Table~\ref{tab:recall}); i.e.\ the index is competitive before we layer
-durability on top.
+Recall@10 on SIFT1M rises with $\mathrm{ef}$ to $0.999$ and is on the same
+recall--QPS frontier as hnswlib (Table~\ref{tab:recall}), establishing a
+competitive index before durability is added.
 
 \section{Measuring Durability Honestly}
 \label{sec:honest}
@@ -193,26 +175,22 @@ numbers on tmpfs.
 not necessarily flush a drive's volatile cache; \texttt{fcntl(F\_FULLFSYNC)} asks
 the device to complete that stronger operation. A number labeled
 ``power-loss durable'' under plain macOS \fsync{} therefore overstates its
-contract. We expose a \fullfsync{} toggle and report a \emph{sync floor}: a tight
-\texttt{write()+sync} loop that estimates the device's single-sync ceiling, so
-index work can be distinguished from synchronization cost. Table~\ref{tab:floor}
-shows the floor differs by $\sim$155$\times$ between the two modes on our
-testbed. This large gap is the \emph{illustration} of why \fsync{}-mode labeling
-matters, not a headline system result: it is a microbenchmark of the device (not
-of our index) and a macOS/APFS-specific artifact that will be far smaller on
-Linux/NVMe. The transferable point is the contract distinction, not the specific
-$155\times$ ratio.
+contract. Our \emph{sync floor}, a tight \texttt{write()+sync} loop, separates
+device synchronization from index work. The $155\times$ mode gap in
+Table~\ref{tab:floor} is a macOS/APFS device microbenchmark, not a portable system
+speedup; the transferable result is the contract distinction.
 
 \paragraph{Methodology and statistics.} The legacy durability study reports the
 median and observed range of seven trials after warm-up; larger-$N$ sweeps and the
 extended recovery experiment use three. Seven observations do not justify a
 parametric confidence interval, so differences smaller than overlapping ranges
-are treated as noise. The committer study is separate: it uses two repetitions
-per case, reports their range, and uses a deterministic 10{,}000-resample bootstrap
-over the 24 recovery-query observations per case for descriptive 95\% intervals.
-Those queries share a small synthetic data image and are not independent workload
-replications; the intervals quantify these observations, not deployment-wide
-uncertainty. SIFT1M recall is one fixed build per index, with single-run query
+are treated as noise. The committer study is separate: it uses 30 independently
+executed tail/write images per case and shuffles case order within each repetition.
+Its unit of analysis is an image: recovery queries are averaged within an image,
+then min/median/max are reported across images. We do not bootstrap correlated
+query rows. All images share one base graph, query set, HNSW seed, and crash
+frontier, so they are execution repetitions rather than independent workload or
+graph samples. SIFT1M recall is one fixed build per index, with single-run query
 timing only, so we do not call it deterministic across independently randomized
 graph builds.
 
@@ -250,22 +228,25 @@ tax and recovery trends are not confined to it. The new committer measurements
 and process-crash matrix, however, were run only on the Apple host; its physical
 block-replay experiment remains pending (\S\ref{sec:threats}).
 
-\section{The Durability Tax}
+\section{Pre-Committer Durability Tax}
 \label{sec:tax}
 We define the \emph{durability tax} as the throughput an index loses and the
 latency it adds to guarantee that acknowledged writes survive. We measure it by
 inserting one record at a time (each \fsync{}'d before returning) into the
-segmented store and varying \emph{only} the \fsync{} mode, on the SIFT-scale
-configuration ($d{=}128$, a real HNSW insertion with
-$\mathrm{ef}_{\mathrm{construction}}{=}200$). Because the two rows in
+archived pre-committer segmented store, where each mutable insert also mutated
+HNSW, and vary \emph{only} the \fsync{} mode. The SIFT-scale configuration uses
+$d{=}128$ and $\mathrm{ef}_{\mathrm{construction}}{=}200$. Because the two rows in
 Table~\ref{tab:tax} run the identical index work and differ only in whether the
 per-insert flush actually reaches the drive, the difference between them isolates
-the durability cost.
+the durability cost for that engine. Since commit \texttt{4017fa7}, the current
+engine exact-scans a raw mutable delta and builds HNSW only at seal; current
+\texttt{make bench-durability} therefore does not reproduce these rows.
 
 \begin{table}[t]
 \centering
-\caption{Durability tax: single-insert throughput and latency vs.\ \fsync{} mode
-(Apple M4 Pro, $d{=}128$, per-write durability, $N{=}2{,}000$ inserts/trial),
+\caption{Pre-committer mutable-HNSW durability tax: single-insert throughput and
+latency vs.\ \fsync{} mode (Apple M4 Pro, $d{=}128$, per-write durability,
+$N{=}2{,}000$ inserts/trial),
 median of 7 trials (min--max). Honest durability cuts throughput to $\sim$22\%
 ($4.5\times$) and roughly triples the p99 (99th-percentile) tail.}
 \label{tab:tax}
@@ -279,20 +260,11 @@ Plain \fsync{} & 442 \ (408--476) & 1{,}732 \ (1{,}435--1{,}896) & 14{,}425 \ (1
 \end{tabular}
 \end{table}
 
-Three readouts. First, honest durability is not free: throughput falls to about a
-fifth and the p99 tail roughly triples, because each insert now waits on a real
-drive flush. Second, we do \emph{not} attempt to decompose the absolute per-insert
-latency by subtracting the single-sync \fsync{} floor: the insert path performs
-more than one durable operation per record (a WAL record flush plus, on segment
-growth, a metadata/directory flush), so under \fullfsync{} each such operation pays
-a full device synchronization while plain \fsync{} measured much cheaper. The floor
-is therefore a per-\emph{single}-sync lower bound on the flush cost, not a clean
-subtrahend---which is exactly why the honest-vs-plain \emph{ratio}, not a floor
-subtraction, is the right way to read the tax. Third---and this is why the
-\fsync{} floor matters---under plain \fsync{} the bottleneck is the graph
-insertion, not the sync, so a system that stops at plain \fsync{} both understates
-its stronger-contract cost \emph{and} understates how much a batching optimization
-can help. That is the subject of \S\ref{sec:groupcommit}.
+Stronger durability cuts throughput to about a fifth and roughly triples p99.
+We do not subtract the single-sync floor: an insert performs multiple durable
+operations, so that floor is a lower bound rather than a clean latency component.
+Under plain \fsync{}, graph insertion dominates; this both understates the
+stronger contract's cost and masks batching's benefit (\S\ref{sec:groupcommit}).
 
 \paragraph{Scale checks.} In a three-trial size sweep, the plain-to-\fullfsync{}
 throughput ratio falls from $4.5\times$ at $N=2$k to $2.4\times$ at 10k and
@@ -300,19 +272,22 @@ $2.1\times$ at 30k as graph work grows relative to fixed synchronization cost;
 group-commit benefit falls similarly. The small trial count and wide raw ranges
 make this a trend, not a fitted scaling law.
 
-\section{Group Commit for a Graph-ANN WAL}
+\section{Pre-Committer Group Commit for a Graph-ANN WAL}
 \label{sec:groupcommit}
 Group commit is a classic database technique~\cite{aether}: batch several log
 records and issue a single \fsync{} for the group, decoupling per-operation commit
-latency from flush latency. We add a deferred-sync mode to the mutable segment:
+latency from flush latency. In the archived mutable-HNSW engine, we added a
+deferred-sync mode to the mutable segment:
 during a batch, WAL appends skip the per-record \fsync{}, and a single
 \texttt{commitDeferredSync()} at the end \fsync{}s once for the whole batch. The
-public batch-insert path uses it; single inserts keep per-write durability.
+then-current public batch-insert path used it; single inserts kept per-write
+durability. As in \S\ref{sec:tax}, current raw-delta code has different index work.
 
 \begin{table}[t]
 \centering
-\caption{Group-commit batch-size sweep (Apple M4 Pro, $d{=}128$, $N{=}2{,}000$
-inserts/trial, one \fsync{} per batch), inserts/s as median of 7 trials (min--max),
+\caption{Pre-committer mutable-HNSW group-commit batch-size sweep (Apple M4 Pro,
+$d{=}128$, $N{=}2{,}000$ inserts/trial, one \fsync{} per batch), inserts/s as
+median of 7 trials (min--max),
 and speedup over batch~1. Under \fullfsync{} the speedup climbs a curve to
 $4.3\times$; under plain \fsync{} batching barely helps because synchronization
 was already cheap in this measurement. Speedups are computed on unrounded medians.}
@@ -333,14 +308,10 @@ Batch & Inserts/s & Speedup & Inserts/s & Speedup \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:gc} shows a curve rather than a single group-commit constant.
-Under \fullfsync{}, throughput rises from $102$ to $433$ inserts/s
-($4.3\times$) as one synchronization covers more inserts. Under plain \fsync{}
-the range is essentially flat because synchronization is not the measured
-bottleneck. Batch~1 and Table~\ref{tab:tax}'s per-write path are independent runs;
-their ranges, rather than the small difference in point estimates, carry the
-signal. Group commit itself remains stable: it releases acknowledgments only
-after the shared synchronization succeeds.
+Under \fullfsync{}, throughput rises from 102 to 433 inserts/s ($4.3\times$) as
+one synchronization covers more inserts; plain-\fsync{} throughput is essentially
+flat. Batch~1 and Table~\ref{tab:tax} are independent runs, so their ranges carry
+the signal. Acknowledgments remain stable and follow the shared synchronization.
 
 \paragraph{Crash scope.} The stable path is exercised inside the committer's
 15-frontier \texttt{\_exit} matrix (\S\ref{sec:recall}); the child exits while its
@@ -357,7 +328,8 @@ Standard group commit does not weaken durability: it releases a group only after
 the shared synchronization. Our separate, opt-in weak-ACK API may return after a
 complete WAL mutation becomes visible but before a fence is synchronized. Let
 $D$ be the total durable population across sealed HNSWs and raw $R$, let
-$W=|U|$, and let $k_{\min}$ be the smallest supported query width. For a query
+$W=|U|$, and let $k_{\min}$ be the smallest query width allowed to observe $U$.
+Latest requests with $k<k_{\min}$ are served from the stable snapshot. For a query
 with frozen exact pre-crash top-$k$ set $T$, define
 $M=|T\cap U|/k$.
 
@@ -378,7 +350,9 @@ when the exact hypergeometric tail
 \]
 The implementation also enforces record, byte, and age limits. If a request does
 not fit, it fences the current tail and retries; an indivisible request that still
-does not fit receives a stable ACK. No policy silently forces $W\ge1$.
+does not fit receives a stable ACK. No policy silently forces $W\ge1$. Therefore
+every servable query that includes weak records has $k\ge k_{\min}$, closing the
+otherwise-invalid small-$k$ case.
 
 \paragraph{Commit and query path.} Followers enqueue writes to one leader, which
 is the sole WAL appender and serializes admission; concurrent writers therefore
@@ -386,12 +360,18 @@ cannot overshoot the cap. A weak insert is released only after its complete fram
 and $U$ entry are visible. A stable request, explicit fence, age/size limit, seal,
 or shutdown closes the generation; after successful stable synchronization, the
 leader atomically advances the durable frontier and reclassifies $U$ into $R$.
+The group-delay wait is clipped to the oldest weak record's age deadline, so the
+worker begins the age fence before processing queued work; device synchronization
+latency remains additive. In requested \fullfsync{} mode, failure is surfaced,
+telemetry records no strong-sync success, and the committer enters a failed state
+rather than returning Stable after plain \fsync{}.
 The vectors remain in the same exact representation. The marginal weak-tail scan
 cost is $\Theta(Wd)$, and the total mutable exact scan is
 $\Theta((|R|+W)d)$, so weak admission exchanges synchronization work for query
 work; it is not free ANN capacity.
 
-Exchangeability is monitored rather than assumed silently. Each latest query
+Exchangeability is monitored rather than assumed silently. Every latest query
+entry point, including segmented batch search,
 reports volatile hits to a one-sided CUSUM against the expected hit rate
 $W/(D+W)$. An alarm blocks further exchangeable weak admissions, fences the tail,
 and serves subsequent weak requests with stable ACKs. This is a drift detector,
@@ -420,30 +400,32 @@ reopen, and re-verification cases pass. Second, an exhaustive fixture opens all
 the last complete fence and never its weak tail. These are byte-prefix images, not
 physical torn-write experiments. Third, the end-to-end benchmark clones live disk
 images and reopens them through the same production path. It uses 160 clustered
-12-dimensional base vectors, 25 writes from four concurrent writers, $k=10$, two
-repetitions, and 12 recovery queries for each of eight cases: 16 cloned live
-images and 192 recovery-query observations in total. The data are deliberately
+12-dimensional base vectors, 25 writes from four concurrent writers, $k=10$, 30
+image executions, and 12 recovery queries for each of eight cases: 240 cloned
+live images and 2{,}880 recovery-query observations in total. Case order is
+shuffled within each repetition. The data are deliberately
 small enough to audit; they are not SIFT1M or a scale result. Hypergeometric
 admission is unit-tested but has no performance row in this benchmark.
 
 \begin{table}[t]
 \centering
-\caption{Real committer results on the designated Apple-silicon \fullfsync{} run
-(two repetitions; endpoints are measured ranges). ACK p50 is weak (W) or stable
-(S). The last two columns report mean $\Delta^+$ with a descriptive bootstrap
-95\% interval, then the observed maximum.}
+\caption{Canonical Apple-silicon \fullfsync{} run, 30 images/case. Performance is
+median [min,max]; ACK p50 is weak (W) or stable (S); syncs cover the timed writer
+interval. Loss is overall mean; image min/median/max, without a query-row
+bootstrap. Fixed-count/time controls are omitted here but remain in all invariant
+totals and raw CSVs.}
 \label{tab:commit}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lrrrrrr}
 \toprule
-Policy/workload & $W_{\max}$ & writes/s & ACK p50 (ms) & Syncs & mean $\Delta^+$ [95\%] & max \\
+Policy/workload & $W_{\max}$ & writes/s & ACK p50 (ms) & Syncs & mean; image min/med/max & max \\
 \midrule
-Stable group & 0 & 305--325 & S 10.8--11.7 & 7 & 0 [0, 0] & 0 \\
-Strict/random & 2 & 243--267 & W 14.8--15.9 & 13 & .008 [.000, .021] & .10 \\
-Strict/hot & 2 & 236--253 & W 15.3--16.8 & 13 & .025 [.008, .042] & .10 \\
-Exchange/random & 9 & 535--569 & W 5.4--6.0 & 3 & .063 [.038, .092] & .20 \\
-Exchange/hot & 9 & 529--573 & W 5.3--5.7 & 3 & .225 [.208, .242] & .30 \\
-Exchange+guard/hot & 4 & 149--155 & W 2.8--3.0 & 22 & 0 [0, 0] & 0 \\
+Stable group & 0 & 299 [227,342] & S 11.8 [10.8,14.5] & 7 & 0; 0/0/0 & 0 \\
+Strict/random & 2 & 196 [151,238] & W 18.1 [16.0,23.4] & 12 & .007; .000/.008/.017 & .10 \\
+Strict/hot & 2 & 222 [141,268] & W 16.9 [14.9,31.7] & 12 & .025; .025/.025/.025 & .10 \\
+Exchange/random & 9 & 475 [317,539] & W 6.4 [5.8,12.7] & 2 & .051; .017/.050/.083 & .30 \\
+Exchange/hot & 9 & 473 [247,547] & W 6.5 [5.6,17.1] & 2 & .225; .225/.225/.225 & .30 \\
+Exchange+guard/hot & 4 & 117 [81,176] & W 3.6 [2.3,5.2] & 22 & 0; 0/0/0 & 0 \\
 \bottomrule
 \end{tabular}
 }
@@ -463,10 +445,10 @@ Exchange+guard/hot & 4 & 149--155 & W 2.8--3.0 & 22 & 0 [0, 0] & 0 \\
   label style={font=\small},
   grid=major,
   enlarge x limits=0.1]
-\nextgroupplot[ybar, ymin=0, ymax=650, ylabel={writes/s}]
+\nextgroupplot[ybar, ymin=0, ymax=600, ylabel={writes/s}]
 \addplot+[fill=black!35,draw=black]
   table[col sep=comma,x expr=\coordindex,
-        y expr=(\thisrow{writes_per_s_min}+\thisrow{writes_per_s_max})/2]
+        y=writes_per_s_median]
         {data/recall_committer_summary.csv};
 \nextgroupplot[ymin=0, ymax=0.34, ylabel={recovery loss}]
 \addplot+[mark=*,black]
@@ -478,16 +460,17 @@ Exchange+guard/hot & 4 & 149--155 & W 2.8--3.0 & 22 & 0 [0, 0] & 0 \\
 \legend{mean $\Delta^+$,max $\Delta^+$}
 \end{groupplot}
 \end{tikzpicture}
-\caption{Measured committer throughput (range midpoint; endpoints are in
-Table~\ref{tab:commit}) and recovery loss from the real CSVs. R/H denote
-random/hot. Exchangeable mode is fast but model-conditional; the hot guard
+\caption{Median committer throughput and recovery loss from the same canonical
+run (min/max are in Table~\ref{tab:commit}). R/H denote
+random/hot. Exchangeable mode has a higher median but overlapping range and is
+model-conditional; the hot guard
 alarms, fences, and falls back.}
 \label{fig:commitsla}
 \end{figure}
 
 \paragraph{Results.} Table~\ref{tab:commit} and Fig.~\ref{fig:commitsla} summarize
-the designated run. Every aggregate row has zero stable-ACK loss, zero unexpected
-weak survivor, and zero cap overshoot. All 192 recovery-query rows satisfy
+the canonical run. Every aggregate row has zero stable-ACK loss, zero unexpected
+weak survivor, and zero cap overshoot. All 2{,}880 recovery-query rows satisfy
 $\mathrm{LostIDs}\subseteq U_{pre}$. Amplification is zero within $10^{-12}$ (the
 only nonzero machine value is $5.55\times10^{-17}$). In strict mode with
 $\varepsilon=0.2$ and $k=10$, every observation satisfies
@@ -495,27 +478,24 @@ $\Delta^+\le L=M\le0.1\le0.2$, and the observed maxima of all three terms are
 0.1; equality $L=M$ holds here because no weak record survives recovery. A
 separate reversed-order base built with seed 101 is rejected against the
 seed-100 configuration on persisted-seed metadata (with no observed answer
-drift); normal runs separately require equal stable-answer fingerprints. This
-replaces the old static partition experiment:
-the present evidence comes from writes, acknowledgments, fences, cloned disk
-images, and production recovery.
+drift); normal runs require equal stable-answer fingerprints.
 
-The performance tradeoff is large but noisy. Stable group commit yields
-305--325 writes/s at 10.8--11.7\,ms stable-ACK p50. Exchangeable weak ACK yields
-529--573 writes/s at 5.3--6.0\,ms weak-ACK p50 and only three successful
-synchronizations. Its configured population-mean target is $\varepsilon=.05$ and
-the maximum admission estimate is .0486; the random workload's observed mean is
-.063 with 95\% interval [.038,.092], which includes .05, while the hot workload's
-.225 [.208,.242] does not. This does not violate the admission arithmetic; it shows
-why exchangeability is a model rather than a per-query promise. Strict mode holds
-the distribution-free cap at 236--267 writes/s.
-The hot correlation guard alarms in both repetitions and reduces throughput to
-149--155 writes/s by fencing and serving subsequent writes stably; its weak p50 is
-2.8--3.0\,ms, while stable fallback p50 is 29.0--30.8\,ms. These are two-run
-descriptive ranges from one host, not universal throughput claims. Query p95 varies
-from 4.0--7.0\,ms in the exchangeable rows to 13.7--29.2\,ms with the guard. The
-experiment is too small to fit an exact-tail scaling curve, but its algorithmic
-cost remains $\Theta(Wd)$.
+The performance tradeoff is large and noisy. Stable group commit's median is
+299 writes/s; exchangeable-random's is 475, but their observed ranges
+(227--342 and 317--539) overlap. Exchangeable-hot spans 247--547, so the run does
+not establish a strict exchangeable-over-stable ordering. Timed synchronization
+counts are 7 for stable, 12 for strict, and 2 for unguarded exchangeable rows.
+For target $\varepsilon=.05$, random image-mean loss has mean .051, median .050,
+and range .017--.083; hot loss is .225 throughout. Exchangeability is therefore
+a workload model, not a per-query promise.
+
+Strict mode preserves the distribution-free bound across the full throughput
+ranges in Table~\ref{tab:commit}. The hot guard alarms in all 30 images and has
+median 117 writes/s while fencing and serving later writes stably; its weak p50
+is 3.6\,ms and stable-fallback p50 is 36.7\,ms. Median query p95 is
+6.8/7.0\,ms for unguarded exchangeable random/hot and 29.0\,ms with the guard.
+These are one-host ranges, not deployment claims. Exact-tail scaling is not
+isolated; only its $\Theta(Wd)$ marginal cost is established.
 
 \section{Fast, Crash-Consistent Recovery}
 \label{sec:recovery}
@@ -526,8 +506,10 @@ committer's raw $R/U$ recovery path. Table~\ref{tab:recovery} shows that, from
 $N=1$k to $6$k, snapshot load rises from 39 to 47\,ms while rebuild rises from
 196 to 1{,}484\,ms; the gap grows from $5.0\times$ to $31.6\times$. Snapshot load
 is still linear in serialized size, with a smaller per-element constant, not
-constant time. Creating the snapshot costs 29.7/36.0/55.3\,ms at the same sizes,
-below the replay it replaces. The table is the seven-trial Apple result; the AWS
+constant time. A separate pre-committer plain-\fsync{} run measured snapshot
+creation at 29.7/36.0/55.3\,ms at the same sizes; because Table~\ref{tab:recovery}
+uses \fullfsync{}, those creation numbers are context rather than a direct
+end-to-end comparison. The table is the seven-trial Apple result; the AWS
 cross-check reaches a $128\times$ gap at 6k (\S\ref{sec:honest}).
 
 \begin{table}[t]
@@ -618,22 +600,35 @@ an isolated exact tail, and check the resulting loss after production recovery.
 \section{Threats to Validity and Remaining Work}
 \label{sec:threats}
 The legacy tax/recovery study uses seven trials on Apple and a separate AWS Linux
-cross-check; the real committer study uses only one Apple M4 Pro, two repetitions,
-and a small clustered synthetic workload. Its ranges show timing variability, and
-its bootstrap intervals resample correlated queries from the same images. They do
-not establish performance or exchangeability on a deployment workload. The legacy
+cross-check; the real committer study uses one Apple M4 Pro and a small clustered
+synthetic workload. Thirty tail/write image executions expose substantial timing
+variance, but all share one base graph, query set, HNSW seed, and end-of-workload
+crash frontier. They are not independent graph or deployment-workload samples,
+and several performance ranges overlap. All pre-crash recall values are 1.0, so
+the loss experiment validates membership isolation rather than ANN-error
+interaction. There is no controlled query-cost sweep in $W$ or $d$. The legacy
 sync-floor loop also omitted syscall return-value accounting, so we use it only to
 compare timing under requested sync modes, not to claim observed power survival.
 
+Four implementation threats identified during review are now closed and tested.
+Latest scalar, metadata, and batch queries with $k<k_{\min}$ use stable visibility;
+every weak-visible batch query feeds the correlation guard; the oldest-tail age
+deadline preempts group delay; and failed \fullfsync{} returns an error without a
+plain-\fsync{} fallback or stable ACK. The age deadline determines when fencing
+starts, not how long the device takes to complete synchronization. Injected-I/O
+tests cover fail-closed behavior, but not all real-device error and recovery modes.
+
 Strict admission is distribution-free but permits only
-$\lfloor\varepsilon k\rfloor$ weak records; for common small $k$ and
-$\varepsilon<1/k$, it degenerates correctly to stable commit. Exchangeable mode
+$\lfloor\varepsilon k_{\min}\rfloor$ weak records; for common small $k_{\min}$ and
+$\varepsilon<1/k_{\min}$, it degenerates correctly to stable commit. Exchangeable mode
 can admit more, but hot records violate its mean model, as Table~\ref{tab:commit}
 demonstrates. The CUSUM limits future exposure after detection and cannot undo an
-already acknowledged tail. Total mutable search is
+already acknowledged tail. In the guard benchmark, image cloning waits for the
+alarm-triggered fence, so its zero-loss row does not test a crash during detection
+or synchronization. Total mutable search is
 $\Theta((|R|+W)d)$. The implementation and evaluation are insert-only,
 single-node, and unfiltered; updates/deletes retain stable semantics, and tenant
-filters, sharding, replication, and ambiguous I/O failures remain open.
+filters, sharding, and replication remain open.
 
 Finally, 15 \texttt{\_exit} points test process death, 661 byte prefixes test the
 WAL parser, and cloned images test production reopen. None removes a device cache
@@ -653,30 +648,33 @@ ANN path, not new primitives.
 The new result is an implemented opt-in weak-ACK path whose risk policy and query
 representation agree. A sole appender gates $U$, fenced WAL generations define
 recovery, and exact $R/U$ layers keep volatile inserts out of HNSW topology. Across
-15 process-crash frontiers, 661 WAL prefixes, and 192 recovered-query observations,
+15 process-crash frontiers, 661 WAL prefixes, and 2{,}880 recovered-query observations,
 stable records survive, lost IDs stay within $U_{pre}$, admission never overshoots,
 and the observed strict rows satisfy $\Delta^+\le L=M\le\varepsilon$.
 Exchangeable mode is
-faster in the designated run but fails as a per-query guarantee on hot data; the
-guard responds by fencing and falling back to stable ACKs at substantial cost.
+higher at the median in the canonical run, although its throughput range overlaps
+stable group commit, and it fails as a per-query guarantee on hot data. The guard
+responds by fencing and falling back to stable ACKs at substantial cost.
 The shipped default remains stable. General claims await larger workloads and an
 executed physical block-replay experiment.
 
 \section*{Reproducibility}
 Run the committer artifact from the repository root:
 \begin{verbatim}
+make test
 make committer-unit-test
 make committer-crash-test
 make committer-cut-test
 make bench-recall-committer \
-  RECALL_COMMIT_ARGS="--output build/ann_results"
+  RECALL_COMMIT_ARGS="--repetitions 30 \
+  --output docs/paper/data"
 make powerloss-committer
 cd docs/paper
 python3 plot_recall_committer.py
 ~/.local/bin/tectonic -X compile honest-durability.tex
 \end{verbatim}
-The first four portable targets produce the 22 policy/API tests (after 72 legacy
-tests), 15/15 process-crash matrix, 661/661 byte-prefix sweep, and benchmark CSVs.
+The portable targets produce 75 general unit tests, 24 policy/API tests, the
+15/15 process-crash matrix, 661/661 byte-prefix sweep, and benchmark CSVs.
 On macOS, \texttt{powerloss-committer} runs the portable tests and reports the
 physical \texttt{dm-log-writes} branch unavailable; it is not a physical pass.
 That branch requires Linux, root, explicit destructive opt-in, and three distinct
@@ -686,12 +684,16 @@ unmounted disposable devices as documented in
 The committer run used an Apple M4 Pro, macOS 26.5.2/Darwin 25.5.0, APFS on
 internal Apple NVMe, Apple clang 21.0.0, C++20 \texttt{-O2 -mcpu=native}, and
 \fullfsync{}. Benchmark defaults are 160 clustered base records, 25 writes, 32
-concurrent queries, $d=12$, $k=10$, four writers, two repetitions,
-$\mathrm{ef}=32$, and seed 100. The designated timing rows are archived separately
-from a later rerun; correctness CSVs are deterministic. Legacy tables use
-\texttt{make bench-durability} plus the documented mode/size arguments, and
-Table~\ref{tab:recall} uses \texttt{make bench-ann} and
-\texttt{make bench-hnswlib} on \path{datasets/sift}.
+concurrent queries, $d=12$, $k=10$, four writers, 30 repetitions,
+$\mathrm{ef}=32$, and seed 100. Aggregate, crash, raw-operation, stdout,
+environment, and SHA-256 files from the same code commit and run are tracked in
+\path{docs/paper/data}; no separately selected timing run is used. The legacy
+tax/group/recovery CSVs are archived pre-committer evidence: current
+\texttt{make bench-durability} exercises the raw-delta engine and is not their
+exact reproducer. Table~\ref{tab:recall} uses \texttt{make bench-ann} and
+\texttt{make bench-hnswlib} on \path{datasets/sift}; the data README records all
+SIFT1M SHA-256 values and pins hnswlib v0.9.0 commit
+\texttt{d9b3608c83d83b46c96e25088cb1d729b29dcfe9}.
 
 \begin{thebibliography}{99}
 \small

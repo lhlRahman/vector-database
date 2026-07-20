@@ -1,64 +1,82 @@
 # Raw result data for "Honest Durability for Graph ANN"
 
-These CSVs archive the inputs behind the paper's tables and figures. The legacy
-durability study spans Apple and AWS Linux; the committer results use one Apple
-M4 Pro. Provenance and regeneration commands are separated below.
+These tracked files are the inputs behind the paper's tables and figures. The
+legacy durability study spans Apple and AWS Linux; the committer results use one
+Apple M4 Pro. Commands below are run from the repository root unless noted.
 
-## Legacy durability study
-- `durability_plain_d128.csv` — plain `fsync`, d=128
-- `durability_full_d128.csv`  — `F_FULLFSYNC`, d=128
+## Legacy pre-committer durability study
 
-Regenerate: `make bench-durability` (add `DURABILITY_ARGS="--full-fsync"` for the
-`F_FULLFSYNC` mode; `scripts/run_durability_all.sh` runs both modes at d=64,128).
-Figures: `scripts/plot_durability.py`.
+- `durability_plain_d128.csv` and `durability_full_d128.csv`: Apple plain
+  `fsync` and `F_FULLFSYNC`, `d=128`.
+- `durability_linux_plain_d128.csv`: AWS Linux/ext4/NVMe cross-check.
+- `durability_plain_nsweep_d128.csv`: Apple recovery-size sweep.
+- `durability_{plain,full}_n{10000,30000}_d128.csv`: Apple tax scale checks.
+- `durability_plain_sealcost_d128.csv`: legacy mutable-HNSW sealing costs.
+
+These tax, group-commit, and recovery files predate commit `4017fa7`, when the
+mutable segment inserted directly into HNSW. The current engine exact-scans a raw
+mutable delta and builds HNSW only at seal, so current `make bench-durability`
+does not reproduce the same index work. The CSVs remain the archived evidence
+for the explicitly labeled pre-committer baseline.
 
 ## Index competitiveness (SIFT1M, single-thread)
-- `ann_sift1m_ours.csv`     — this work (ID-set recall@10 vs shipped ground truth)
-- `ann_sift1m_hnswlib.csv`  — hnswlib baseline, identical dataset/params/host
 
-Regenerate: `make bench-ann ANN_ARGS="--data datasets/sift"` and
-`make bench-hnswlib HNSWLIB_ARGS="--data datasets/sift"`. Figure: `scripts/plot_ann.py`.
-QPS is single-run timing; recall is fixed only for the archived graph build
-(independent builds use randomized HNSW levels).
+- `ann_sift1m_ours.csv`: this work, ID-set recall@10 against shipped truth.
+- `ann_sift1m_hnswlib.csv`: hnswlib baseline, same data/parameters/host.
 
-## Real recall committer
+Regenerate with `make bench-ann ANN_ARGS="--data datasets/sift"` and
+`make bench-hnswlib HNSWLIB_ARGS="--data datasets/sift"`. The baseline is
+hnswlib v0.9.0 commit `d9b3608c83d83b46c96e25088cb1d729b29dcfe9`.
+`datasets/fetch_sift.sh` pins that revision and verifies these SHA-256 values:
 
-The committer paper results are intentionally split by provenance:
+```text
+92f1270c5e3a0cb46b89983e72b0511e4df065c31a9fa0276d8c9b1fca5bc81a  sift.tar.gz
+21f66e2975057b5728ba56de1c825bac4f4d89d596609ae985741c6242631816  sift_base.fvecs
+f7fc9be140accdfd64116c2fa2365ecdb69b8f084970c6b0532db5ff79ac8fdc  sift_query.fvecs
+2b71de0a8d5a83e6a84eec3e23fb8b611d8801dd9b3a6cd62f070ab65ea65f4f  sift_groundtruth.ivecs
+331bc82b6a0e89465776a3ba0c2113e0bd0cceaa014ec3ed639bc8b981af72ea  sift_learn.fvecs
+```
 
-- `recall_committer_reported_run.csv` preserves the selected aggregate columns
-  printed by the designated milestone run. It is the sole source for the
-  throughput, ACK-latency, `max_W`, synchronization-count, and alarm ranges in
-  Table `tab:commit`.
-- `recall_committer_crash.csv` contains the 192 recovered-query observations
-  (eight cases, two repetitions, 12 queries). It is the source for `M`, `L`,
-  positive recall delta, amplification, lost-ID containment, and stable-candidate
-  fingerprint claims. The file was byte-identical across benchmark reruns.
-- `recall_committer_summary.csv` is deterministically regenerated from those two
-  inputs by `../plot_recall_committer.py`; its confidence intervals use 10,000
-  fixed-seed bootstrap resamples over the 24 correlated query observations per
-  displayed case. The LaTeX/PGFPlots figure reads this CSV directly.
-- `recall_committer.csv`, `recall_committer_operations.csv`, and
-  `recall_committer_run.txt` are a later timing rerun. They reproduce correctness
-  but not the designated performance ranges and are not the source for reported
-  throughput.
-- `committer_unit_test.txt`, `committer_crash_test.txt`, and
-  `committer_cut_test.txt` archive the 22 committer tests (plus 72 legacy tests),
-  the 15/15 real `_exit` matrix, and the 661/661 WAL-prefix result.
-- `recall_committer_environment.txt` records the Apple M4 Pro/macOS/clang
-  environment. The Linux `dm-log-writes` committer harness is implemented but has
-  not been run; there is therefore no physical replay result in this directory.
+QPS is single-run timing. Recall is fixed only for each archived graph build;
+independent HNSW builds may differ because level selection is randomized.
 
-The benchmark defaults are 160 clustered base records, 25 writes, 32 concurrent
-queries, `d=12`, `k=10`, four writers, two repetitions, `ef=32`, and seed 100.
-The 192 rows represent 12 recovery queries over each of 16 cloned live images,
-not 192 process crashes. Regenerate the portable evidence from the repository
-root with:
+## Canonical recall-committer run
+
+The paper cites one predeclared run from code commit
+`73ea1bfa90dd38840bc6bc65e28dc2bfe4f439a6`:
+
+- `recall_committer.csv`: 240 aggregate rows, 30 image executions for each of
+  eight cases.
+- `recall_committer_crash.csv`: 2,880 recovered-query observations, 12 for each
+  aggregate image.
+- `recall_committer_operations.csv`: all 13,920 write, query, and fence records.
+- `recall_committer_summary.csv`: deterministic image-level min/median/max data
+  generated by `../plot_recall_committer.py` for the six displayed cases.
+- `recall_committer_run.txt`: complete stdout from the same run.
+- `recall_committer_environment.txt`: command, source commit, host, and design.
+- `recall_committer_sha256.txt`: digest manifest for the run and test evidence.
+- `committer_{unit,crash,cut}_test.txt`: 75 general unit tests plus 24 committer
+  tests, 15/15 live-object `_exit` frontiers, and 661/661 WAL byte prefixes.
+
+The statistical unit is one independently executed tail/write live image.
+Recovery queries are averaged within an image; the paper reports min, median,
+and max across 30 images and does not bootstrap correlated query rows. Case order
+is deterministically shuffled within each repetition. The graph, query set,
+HNSW seed, and end-of-workload crash frontier remain fixed, so these are not 30
+independent graph builds or workload samples. The fixed-count and fixed-time
+controls are included in all invariant totals and raw CSVs but omitted from the
+six-row paper table and figure.
+
+Regenerate the portable evidence with:
 
 ```sh
 make committer-unit-test
 make committer-crash-test
 make committer-cut-test
 make bench-recall-committer \
-  RECALL_COMMIT_ARGS="--output build/ann_results"
+  RECALL_COMMIT_ARGS="--repetitions 30 --output docs/paper/data"
 (cd docs/paper && python3 plot_recall_committer.py)
 ```
+
+The Linux `dm-log-writes` harness is implemented but has not been executed; no
+physical block-replay result is present here.

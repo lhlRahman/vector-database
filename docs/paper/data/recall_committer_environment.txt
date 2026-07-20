@@ -1,0 +1,35 @@
+artifact=recall-committer canonical 30-image run
+run_date=2026-07-19
+benchmark_source_commit=73ea1bfa90dd38840bc6bc65e28dc2bfe4f439a6
+command=set -o pipefail; make bench-recall-committer RECALL_COMMIT_ARGS="--repetitions 30 --output docs/paper/data" 2>&1 | tee docs/paper/data/recall_committer_run.txt
+dataset=clustered-synthetic
+base_records=160
+writes_per_image=25
+concurrent_queries_per_image=32
+recovery_queries_per_image=12
+dimensions=12
+k=10
+writers=4
+repetitions_per_case=30
+cases=8
+aggregate_image_rows=240
+recovered_query_rows=2880
+raw_operation_rows=13920
+hnsw_ef=32
+hnsw_seed=100
+tail_seeds=random:9001+repetition,hot:45001+repetition
+case_order=deterministically shuffled within each repetition using seed 100+repetition
+statistical_unit=one independently executed tail/write live image; recovery queries are averaged within image
+uncertainty_summary=min/median/max across 30 images; no query-row bootstrap
+base_graph_scope=one fixed base graph, query set, HNSW seed, and end-of-workload crash frontier
+sync_mode=F_FULLFSYNC requested; failures are fail-closed and cannot return Stable
+host_model=MacBook Pro Mac16,8
+chip=Apple M4 Pro
+memory=48 GB
+os=macOS 26.5.2 build 25F84
+kernel=Darwin 25.5.0 arm64
+filesystem=APFS
+storage=internal solid-state Apple Fabric
+compiler=Apple clang 21.0.0 (clang-2100.1.1.101)
+target=arm64-apple-darwin25.5.0
+language_flags=C++20 -O2 -mcpu=native
