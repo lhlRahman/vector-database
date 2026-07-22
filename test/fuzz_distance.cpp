@@ -42,7 +42,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Prevent the optimizer from discarding the kernel calls.
     volatile float fsink = 0.0f;
-    volatile uint32_t usink = 0;
+    volatile uint64_t usink = 0;
 
     // ── Distance metrics (span-based virtual API) ─────────────
     const EuclideanDistance euclidean;
@@ -61,7 +61,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // ── Quantized integer kernel over the raw input bytes ─────
     if (size >= 2) {
         const size_t half = size / 2;
-        usink += simd_ops::quantized_l2_u8(data, data + half, half);
+        usink += simd_ops::quantized_l2sq_u8(data, data + half, half);
     }
 
     // ── Scalar quantizer: train on the two vectors, then quantize ─
@@ -76,7 +76,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         quantizer.quantize(b.data(), qb.data());
 
         usink += quantizer.distance_quantized(qa.data(), qb.data());
-        fsink += quantizer.approximate_distance_sq(static_cast<uint32_t>(usink));
+        fsink += quantizer.approximate_distance_sq(usink);
     } catch (const std::exception&) {
         // Swallow well-behaved exceptions; the fuzzer still flags crashes/UB.
     }

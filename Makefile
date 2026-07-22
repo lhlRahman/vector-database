@@ -4,17 +4,15 @@ CXX ?= c++
 # Base flags, common to both release and debug
 BASE_CXXFLAGS = -std=c++20 -Iinclude -Isrc -Wno-psabi -I$(SRC_DIR)
 
-# Detect architecture and set appropriate flags
+# Detect architecture and set appropriate flags.
+# x86 needs no ISA flags: SIMD kernels are runtime-dispatched (SSE2 baseline,
+# AVX2 when the CPU has it), so binaries stay portable.
 UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_M),arm64)
     # ARM64 (Apple Silicon): tune for the actual host CPU when the toolchain
     # accepts -mcpu=native (e.g. targets M4 on an M4), else a safe baseline.
     ARCH_FLAGS := $(shell $(CXX) -mcpu=native -E -x c++ /dev/null >/dev/null 2>&1 && echo -mcpu=native || echo -mcpu=apple-m1)
-else ifeq ($(UNAME_M),x86_64)
-    # x86_64 - AVX2 + FMA (the distance kernels use _mm256_fmadd_ps under __FMA__)
-    ARCH_FLAGS = -mavx -mavx2 -mfma
 else
-    # Default fallback
     ARCH_FLAGS =
 endif
 
@@ -77,14 +75,18 @@ all: tcp-server
 # --- Build Rules ---
 
 # Rule to compile a .cpp source file into a .o object file
+# (-MMD -MP: rebuild objects when headers change)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 # Rule to compile a .mm (Objective-C++) source file into a .o object file
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(OBJCXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OBJCXXFLAGS) -MMD -MP -c $< -o $@
+
+# Pull in the generated header dependencies
+-include $(OBJS:.o=.d)
 
 # Rule to compile Metal shaders into a .metallib
 $(METALLIB): $(METAL_SRCS)

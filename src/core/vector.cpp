@@ -1,14 +1,8 @@
 
-#include <atomic>
 #include <stdexcept>
 #include <vector>
 #include "vector.hpp"
 #include "../optimizations/simd_operations.hpp"
-
-// Global flag to enable/disable SIMD at runtime
-namespace {
-    std::atomic<bool> use_simd{true};  // Enabled by default if hardware supports it
-}
 
 Vector::Vector(size_t size) : data(size) {}
 
@@ -41,29 +35,15 @@ float* Vector::data_ptr() {
 }
 
 float Vector::dot_product(const Vector& v1, const Vector& v2) {
-    if (v1.size() != v2.size()) {
-        throw std::invalid_argument("Vectors must be the same size");
-    }
-    
-    // Use SIMD if enabled and available
-    if (use_simd.load(std::memory_order_relaxed)) {
-        return simd_ops::dot_product(v1, v2);
-    }
-    
-    // Scalar fallback implementation
-    float result = 0.0f;
-    for (size_t i = 0; i < v1.size(); ++i) {
-        result += v1[i] * v2[i];
-    }
-    return result;
+    return simd_ops::dot_product(v1, v2);
 }
 
 void Vector::enable_simd(bool enable) {
-    use_simd.store(enable, std::memory_order_relaxed);
+    simd_ops::set_enabled(enable);
 }
 
 bool Vector::is_simd_enabled() {
-    return use_simd.load(std::memory_order_relaxed);
+    return simd_ops::is_enabled();
 }
 
 void Vector::write_to(std::ostream& os) const {

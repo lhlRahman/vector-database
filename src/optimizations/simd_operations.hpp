@@ -1,16 +1,18 @@
 #pragma once
 
-#if defined(__ARM_NEON) || defined(__aarch64__)
-#include <arm_neon.h>
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
-#include <immintrin.h>
-#endif
-
 #include <cstddef>
 #include <cstdint>
+
 #include "../core/vector.hpp"
 
+// SIMD vector kernels. NEON on ARM; SSE2 baseline on x86 with AVX2+FMA
+// picked at runtime, so no -mavx* build flags are needed. Float results can
+// differ slightly from scalar (reassociation/FMA); integer kernels are exact.
 namespace simd_ops {
+
+// ── Runtime toggle (scalar path when disabled) ────────────
+void set_enabled(bool enabled) noexcept;
+bool is_enabled() noexcept;
 
 // ── Single-pair operations (Vector overloads) ─────────────
 float dot_product(const Vector& v1, const Vector& v2);
@@ -19,22 +21,13 @@ void add(const Vector& v1, const Vector& v2, Vector& result);
 void subtract(const Vector& v1, const Vector& v2, Vector& result);
 
 // ── Single-pair operations (raw-pointer, zero-copy) ───────
-float squared_distance(const float* a, const float* b, size_t size);
-float dot_product(const float* a, const float* b, size_t size);
-float manhattan_distance(const float* a, const float* b, size_t size);
-
-// ── Batched distance (1-to-N with prefetch) ───────────────
-// Computes squared Euclidean distance from query to each candidate.
-// Prefetches next candidate while computing current one.
-void batch_squared_distances(const float* query,
-                             const float* const* candidates,
-                             float* out_distances,
-                             size_t num_candidates,
-                             size_t dims);
+float squared_distance(const float* a, const float* b, std::size_t size) noexcept;
+float dot_product(const float* a, const float* b, std::size_t size) noexcept;
+float manhattan_distance(const float* a, const float* b, std::size_t size) noexcept;
 
 // ── Scalar-quantized distance (uint8) ─────────────────────
-// Approximate L2 distance between quantized vectors.
-// Returns sum of squared differences of uint8 values.
-uint32_t quantized_l2_u8(const uint8_t* a, const uint8_t* b, size_t size);
+// Squared L2 in code space, no sqrt. u64 accumulator can't overflow.
+std::uint64_t quantized_l2sq_u8(const std::uint8_t* a, const std::uint8_t* b,
+                                std::size_t size) noexcept;
 
 } // namespace simd_ops

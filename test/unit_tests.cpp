@@ -1065,9 +1065,9 @@ void test_scalar_quantizer_train_and_quantize() {
     q.quantize(data[1].data(), qb);
     q.quantize(data[2].data(), qc);
 
-    uint32_t d_aa = q.distance_quantized(qa, qa);
-    uint32_t d_ab = q.distance_quantized(qa, qb);
-    ASSERT_EQ(d_aa, uint32_t{0});  // self-distance is exactly zero
+    uint64_t d_aa = q.distance_quantized(qa, qa);
+    uint64_t d_ab = q.distance_quantized(qa, qb);
+    ASSERT_EQ(d_aa, uint64_t{0});  // self-distance is exactly zero
     ASSERT_TRUE(d_ab > 0);
 
     // Regression: with a GLOBAL scale the quantized distance is proportional to
@@ -1080,8 +1080,38 @@ void test_scalar_quantizer_train_and_quantize() {
         return s;
     };
     ASSERT_TRUE(true_l2_sq(data[0], data[2]) < true_l2_sq(data[0], data[1]));
-    uint32_t d_ac = q.distance_quantized(qa, qc);
+    uint64_t d_ac = q.distance_quantized(qa, qc);
     ASSERT_TRUE(d_ac < d_ab);  // quantized ordering matches true-L2 ordering
+}
+
+void test_scalar_quantizer_preserves_ranking() {
+    // dim0 spans [0,1], dim1 [0,100]: per-dimension scaling would invert
+    // the ranking below, the shared scale must not
+    constexpr size_t dims = 2;
+    ScalarQuantizer q(dims);
+
+    std::vector<std::vector<float>> data{
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},    // true squared L2 from origin: 1
+        {0.0f, 50.0f},   // true squared L2 from origin: 2500
+        {1.0f, 100.0f},
+    };
+    std::vector<const float*> ptrs;
+    for (auto& v : data) ptrs.push_back(v.data());
+    q.train(ptrs.data(), ptrs.size());
+
+    uint8_t qo[dims], qb[dims], qc[dims];
+    q.quantize(data[0].data(), qo);
+    q.quantize(data[1].data(), qb);
+    q.quantize(data[2].data(), qc);
+
+    uint64_t d_ob = q.distance_quantized(qo, qb);
+    uint64_t d_oc = q.distance_quantized(qo, qc);
+    ASSERT_TRUE(d_ob < d_oc);  // ranking matches true L2
+
+    // loose tolerance: the narrow dim0 loses most of its precision
+    float approx_oc = q.approximate_distance_sq(d_oc);
+    ASSERT_TRUE(approx_oc > 2000.0f && approx_oc < 3000.0f);
 }
 
 // =====================================================================
@@ -1260,6 +1290,7 @@ int main() {
 
     std::cout << "\n[Scalar Quantizer]\n";
     run_test("train and quantize",      test_scalar_quantizer_train_and_quantize);
+    run_test("quantizer preserves ranking", test_scalar_quantizer_preserves_ranking);
 
     std::cout << "\n[RWLock]\n";
     run_test("readers can share",       test_rwlock_readers_can_share);

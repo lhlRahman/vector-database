@@ -1,5 +1,5 @@
 # CMakeLists.txt
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 project(VectorDatabase)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -11,23 +11,14 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Enable ARM NEON for ARM architectures
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
-    if(APPLE)
-        # Tune for the host Apple Silicon core (M1..M4) when supported.
-        include(CheckCXXCompilerFlag)
-        check_cxx_compiler_flag("-mcpu=native" HAVE_MCPU_NATIVE)
-        if(HAVE_MCPU_NATIVE)
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=native")
-        endif()
-    else()
-        # For other ARM systems, we might need additional flags
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon")
+# No per-ISA flags needed: SIMD paths are feature-guarded and runtime-dispatched.
+# On Apple Silicon, tune for the host core (M1..M4) when supported.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm" AND APPLE)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mcpu=native" HAVE_MCPU_NATIVE)
+    if(HAVE_MCPU_NATIVE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=native")
     endif()
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686")
-    # Without these the AVX kernels (guarded on __AVX__/__FMA__) fall back to
-    # scalar. Matches the Makefile's x86 ARCH_FLAGS.
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2 -mfma")
 endif()
 
 # Add include directories
@@ -35,9 +26,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Add source files
-file(GLOB_RECURSE SOURCES 
+file(GLOB_RECURSE SOURCES
     "src/*.cpp"
-    "src/*.hpp"
 )
 
 # Create library
