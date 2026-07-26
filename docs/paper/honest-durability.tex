@@ -5,6 +5,8 @@
 % bc9fcacbdc559a577816812cb46c6d41d8bced2b (downloaded 2026-07-20).
 % Bibliography entries were web-verified.
 \documentclass[sigconf,nonacm,balance=false]{acmart}
+\setcopyright{none}
+\settopmatter{printacmref=false}
 
 % Tectonic/XeTeX does not expose a native creation-date primitive. Supplying a
 % deterministic PDF date lets pdfx emit conforming PDF/A metadata without a
@@ -42,6 +44,12 @@
   \institution{Toronto Metropolitan University}
   \city{Toronto}
   \country{Canada}
+}
+\affiliation{%
+  \institution{Meta}
+  \city{Menlo Park}
+  \state{California}
+  \country{USA}
 }
 \email{habib.rahman@torontomu.ca}
 
@@ -87,13 +95,6 @@ device-level result covers one host, filesystem, and synthetic workload.
 \vldbauthors. \vldbtitle. PVLDB, \vldbvolume(\vldbissue): \vldbpages, \vldbyear.\\
 \href{https://doi.org/\vldbdoi}{doi:\vldbdoi}
 \endgroup
-\begingroup
-\renewcommand\thefootnote{}\footnote{\noindent
-This work is licensed under the Creative Commons BY-NC-ND 4.0 International License. Visit \url{https://creativecommons.org/licenses/by-nc-nd/4.0/} to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing \href{mailto:info@vldb.org}{info@vldb.org}. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment. \\
-\raggedright Proceedings of the VLDB Endowment, Vol. \vldbvolume, No. \vldbissue\ %
-ISSN 2150-8097. \\
-\href{https://doi.org/\vldbdoi}{doi:\vldbdoi} \\
-}\addtocounter{footnote}{-1}\endgroup
 %%% VLDB block end %%%
 
 %%% do not modify the following VLDB block %%%
